@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnikyt/cq"
+	. "github.com/gnikyt/cq"
 )
 
 // Queue instance.
-var queue *cq.Queue
+var queue *Queue
 
 // Server instance.
 var srv http.Server
@@ -50,12 +50,13 @@ func jobFailed(id int) func(error) {
 }
 
 // Job.
-func job(id int, data []byte) cq.Job {
-	return cq.WithResultHandler(
-		cq.WithRetry(func() error {
+func job(id int, data []byte) Job {
+	retries := 3
+	return WithResultHandler(
+		WithRetry(func() error {
 			time.Sleep(50 * time.Millisecond) // Simulate some "real work".
 
-			// Fail every 30th job just for an example.
+			// Fail every 30th job, just for an example of metrics.
 			if id%30 == 0 {
 				return errors.New("job: decided to fail, just because")
 			}
@@ -65,7 +66,7 @@ func job(id int, data []byte) cq.Job {
 				return fmt.Errorf("job: unmarshal failed: %w", err)
 			}
 			return nil
-		}, 3),
+		}, retries),
 		jobCompleted(id),
 		jobFailed(id),
 	)
@@ -85,6 +86,7 @@ func orderHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to parse body", http.StatusBadRequest)
 	}
 
+	// Enqueue job with a random ID (as a random int) and the body.
 	queue.Enqueue(job(rand.Int(), bb))
 }
 
@@ -132,16 +134,16 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		</table>`,
 		queue.RunningWorkers(),
 		queue.IdleWorkers(),
-		queue.TallyOf(cq.JobStateCreated),
-		queue.TallyOf(cq.JobStatePending),
-		queue.TallyOf(cq.JobStateActive),
-		queue.TallyOf(cq.JobStateFailed),
-		queue.TallyOf(cq.JobStateCompleted),
+		queue.TallyOf(JobStateCreated),
+		queue.TallyOf(JobStatePending),
+		queue.TallyOf(JobStateActive),
+		queue.TallyOf(JobStateFailed),
+		queue.TallyOf(JobStateCompleted),
 	)
 	body := fmt.Sprintf(`
 		<html>
 			<head>
-				<title>Metrics</title>
+				<title>CG - Metrics</title>
 				<meta http-equiv="refresh" content="0.5">
 			</head>
 			<body>%s</body>
@@ -156,12 +158,12 @@ func main() {
 	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
 	// Create the queue and start it.
-	queue = cq.NewQueue(
+	queue = NewQueue(
 		1,    // 1 workers always running.
 		10,   // 10 workers max.
 		1000, // 1000 jobs at a time.
-		cq.WithWorkerIdleTick(1*time.Second),
-		cq.WithContext(ctx),
+		WithWorkerIdleTick(1*time.Second),
+		WithContext(ctx),
 	)
 	queue.Start()
 
