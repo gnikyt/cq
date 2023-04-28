@@ -173,32 +173,35 @@ func TestQueuePanic(t *testing.T) {
 }
 
 func TestIdleWorkerTick(t *testing.T) {
-	var rw int
-	wmin := 1
-	wmax := 2
-	q := NewQueue(wmin, wmax, 100, WithWorkerIdleTick(time.Duration(50)*time.Millisecond))
-	q.Start()
-	defer q.Stop(false)
+	var rwam bool
+	wmin, wmax := 1, 2 // min, max workers
+	njs := 50          // number of jobs
+	dj := 10           // delay of each job
 
-	q.Enqueue(func() error {
-		time.Sleep(time.Duration(500) * time.Millisecond)
-		return nil
-	})
-	for i := 0; i < 100; i++ {
-		go func() {
-			q.Enqueue(func() error {
-				return nil
-			})
-		}()
-		rw = q.RunningWorkers()
+	q := NewQueue(wmin, wmax, 0, WithWorkerIdleTick(time.Duration(150)*time.Millisecond))
+	q.Start()
+	defer q.Stop(true)
+
+	for i := 0; i < njs; i++ {
+		q.Enqueue(func() error {
+			time.Sleep(time.Duration(dj) * time.Millisecond)
+			return nil
+		})
+
+		// At some point, we should have wmax workers.
+		if !rwam {
+			if rw := q.RunningWorkers(); rw == wmax {
+				rwam = true
+			}
+		}
 	}
 
-	if rw > wmin {
+	if !rwam {
 		// Because so many jobs were spammed, this should be more than worker min.
-		t.Errorf("RunningWorkers() = %v, want atleast %v", rw, 2)
+		t.Error("Did not spin up the desired workers")
 	}
 	// Let the cleanup happen.
-	<-time.After(time.Duration(2) * time.Second)
+	<-time.After((time.Duration(njs*dj) * time.Millisecond) + (2 * time.Second))
 	// Should be back to worker min.
 	if nrw := q.RunningWorkers(); nrw != wmin {
 		t.Errorf("RunningWorkers() = %v, want %v", nrw, wmin)
