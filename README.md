@@ -59,7 +59,7 @@ Example result:
 
 `make build`
 
-Binary will be located in `build/cq`.
+Binary will be located in `dist/cq`. You will need to grant execution permissions.
 
 ## Examples
 
@@ -92,8 +92,11 @@ You can pull current stats for the queue.
 You can push jobs to the queue in a few ways.
 
 * `Enqueue(Job)` will push the job to the queue, non-blocking.
+  - Example: `Enqueue(job)`
 * `TryEnqueue(Job) bool` will try and push the job to the queue, and return if successful or not.
+  - Example: `ok := TryEnqueue(job)`
 * `DelayEnqueue(Job, delay time.Duration)` will push the job to the queue in a seperate goroutine after the delay.
+  - Example: `DelayEnqueue(job, time.Duration(2) * time.Minute)`
 
 #### Idle worker tick
 
@@ -101,7 +104,12 @@ You can configure how often to remove idle workers.
 
 ```go
 // Check every 500ms for idle workers to remove.
-queue := NewQueue(2, 5, 100, WithWorkerIdleTick(time.Duration(500) * time.Millisecond))
+queue := NewQueue(
+  2,
+  5,
+  100,
+  WithWorkerIdleTick(time.Duration(500) * time.Millisecond),
+)
 ```
 
 ### Panic handler
@@ -109,10 +117,15 @@ queue := NewQueue(2, 5, 100, WithWorkerIdleTick(time.Duration(500) * time.Millis
 You can configure a handler for panics so the queue does not die if a panic happens. A panic can happen from running a job itself, or if the queue happens to be maxed out and the job can not push to the queue (using `Enqueue`, not `TryEnqueue`).
 
 ```go
-queue := NewQueue(2, 5, 100, WithPanicHandler(func (err interface{}) {
-  // err can be a string, error, etc.. you can use type assert to check and handle as you need..
-  log.Errorf("Job or queue failed: %v", %v)
-}))
+queue := NewQueue(
+  2,
+  5,
+  100,
+  WithPanicHandler(func (err interface{}) {
+    // err can be a string, error, etc.. you can use type assert to check and handle as you need..
+    log.Errorf("Job or queue failed: %v", %v)
+  }),
+)
 ```
 
 ### Context
