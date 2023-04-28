@@ -297,19 +297,23 @@ queue.Enqueue(job)
 
 ### Demo
 
-An example of running a HTTP server and queue at once, without relying on a source to save or pull the jobs (such as Redis). It will take the job and directly process it.
+An example of running a HTTP server and queue at once. This is without relying on a source to store or pull the jobs, such as Redis... it will take the jobs and directly process them.
 
-The demo simply runs a basic job function which sometimes may have a simulated workload (time delay). It will create a queue with 5 running workers, to a maximum of 100 workers, and a capacity of 1000 concurrent jobs.
+The demo simply runs a basic job function which sometimes may have a simulated workload (time delay). It will create a queue with 1 always-running worker, to a maximum of 100 workers, and a capacity of 1000.
 
 `go run example/web_direct.go`
 
-You can then start spamming jobs with cURL or another tool:
+You can then start spamming jobs with cURL or another tool, example:
 
 `for i in {1..500}; do curl --silent -X POST localhost:8080/order --data '{"demo":"yes"}' -H "Content-Type: application/json"; done`
 
-Example of output on metrics and log:
+Sample output on metrics and log:
+
+**Metrics**
 
 ![](example/example.gif)
+
+**Log**
 
     INFO: Send JSON data to http://localhost:8080/order
     INFO: View live metrics at http://localhost:8080/metrics
