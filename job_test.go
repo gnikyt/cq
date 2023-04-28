@@ -85,63 +85,70 @@ func TestDefaultBackoffFunc(t *testing.T) {
 
 func TestWithResultHandler(t *testing.T) {
 	t.Run("completed", func(t *testing.T) {
-		var cran bool
-		var fran bool
-		job := WithResultHandler(func() error {
-			return nil
-		}, func() {
-			cran = true
-		}, func(err error) {
-			fran = true
-		})
+		var cran bool // Did complete run?
+		var fran bool // Did fail run?
+
+		job := WithResultHandler(
+			func() error {
+				return nil
+			}, func() {
+				cran = true
+			}, func(err error) {
+				fran = true
+			},
+		)
 		job()
 
 		if !cran {
-			t.Error("WithResultHandler should have ran complete handler, was not ran")
+			t.Error("WithResultHandler(): completed handler: should not have executed")
 		}
 		if fran {
-			t.Error("WithResultHandler should have not ran fail handler, was ran")
+			t.Error("WithResultHandler(): failed handler: should have executed")
 		}
 	})
 
 	t.Run("failed", func(t *testing.T) {
-		var cran bool
-		var fran bool
-		job := WithResultHandler(func() error {
-			return errors.New("error")
-		}, func() {
-			cran = true
-		}, func(err error) {
-			fran = true
-		})
+		var cran bool // Did complete run?
+		var fran bool // Did fail run?
+
+		job := WithResultHandler(
+			func() error {
+				return errors.New("error")
+			}, func() {
+				cran = true
+			}, func(err error) {
+				fran = true
+			},
+		)
 		job()
 
 		if !fran {
-			t.Error("WithResultHandler should have ran fail handler, was not ran")
+			t.Error("WithResultHandler(): failed handler: should not have executed")
 		}
 		if cran {
-			t.Error("WithResultHandler should have not ran complete handler, was ran")
+			t.Error("WithResultHandler(): completed handler: should have executed")
 		}
 	})
 }
 
 func TestWithRetry(t *testing.T) {
-	var calls int
-	retries := 2
+	var calls int // Number of times job was called.
+	retries := 2  // Number of retries to do.
+
 	job := WithRetry(func() error {
 		calls++
 		return errors.New("error")
 	}, retries)
 	job()
-
-	if calls != 2 {
-		t.Errorf("WithRetry ran job %v times, want %v", calls, retries)
+	if calls != retries {
+		t.Errorf("WithRetry(): job ran %v times, want %v", calls, retries)
 	}
 }
 
 func TestWithBackoff(t *testing.T) {
-	retries := 3
-	tlimit := time.Duration(4) * time.Second // one retry will wait 1 second, two will wait 2 seconds, (1 + 2) + (1s buffer) = limit
+	retries := 2                             // Number of retries.
+	tlimit := time.Duration(4) * time.Second // One retry = 1 second, two = 2 seconds... (1s + 2s) + (1s buffer) = limit.
+
 	ctx, ctxc := context.WithTimeout(context.TODO(), tlimit)
 	defer ctxc()
 
@@ -154,7 +161,7 @@ func TestWithBackoff(t *testing.T) {
 	}()
 	select {
 	case <-ctx.Done():
-		t.Errorf("Backoff should have completed within %v for %v retries", tlimit, retries)
+		t.Errorf("WithBackoff(): should have completed within %v for %v retries", tlimit, retries)
 	case <-done:
 		return
 	}
@@ -162,8 +169,8 @@ func TestWithBackoff(t *testing.T) {
 
 func TestWithTimeout(t *testing.T) {
 	want := context.DeadlineExceeded
-	slimit := time.Duration(2) * time.Second
-	tlimit := time.Duration(1) * time.Second
+	slimit := time.Duration(2) * time.Second // Job sleep.
+	tlimit := time.Duration(1) * time.Second // Timeout.
 
 	done := make(chan error, 1)
 	go func() {
@@ -174,14 +181,14 @@ func TestWithTimeout(t *testing.T) {
 		done <- job()
 	}()
 	if err := <-done; !errors.Is(err, want) {
-		t.Errorf("WithTimeout error was %v, want %v", err, want)
+		t.Errorf("WithTimeout(): error was %v, want %v", err, want)
 	}
 }
 
 func TestWithDeadline(t *testing.T) {
 	want := context.DeadlineExceeded
-	slimit := time.Duration(2) * time.Second
-	tlimit := time.Now().Add(time.Duration(1) * time.Second)
+	slimit := time.Duration(2) * time.Second                 // Job sleep.
+	tlimit := time.Now().Add(time.Duration(1) * time.Second) // Deadline.
 
 	done := make(chan error, 1)
 	go func() {
@@ -192,6 +199,6 @@ func TestWithDeadline(t *testing.T) {
 		done <- job()
 	}()
 	if err := <-done; !errors.Is(err, want) {
-		t.Errorf("WithDeadline error was %v, want %v", err, want)
+		t.Errorf("WithDeadline(): error was %v, want %v", err, want)
 	}
 }

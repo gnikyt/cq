@@ -41,7 +41,7 @@ func BenchmarkScenarios(b *testing.B) {
 
 	for _, load := range loads {
 		b.Run(load.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for i := 0; i < b.N; i += 1 {
 				var wg sync.WaitGroup
 				wg.Add(load.reqs * load.jobs)
 
@@ -51,9 +51,9 @@ func BenchmarkScenarios(b *testing.B) {
 					wg.Done()
 					return nil
 				})
-				for i := 0; i < load.reqs; i++ {
+				for i := 0; i < load.reqs; i += 1 {
 					go func() {
-						for i := 0; i < load.jobs; i++ {
+						for i := 0; i < load.jobs; i += 1 {
 							enqueue(tf)
 						}
 					}()
@@ -66,7 +66,7 @@ func BenchmarkScenarios(b *testing.B) {
 }
 
 func BenchmarkSingle(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for i := 0; i < b.N; i += 1 {
 		var wg sync.WaitGroup
 		wg.Add(1 * 1)
 

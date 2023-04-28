@@ -35,10 +35,10 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
 
 Example result:
 
-    ok  	github.com/littlerocketinc/go-webhooks	9.002s	coverage: 91.3% of statements
+    ok      github.com/gnikyt/cq    9.313s coverage: 92.4% of statements
     PASS
 
-\>90% coverage currently, but tests need to be improved as noted in `queue_test.go`'s TODO.
+\>90% coverage currently, on the important parts.
 
 ### Benchmarks
 
@@ -50,13 +50,16 @@ Runs the following benchmarks:
 2. 1,000 requests each pushing 1,000 jobs
 3. 10,000 requests each pushing 100 jobs
 4. 1,000,000 requests each pushing 10 jobs
+5. 1 request pushing 1 job
 
 Example result:
 
-    BenchmarkScenarios/100Req--10kJobs-8                   3         543227459 ns/op         8251978 B/op       1935 allocs/op
-    BenchmarkScenarios/1kReq--1kJobs-8                     3         637900367 ns/op         8304258 B/op       4801 allocs/op
-    BenchmarkScenarios/10kReq--100Jobs-8                   3         874768339 ns/op        14218722 B/op      50486 allocs/op
-    BenchmarkScenarios/1mReq--10Jobs-8                     3        16676255114 ns/op       65391498 B/op    1129154 allocs/op
+    cpu: Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz
+    BenchmarkScenarios/100Req--10kJobs-8                   2         603405897 ns/op         8269804 B/op       4349 allocs/op
+    BenchmarkScenarios/1kReq--1kJobs-8                     2         629621947 ns/op         8392064 B/op       7030 allocs/op
+    BenchmarkScenarios/10kReq--100Jobs-8                   2         673217746 ns/op         8746904 B/op      15392 allocs/op
+    BenchmarkScenarios/1mReq--10Jobs-8                     2        8600135828 ns/op        43627288 B/op    1017660 allocs/op
+    BenchmarkSingle-8                                      2           6871700 ns/op         8004360 B/op         16 allocs/op
     PASS
 
 ## Building

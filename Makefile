@@ -10,7 +10,7 @@ test:
 	go test -timeout 30s -coverprofile=/tmp/${BINARY_NAME}-cover ${PKG}
 
 bench:
-	go test -benchmem -run=^$ -benchtime=2x ${PKG}
+	go test -benchmem -bench=. -benchtime=2x ${PKG}
 
 clean:
 	go clean

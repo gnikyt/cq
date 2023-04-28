@@ -1,8 +1,5 @@
 package cq
 
-// TODO: A lot of these tests rely on time-based checks.
-// Move to a different method later.
-
 import (
 	"errors"
 	"fmt"
@@ -13,31 +10,48 @@ import (
 func TestQueueGetters(t *testing.T) {
 	tests := []struct {
 		name string
-		want func(*Queue) bool
+		want func(*Queue) error
 	}{
 		{
 			name: "capacity",
-			want: func(q *Queue) bool {
-				return q.Capacity() == 1
+			want: func(q *Queue) error {
+				want := 1
+				if c := q.Capacity(); c != want {
+					return fmt.Errorf("Capacity() = %v, want %v", c, want)
+				}
+				return nil
 			},
 		},
 		{
 			name: "running",
-			want: func(q *Queue) bool {
-				return q.RunningWorkers() == 1
+			want: func(q *Queue) error {
+				want := 1
+				if rw := q.RunningWorkers(); rw != want {
+					return fmt.Errorf("RunningWorkers() = %v, want %v", rw, want)
+				}
+				return nil
 			},
 		},
 		{
 			name: "idle",
-			want: func(q *Queue) bool {
-				return q.IdleWorkers() == 1
+			want: func(q *Queue) error {
+				want := 1
+				if iw := q.IdleWorkers(); iw != want {
+					return fmt.Errorf("IdleWorkers() = %v, want %v", iw, want)
+				}
+				return nil
 			},
 		},
 		{
 			name: "range",
-			want: func(q *Queue) bool {
+			want: func(q *Queue) error {
+				wantMin := 1
+				wantMax := 2
 				wmin, wmax := q.WorkerRange()
-				return wmin == 1 && wmax == 2
+				if wmin != wantMin || wmax != wantMax {
+					return fmt.Errorf("WorkerRange() = %v:%v, want %v:%v", wmin, wmax, wantMin, wantMax)
+				}
+				return nil
 			},
 		},
 	}
@@ -45,19 +59,20 @@ func TestQueueGetters(t *testing.T) {
 		q := NewQueue(1, 2, 1)
 		q.Start()
 		defer q.Stop(false)
+
 		t.Run(tt.name, func(t *testing.T) {
-			if ok := tt.want(q); !ok {
-				t.Error("should be true")
+			if err := tt.want(q); err != nil {
+				t.Error(err)
 			}
 		})
 	}
 }
 
 func TestQueueEnqueue(t *testing.T) {
+	var called bool // Was job called?
 	q := NewQueue(1, 1, 1)
 	q.Start()
 
-	var called bool
 	q.Enqueue(func() error {
 		called = true
 		return nil
@@ -65,48 +80,58 @@ func TestQueueEnqueue(t *testing.T) {
 	q.Stop(true)
 
 	if !called {
-		t.Error("Enqueue(): expected job to enqueued and ran")
+		t.Error("Enqueue(): expected job to enqueued and executed")
 	}
 }
 
 func TestQueueDelayEnqueue(t *testing.T) {
+	delay := time.Duration(500) * time.Millisecond
+	sleep := time.Duration(600) * time.Millisecond
+
 	q := NewQueue(1, 1, 1)
 	q.Start()
 	defer q.Stop(true)
+	q.DelayEnqueue(
+		func() error {
+			return nil
+		},
+		delay,
+	)
 
-	q.DelayEnqueue(func() error {
-		return nil
-	}, time.Duration(500)*time.Millisecond)
-	if n := q.TallyOf(JobStateCreated); n != 0 {
-		t.Errorf("DelayQueue(): should not have created job, got %v, want 0", n)
+	if njc := q.TallyOf(JobStateCreated); njc != 0 {
+		t.Errorf("DelayQueue(): TallyOf(JobStateCreated): should not have created job yet, got %v, want 0", njc)
 	}
-
-	time.Sleep(time.Duration(550) * time.Millisecond)
-	if n := q.TallyOf(JobStateCreated); n != 1 {
-		t.Errorf("DelayQueue(): should have created job, got %v, want 1", n)
+	time.Sleep(sleep) // Give job time to enqueue and run.
+	if njc := q.TallyOf(JobStateCreated); njc != 1 {
+		t.Errorf("DelayQueue(): TallyOf(JobStateCreated): should have created job, got %v, want 1", njc)
 	}
 }
 
 func TestQueueEnqueueMaxed(t *testing.T) {
-	var panicm string
-	q := NewQueue(1, 1, 0, WithPanicHandler(func(err interface{}) {
-		panicm = fmt.Sprintf("%v", err)
-	}))
+	jobs := 150                                    // Number of jobs.
+	delay := time.Duration(500) * time.Millisecond // Job sleep.
+	sleep := time.Duration(1) * time.Second        // Check sleep.
+	var pMsg string                                // Panic message.
 
+	q := NewQueue(1, 1, 0, WithPanicHandler(func(err interface{}) {
+		pMsg = fmt.Sprintf("%v", err)
+	}))
 	q.Start()
-	for i := 0; i < 500; i++ { // Spam the queue with 0 capacity.
+
+	// Spam the queue with 0 capacity.
+	for i := 0; i < jobs; i += 1 {
 		go func() {
 			q.Enqueue(func() error {
-				time.Sleep(time.Duration(500) * time.Millisecond)
+				time.Sleep(delay)
 				return nil
 			})
 		}()
 	}
 	q.Stop(false)
 
-	<-time.After(time.Duration(1) * time.Second) // Allow panic to run
-	if panicm != "send on closed channel" {
-		t.Error("expected panic to happen")
+	time.Sleep(sleep) // Allow panic to run.
+	if pMsg != "send on closed channel" {
+		t.Error("WithPanicHandler(): expected panic to happen")
 	}
 }
 
@@ -115,7 +140,8 @@ func TestQueueEnqueueIfStopped(t *testing.T) {
 	q.Start()
 	q.Stop(true)
 
-	if ok := q.TryEnqueue(func() error { return nil }); ok {
+	job := func() error { return nil }
+	if ok := q.TryEnqueue(job); ok {
 		t.Error("TryEnqueue() = true, want false")
 	}
 }
@@ -124,15 +150,22 @@ func TestQueueTallies(t *testing.T) {
 	tests := []struct {
 		state JobState
 		job   Job
-		want  func(*Queue) bool
+		want  func(*Queue) error
 	}{
 		{
 			state: JobStateCompleted,
 			job: func() error {
 				return nil
 			},
-			want: func(q *Queue) bool {
-				return q.TallyOf(JobStateCompleted) == 1 && q.TallyOf(JobStateCreated) == 1
+			want: func(q *Queue) error {
+				want := 1
+				if jc := q.TallyOf(JobStateCompleted); jc != want {
+					return fmt.Errorf("TallyOf(JobStateCompleted) = %v, want %v", jc, want)
+				}
+				if jc := q.TallyOf(JobStateCreated); jc != want {
+					return fmt.Errorf("TallyOf(JobStateCreated) = %v, want %v", jc, want)
+				}
+				return nil
 			},
 		},
 		{
@@ -140,8 +173,15 @@ func TestQueueTallies(t *testing.T) {
 			job: func() error {
 				return errors.New("error")
 			},
-			want: func(q *Queue) bool {
-				return q.TallyOf(JobStateFailed) == 1 && q.TallyOf(JobStateCreated) == 1
+			want: func(q *Queue) error {
+				want := 1
+				if jc := q.TallyOf(JobStateFailed); jc != want {
+					return fmt.Errorf("TallyOf(JobStateFailed) = %v, want %v", jc, want)
+				}
+				if jc := q.TallyOf(JobStateCreated); jc != want {
+					return fmt.Errorf("TallyOf(JobStateCreated) = %v, want %v", jc, want)
+				}
+				return nil
 			},
 		},
 	}
@@ -151,8 +191,8 @@ func TestQueueTallies(t *testing.T) {
 			q.Start()
 			q.Enqueue(tt.job)
 			q.Stop(true)
-			if !tt.want(q) {
-				t.Errorf("TallyOf('%v') = false, want true", tt.state)
+			if err := tt.want(q); err != nil {
+				t.Errorf("%T: %v", tt.state, err)
 			}
 		})
 	}
@@ -160,48 +200,52 @@ func TestQueueTallies(t *testing.T) {
 
 func TestQueuePanic(t *testing.T) {
 	var called bool
+
 	q := NewQueue(1, 1, 1, WithPanicHandler(func(err interface{}) {
 		called = true
 	}))
 	q.Start()
-	q.Enqueue(func() error { panic("panic") })
+	q.Enqueue(func() error {
+		panic("panic")
+	})
 	q.Stop(true)
 
 	if !called {
-		t.Error("panic handler should have ran, it did not")
+		t.Error("WithPanicHandler(): should have executed")
 	}
 }
 
 func TestIdleWorkerTick(t *testing.T) {
-	var rwam bool
-	wmin, wmax := 1, 2 // min, max workers
-	njs := 50          // number of jobs
-	dj := 10           // delay of each job
+	var atMax bool                                                  // Running workers at max?
+	wmin, wmax := 1, 2                                              // Min. & max. workers.
+	jobs := 50                                                      // Number of jobs.
+	delay := time.Duration(50) * time.Millisecond                   // Delay of each job.
+	idle := time.Duration(150) * time.Millisecond                   // Idle tick.
+	sleep := (time.Duration(jobs * int(delay))) + (2 * time.Second) // Check delay with 2s buffer.
 
-	q := NewQueue(wmin, wmax, 0, WithWorkerIdleTick(time.Duration(150)*time.Millisecond))
+	q := NewQueue(wmin, wmax, 0, WithWorkerIdleTick(idle))
 	q.Start()
 	defer q.Stop(true)
 
-	for i := 0; i < njs; i++ {
+	for i := 0; i < jobs; i += 1 {
 		q.Enqueue(func() error {
-			time.Sleep(time.Duration(dj) * time.Millisecond)
+			time.Sleep(delay)
 			return nil
 		})
 
 		// At some point, we should have wmax workers.
-		if !rwam {
+		if !atMax {
 			if rw := q.RunningWorkers(); rw == wmax {
-				rwam = true
+				atMax = true
 			}
 		}
 	}
 
-	if !rwam {
+	if !atMax {
 		// Because so many jobs were spammed, this should be more than worker min.
-		t.Error("Did not spin up the desired workers")
+		t.Error("Queue: did not spin up the desired workers")
 	}
-	// Let the cleanup happen.
-	<-time.After((time.Duration(njs*dj) * time.Millisecond) + (2 * time.Second))
+	time.Sleep(sleep) // Let the cleanup happen.
 	// Should be back to worker min.
 	if nrw := q.RunningWorkers(); nrw != wmin {
 		t.Errorf("RunningWorkers() = %v, want %v", nrw, wmin)
