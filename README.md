@@ -1,5 +1,7 @@
 # Composable Queue
 
+[![Testing](https://github.com/gnikyt/cq/actions/workflows/cq.yml/badge.svg)](https://github.com/gnikyt/cq/actions/workflows/cq.yml)
+
 An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
 
 Wrapper supports for retries, timeouts, deadlines, delays, backoffs, and potential to write your own.
@@ -35,6 +37,8 @@ Example result:
 
     ok  	github.com/littlerocketinc/go-webhooks	9.002s	coverage: 91.3% of statements
     PASS
+
+\>90% coverage currently, but tests need to be improved as noted in `queue_test.go`'s TODO.
 
 ### Benchmarks
 
@@ -167,6 +171,8 @@ job := func(ss SomeService) error {
 }
 queue.Enqueue(job(ss))
 
+// ...
+
 job2 := func() error {
   log.Info("Basic function")
   return nil
@@ -176,7 +182,7 @@ queue.Enqueue(job2)
 
 #### Retries
 
-Retr, on error.
+Retry, on error.
 
 ```go
 // Retry twice before giving up.

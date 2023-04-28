@@ -181,7 +181,7 @@ func TestIdleWorkerTick(t *testing.T) {
 	defer q.Stop(false)
 
 	q.Enqueue(func() error {
-		time.Sleep(time.Duration(1) * time.Second)
+		time.Sleep(time.Duration(500) * time.Millisecond)
 		return nil
 	})
 	for i := 0; i < 100; i++ {
