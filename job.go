@@ -153,8 +153,7 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 				Value:     mut,
 			})
 		}
-		job()
-		return nil
+		return job()
 	}
 }
 
@@ -189,7 +188,6 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 			Value:     es,
 		})
 		defer locker.Release(key)
-		job()
-		return nil
+		return job()
 	}
 }
