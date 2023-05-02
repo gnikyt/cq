@@ -52,14 +52,14 @@ Runs the following benchmarks:
 4. 1,000,000 requests each pushing 10 jobs
 5. 1 request pushing 1 job
 
-Example result:
+Example result (WSL):
 
     cpu: Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz
-    BenchmarkScenarios/100Req--10kJobs-8                   2         603405897 ns/op         8269804 B/op       4349 allocs/op
-    BenchmarkScenarios/1kReq--1kJobs-8                     2         629621947 ns/op         8392064 B/op       7030 allocs/op
-    BenchmarkScenarios/10kReq--100Jobs-8                   2         673217746 ns/op         8746904 B/op      15392 allocs/op
+    BenchmarkScenarios/100Req--10kJobs-8                   2         582232006 ns/op         8204560 B/op       2028 allocs/op
+    BenchmarkScenarios/1kReq--1kJobs-8                     2         658066621 ns/op         8512672 B/op       6693 allocs/op
+    BenchmarkScenarios/10kReq--100Jobs-8                   2        2067297391 ns/op        34609016 B/op     169945 allocs/op
     BenchmarkScenarios/1mReq--10Jobs-8                     2        8600135828 ns/op        43627288 B/op    1017660 allocs/op
-    BenchmarkSingle-8                                      2           6871700 ns/op         8004360 B/op         16 allocs/op
+    BenchmarkSingle-8                                      2            813900 ns/op         8004360 B/op         16 allocs/op
     PASS
 
 ## Building

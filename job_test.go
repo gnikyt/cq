@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -200,5 +201,69 @@ func TestWithDeadline(t *testing.T) {
 	}()
 	if err := <-done; !errors.Is(err, want) {
 		t.Errorf("WithDeadline(): error was %v, want %v", err, want)
+	}
+}
+
+func TestWithoutOverlap(t *testing.T) {
+	var wg sync.WaitGroup
+	runs := 10                     // Number of times to run jobs.
+	amountBase := 10               // Base amount.
+	amounto := amountBase          // Amount for overlap func.
+	amountno := amountBase         // Amount for no overlap func.
+	decrement := 4                 // Amount to decrement by.
+	want := amountBase % decrement // Based on how many times amount can be cleanly decremented.
+
+	jobo := func(i int) Job {
+		return WithoutOverlap(func() error {
+			defer wg.Done()
+			ac := amounto // Copy amount.
+			if i%3 == 0 {
+				// Simulate "work" which could mean the copy is outdated.
+				time.Sleep(10 * time.Millisecond)
+			}
+			if ac < decrement {
+				return nil
+			}
+			amounto -= decrement
+			return nil
+		}, "jobo")
+	}
+
+	jobno := func(i int) Job {
+		return func() error {
+			defer wg.Done()
+			ac := amountno // Copy amount.
+			if i%3 == 0 {
+				// Simulate "work" which could mean the copy is outdated.
+				time.Sleep(10 * time.Millisecond)
+			}
+			if ac < decrement {
+				return nil
+			}
+			amountno -= decrement
+			return nil
+		}
+	}
+
+	wg.Add(runs * 2)
+	go func() {
+		for i := 0; i < runs; i += 1 {
+			go jobo(i)()
+		}
+	}()
+	go func() {
+		for i := 0; i < runs; i += 1 {
+			go jobno(i)()
+		}
+	}()
+	wg.Wait()
+
+	if amounto != want {
+		// Locks should ensure the value matches our want.
+		t.Errorf("amounto = %v, want %v", amounto, want)
+	}
+	if amountno > 0 {
+		// Without locks would cause the amount to go below 0 due to the copy.
+		t.Errorf("amountno = %v, want <0", amountno)
 	}
 }

@@ -33,11 +33,13 @@ func BenchmarkScenarios(b *testing.B) {
 		name: "10kReq--100Jobs",
 		reqs: 10_000,
 		jobs: 100,
-	}, {
-		name: "1mReq--10Jobs",
-		reqs: 1_000_000,
-		jobs: 10,
-	}}
+	},
+	//{
+	// 	name: "1mReq--10Jobs",
+	// 	reqs: 1_000_000,
+	// 	jobs: 10,
+	//}
+	}
 
 	for _, load := range loads {
 		b.Run(load.name, func(b *testing.B) {

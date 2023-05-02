@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,14 @@ const (
 func (js JobState) String() string {
 	return [5]string{"created", "pending", "active", "failed", "completed"}[js]
 }
+
+var (
+	// overlap tracks keys to their mutex.
+	overlap = make(map[string]*sync.Mutex)
+	// overlapMut is used by WithoutOverlap to ensure reads checking
+	// key existance on the overlap map will happen one at a time.
+	overlapMut sync.Mutex
+)
 
 // BackoffFunc takes the current number of retries and delays
 // the next execution of the job based on a provided time duration.
@@ -126,5 +135,25 @@ func WithDeadline(job Job, deadline time.Time) Job {
 		case <-done:
 			return nil
 		}
+	}
+}
+
+// WithoutOverlap is a Laravel-inspired feature to ensure multiple jobs
+// of a given key cannot run at the same time. This is useful in an example
+// of where multiple jobs are touching the same source of data, such as
+// a dollar amount, where the amount must must be decremented one at a time
+// without race conditions.
+func WithoutOverlap(job Job, key string) Job {
+	return func() error {
+		overlapMut.Lock()
+		_, exists := overlap[key]
+		if !exists {
+			overlap[key] = &sync.Mutex{}
+		}
+		overlapMut.Unlock()
+		overlap[key].Lock()
+		defer overlap[key].Unlock()
+		job()
+		return nil
 	}
 }
