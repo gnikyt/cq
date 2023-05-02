@@ -205,13 +205,14 @@ func TestWithDeadline(t *testing.T) {
 }
 
 func TestWithoutOverlap(t *testing.T) {
-	var wg sync.WaitGroup
-	runs := 10                     // Number of times to run jobs.
-	amountBase := 10               // Base amount.
-	amounto := amountBase          // Amount for overlap func.
-	amountno := amountBase         // Amount for no overlap func.
-	decrement := 4                 // Amount to decrement by.
-	want := amountBase % decrement // Based on how many times amount can be cleanly decremented.
+	var wg sync.WaitGroup                // Waitgroup for jobs.
+	ml := NewMemoryLocker[*sync.Mutex]() // Memory locker for WithoutOverlap job.
+	runs := 10                           // Number of times to run jobs.
+	amountBase := 10                     // Base amount.
+	amounto := amountBase                // Amount for overlap func.
+	amountno := amountBase               // Amount for no overlap func.
+	decrement := 4                       // Amount to decrement by.
+	want := amountBase % decrement       // Based on how many times amount can be cleanly decremented.
 
 	jobo := func(i int) Job {
 		return WithoutOverlap(func() error {
@@ -226,7 +227,7 @@ func TestWithoutOverlap(t *testing.T) {
 			}
 			amounto -= decrement
 			return nil
-		}, "jobo")
+		}, "jobo", ml)
 	}
 
 	jobno := func(i int) Job {

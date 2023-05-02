@@ -274,6 +274,25 @@ job := WithDeadline(func () error {
 queue.Enqueue(job)
 ```
 
+#### Overlaps
+
+To prevent mutliple of the same job from running at the same time. This is useful in example cases of where you want to modify a value, such as an accounting amount, in sequence to ensure the amount is modified correctly each time.
+
+```go
+// Create a new memory-based lock manager which holds mutexes.
+ml := NewMemoryLock[*sync.Mutex]()
+job := WithoutOverlap(func () error {
+  amount := amountForUser()
+  decrement := 4
+  if amount < decrement {
+    // Can not remove any more from the amount.
+    return nil
+  }
+  amount -= decrement
+}, "account-amount", ml)
+queue.Enqueue(job)
+```
+
 #### Your own
 
 As long as you match the job signature of `func() error`, you can create anything to wrap your job.

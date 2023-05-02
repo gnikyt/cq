@@ -23,24 +23,6 @@ func (js JobState) String() string {
 	return [5]string{"created", "pending", "active", "failed", "completed"}[js]
 }
 
-var (
-	// overlap tracks keys to their mutex.
-	overlap = make(map[string]*sync.Mutex)
-	// overlapMut is used by WithoutOverlap to ensure reads checking
-	// key existance on the overlap map will happen one at a time.
-	overlapMut sync.Mutex
-)
-
-// BackoffFunc takes the current number of retries and delays
-// the next execution of the job based on a provided time duration.
-type BackoffFunc func(retries int) time.Duration
-
-// defaultBackoffFunc is the default exponential backoff calculation
-// Based on https://www.instana.com/blog/exponential-back-off-algorithms/.
-func defaultBackoffFunc(retries int) time.Duration {
-	return time.Duration(math.Ceil(.5*math.Pow(float64(2), float64(retries)))) * time.Second
-}
-
 // Job is type alias for the job signature.
 type Job = func() error
 
@@ -79,6 +61,16 @@ func WithRetry(job Job, limit int) Job {
 		}
 		return err
 	}
+}
+
+// BackoffFunc takes the current number of retries and delays
+// the next execution of the job based on a provided time duration.
+type BackoffFunc func(retries int) time.Duration
+
+// defaultBackoffFunc is the default exponential backoff calculation
+// Based on https://www.instana.com/blog/exponential-back-off-algorithms/.
+func defaultBackoffFunc(retries int) time.Duration {
+	return time.Duration(math.Ceil(.5*math.Pow(float64(2), float64(retries)))) * time.Second
 }
 
 // WithBackoff is to be used with WithRetry to allow backoffs to
@@ -143,16 +135,24 @@ func WithDeadline(job Job, deadline time.Time) Job {
 // of where multiple jobs are touching the same source of data, such as
 // a dollar amount, where the amount must must be decremented one at a time
 // without race conditions.
-func WithoutOverlap(job Job, key string) Job {
+func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 	return func() error {
-		overlapMut.Lock()
-		_, exists := overlap[key]
-		if !exists {
-			overlap[key] = &sync.Mutex{}
+		var mut *sync.Mutex
+		lock, exists := locker.Get(key)
+		if exists {
+			mut = lock.Value
+		} else {
+			mut = &sync.Mutex{}
 		}
-		overlapMut.Unlock()
-		overlap[key].Lock()
-		defer overlap[key].Unlock()
+		mut.Lock()
+		defer mut.Unlock()
+		if !exists {
+			// Aquire a new lock for this job since one does not exist.
+			locker.Aquire(key, LockValue[*sync.Mutex]{
+				ExpiresAt: time.Time{},
+				Value:     mut,
+			})
+		}
 		job()
 		return nil
 	}

@@ -12,9 +12,6 @@ const (
 	defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
 )
 
-// Functional options for queue.
-type QueueOption func(*Queue)
-
 // Queue is responsible for pushing jobs to workers.
 // It will dynamically scale workers, if parameters for min
 // and max allow it to do so. As well, it keeps track of
@@ -347,6 +344,9 @@ func (q *Queue) cleanupIdleWorkers() {
 		}
 	}
 }
+
+// Functional options for queue.
+type QueueOption func(*Queue)
 
 // WithWorkerIdleTick is a functional option for Queue to
 // set when idle workers timeout for cleanup.
