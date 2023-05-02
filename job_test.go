@@ -205,14 +205,14 @@ func TestWithDeadline(t *testing.T) {
 }
 
 func TestWithoutOverlap(t *testing.T) {
-	var wg sync.WaitGroup                // Waitgroup for jobs.
-	ml := NewMemoryLocker[*sync.Mutex]() // Memory locker for WithoutOverlap job.
-	runs := 10                           // Number of times to run jobs.
-	amountBase := 10                     // Base amount.
-	amounto := amountBase                // Amount for overlap func.
-	amountno := amountBase               // Amount for no overlap func.
-	decrement := 4                       // Amount to decrement by.
-	want := amountBase % decrement       // Based on how many times amount can be cleanly decremented.
+	var wg sync.WaitGroup              // Waitgroup for jobs.
+	locker := NewOverlapMemoryLocker() // Memory locker for WithoutOverlap job.
+	runs := 10                         // Number of times to run jobs.
+	amountBase := 10                   // Base amount.
+	amounto := amountBase              // Amount for overlap func.
+	amountno := amountBase             // Amount for no overlap func.
+	decrement := 4                     // Amount to decrement by.
+	want := amountBase % decrement     // Based on how many times amount can be cleanly decremented.
 
 	jobo := func(i int) Job {
 		return WithoutOverlap(func() error {
@@ -227,7 +227,7 @@ func TestWithoutOverlap(t *testing.T) {
 			}
 			amounto -= decrement
 			return nil
-		}, "jobo", ml)
+		}, "jobo", locker)
 	}
 
 	jobno := func(i int) Job {
@@ -267,4 +267,58 @@ func TestWithoutOverlap(t *testing.T) {
 		// Without locks would cause the amount to go below 0 due to the copy.
 		t.Errorf("amountno = %v, want <0", amountno)
 	}
+}
+
+func TestWithUnqiue(t *testing.T) {
+	t.Run("normal", func(tt *testing.T) {
+		var called bool
+		locker := NewUniqueMemoryLocker()
+
+		go WithUnique(func() error {
+			time.Sleep(50 * time.Millisecond)
+			called = true
+			return nil
+		}, "test", 1*time.Minute, locker)()
+		// Allow goroutine to run.
+		time.Sleep(10 * time.Millisecond)
+		// This job should not fire since the uniqueness of initial
+		// job is set to 1m, and the "work" is taking 50ms.
+		go WithUnique(func() error {
+			t.Error("WithUnique: job should not fire")
+			return nil
+		}, "test", 1*time.Minute, locker)()
+
+		time.Sleep(60 * time.Millisecond)
+		if !called {
+			t.Error("WithUnique: job should have been called")
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		var calls int
+		locker := NewUniqueMemoryLocker()
+		want := 2
+
+		// The lock on this job should be released since it
+		// expires 10ms from now.
+		go WithUnique(func() error {
+			time.Sleep(500 * time.Millisecond)
+			calls++
+			return nil
+		}, "test", 10*time.Millisecond, locker)()
+		// Allow goroutine to run.
+		time.Sleep(10 * time.Millisecond)
+		for i := 0; i < 2; i += 1 {
+			// Each job should run fine.
+			go WithUnique(func() error {
+				calls++
+				return nil
+			}, "test", 0*time.Millisecond, locker)()
+		}
+
+		time.Sleep(20 * time.Millisecond)
+		if calls != want {
+			t.Errorf("WithUnique: calls: got %v, want %v", calls, want)
+		}
+	})
 }

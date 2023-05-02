@@ -11,6 +11,16 @@ type LockValue[T interface{}] struct {
 	ExpiresAt time.Time
 }
 
+// IsExpired checks if the lock is expired.
+func (lv LockValue[T]) IsExpired() bool {
+	exp := lv.ExpiresAt
+	if exp.IsZero() {
+		// No expire time for lock, assume forever.
+		exp = time.Now().Add(1 * time.Second)
+	}
+	return exp.Before(time.Now())
+}
+
 // Locker reprecents a lock manager.
 type Locker[T interface{}] interface {
 	Exists(key string) bool
@@ -29,6 +39,18 @@ type MemoryLocker[T any] struct {
 // The type, T, reprecents the type of Value for a LockValue.
 func NewMemoryLocker[T interface{}]() *MemoryLocker[T] {
 	return &MemoryLocker[T]{}
+}
+
+// NewUniqueMemoryLocker creates a new MemoryLocker instance for
+// use with WithUnique... simply for quicker setup.
+func NewUniqueMemoryLocker() *MemoryLocker[struct{}] {
+	return NewMemoryLocker[struct{}]()
+}
+
+// NewOverlapMemoryLocker creates a new MemoryLocker instance for
+// use with WithoutOverlap... simply for quicker setup.
+func NewOverlapMemoryLocker() *MemoryLocker[*sync.Mutex] {
+	return NewMemoryLocker[*sync.Mutex]()
 }
 
 // Get will load a lock from key.
@@ -58,13 +80,7 @@ func (ml *MemoryLocker[T]) Exists(key string) (ok bool) {
 // If a lock does not exist, it will allow for a new lock.
 func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
 	if lock, ok := ml.Get(key); ok {
-		exp := lock.ExpiresAt
-		if exp.IsZero() {
-			// No expire time for lock, assume forever.
-			exp = time.Now().Add(1 * time.Second)
-		}
-		if exp.After(time.Now()) {
-			// Not yet expired.
+		if !lock.IsExpired() {
 			return false
 		}
 	}

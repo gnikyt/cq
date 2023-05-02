@@ -4,7 +4,7 @@
 
 An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
 
-Wrapper supports for retries, timeouts, deadlines, delays, backoffs, and potential to write your own.
+Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, and potential to write your own!
 
 This is inspired from great projects such as Bull, Pond, Ants, and more.
 
@@ -26,6 +26,8 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Result catch](#result-catch)
     + [Timeout](#timeout)
     + [Deadline](#deadline)
+    + [Overlaps](#overlaps)
+    + [Unique](#unique)
     + [Your own](#your-own)
   - [Demo](#demo)
 
@@ -35,10 +37,10 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
 
 Example result:
 
-    ok      github.com/gnikyt/cq    9.313s coverage: 92.4% of statements
+    ok      github.com/gnikyt/cq    10.484s coverage: 93.6% of statements
     PASS
 
-\>90% coverage currently, on the important parts.
+\>90% coverage currently, on the important parts. Tests are time-based which will be swapped/improved in the future.
 
 ### Benchmarks
 
@@ -280,7 +282,7 @@ To prevent mutliple of the same job from running at the same time. This is usefu
 
 ```go
 // Create a new memory-based lock manager which holds mutexes.
-ml := NewMemoryLock[*sync.Mutex]()
+locker := NewOverlapMemoryLock() // NewMemoryLock[*sync.Mutex]()
 job := WithoutOverlap(func () error {
   amount := amountForUser()
   decrement := 4
@@ -289,7 +291,21 @@ job := WithoutOverlap(func () error {
     return nil
   }
   amount -= decrement
-}, "account-amount", ml)
+}, "account-amount", locker)
+queue.Enqueue(job)
+```
+
+#### Unique
+
+Only allow one job of a provided key to be run during a window of time.
+
+```go
+// Create a new memory-based lock manager.
+locker := NewUniqueMemoryLock()      // NewMemoryLock[struct{}]()
+window := time.Duration(1)*time.Hour // No other job of this key can process within an hour.
+job := WithUnqiue(func () error {
+  return doSomeWork()
+}, window, locker)
 queue.Enqueue(job)
 ```
 

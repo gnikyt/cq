@@ -157,3 +157,39 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 		return nil
 	}
 }
+
+// WithUnqiue is a Laravel-inspired feature which will ensure a job
+// of a given key can must be unique for a duration of time (ut).
+// If the duration of time has passed, the job will be allowed to fire.
+// If the duration of time (ut) is zero, default will be
+// time.Now()+1s.
+// This could be useful in an example of where you want to ensure a
+// notification email can only be sent once every 5 minutes.
+// Note: Ideally the job would be kicked out before being pushed into
+// the queue,however that would require the jobs to be more than just
+// functions, it would require them to be structs with state, which
+// adds overhead to the setup.
+func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) Job {
+	return func() error {
+		lock, exists := locker.Get(key)
+		if exists {
+			if !lock.IsExpired() {
+				// Return this job as "done" since original job has not yet completed.
+				return nil
+			} else {
+				// Lock exists, but is expired, release it. In this event, the job may have
+				// not been processed yet, took too long to complete, etc.
+				locker.Release(key)
+			}
+		}
+		// Lock either doesnt exist or was released, aquire a new lock.
+		var es struct{}
+		locker.Aquire(key, LockValue[struct{}]{
+			ExpiresAt: time.Now().Add(ut),
+			Value:     es,
+		})
+		defer locker.Release(key)
+		job()
+		return nil
+	}
+}
