@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -67,10 +68,32 @@ func WithRetry(job Job, limit int) Job {
 // the next execution of the job based on a provided time duration.
 type BackoffFunc func(retries int) time.Duration
 
-// defaultBackoffFunc is the default exponential backoff calculation
+// ExponentialBackoff is the default backoff implementation.
+// For each retry, it will exponentially increase the time.
+// 1s,1s,2s,4s,8s...
 // Based on https://www.instana.com/blog/exponential-back-off-algorithms/.
-func defaultBackoffFunc(retries int) time.Duration {
+func ExponentialBackoff(retries int) time.Duration {
 	return time.Duration(math.Ceil(.5*math.Pow(float64(2), float64(retries)))) * time.Second
+}
+
+// FibonacciBackoff is a backoff implementation which returns a number
+// reprecenting the previous two numbers combined, based off the number
+// of retries.
+// 0s,1s,1s,2s,3s,5s,8s...
+// Based on EventSaucePHP/BackOff.
+func FibonacciBackoff(retries int) time.Duration {
+	phi := 1.6180339887499 // (1 + sqrt(5)) / 2
+	return time.Duration((math.Pow(phi, float64(retries))-math.Pow((1-phi), float64(retries)))/math.Sqrt(5)) * time.Second
+}
+
+// JitterBackoff is a backoff implementation which randomly
+// produces a number based upon the number of retries and a random
+// offset.
+// 717.00ms,903ms,10s,4s,53s...
+func JitterBackoff(retries int) time.Duration {
+	offset := .1 + rand.Float64()*(.8-.1) // Random float between 100ms and 800ms
+	max := float64(math.Floor(math.Pow(float64(2), float64(retries))*.5)) + float64(offset)
+	return time.Duration((offset + rand.Float64()*(max-offset)) * float64(time.Second))
 }
 
 // WithBackoff is to be used with WithRetry to allow backoffs to
@@ -80,7 +103,7 @@ func defaultBackoffFunc(retries int) time.Duration {
 func WithBackoff(job Job, bf BackoffFunc) Job {
 	var calls int
 	if bf == nil {
-		bf = defaultBackoffFunc
+		bf = ExponentialBackoff
 	}
 	return func() error {
 		if calls > 0 {

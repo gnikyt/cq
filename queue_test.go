@@ -85,8 +85,8 @@ func TestQueueEnqueue(t *testing.T) {
 }
 
 func TestQueueDelayEnqueue(t *testing.T) {
-	delay := time.Duration(500) * time.Millisecond
-	sleep := time.Duration(600) * time.Millisecond
+	delay := time.Duration(500 * time.Millisecond)
+	sleep := time.Duration(600 * time.Millisecond)
 
 	q := NewQueue(1, 1, 1)
 	q.Start()
@@ -109,8 +109,8 @@ func TestQueueDelayEnqueue(t *testing.T) {
 
 func TestQueueEnqueueMaxed(t *testing.T) {
 	jobs := 150                                    // Number of jobs.
-	delay := time.Duration(500) * time.Millisecond // Job sleep.
-	sleep := time.Duration(1) * time.Second        // Check sleep.
+	delay := time.Duration(500 * time.Millisecond) // Job sleep.
+	sleep := time.Duration(1 * time.Second)        // Check sleep.
 	var pMsg string                                // Panic message.
 
 	q := NewQueue(1, 1, 0, WithPanicHandler(func(err interface{}) {
@@ -219,8 +219,8 @@ func TestIdleWorkerTick(t *testing.T) {
 	var atMax bool                                                  // Running workers at max?
 	wmin, wmax := 1, 2                                              // Min. & max. workers.
 	jobs := 50                                                      // Number of jobs.
-	delay := time.Duration(50) * time.Millisecond                   // Delay of each job.
-	idle := time.Duration(150) * time.Millisecond                   // Idle tick.
+	delay := time.Duration(50 * time.Millisecond)                   // Delay of each job.
+	idle := time.Duration(150 * time.Millisecond)                   // Idle tick.
 	sleep := (time.Duration(jobs * int(delay))) + (2 * time.Second) // Check delay with 2s buffer.
 
 	q := NewQueue(wmin, wmax, 0, WithWorkerIdleTick(idle))

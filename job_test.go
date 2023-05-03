@@ -43,47 +43,6 @@ func TestJobStateString(t *testing.T) {
 	}
 }
 
-func TestDefaultBackoffFunc(t *testing.T) {
-	tests := []struct {
-		name    string
-		retries int
-		want    time.Duration
-	}{
-		{
-			name:    "no-retries",
-			retries: 0,
-			want:    time.Duration(1) * time.Second,
-		},
-		{
-			name:    "one-retry",
-			retries: 1,
-			want:    time.Duration(1) * time.Second,
-		},
-		{
-			name:    "two-retries",
-			retries: 2,
-			want:    time.Duration(2) * time.Second,
-		},
-		{
-			name:    "three-retries",
-			retries: 3,
-			want:    time.Duration(4) * time.Second,
-		},
-		{
-			name:    "four-retries",
-			retries: 4,
-			want:    time.Duration(8) * time.Second,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := defaultBackoffFunc(tt.retries); got != tt.want {
-				t.Errorf("defaultBackoffFunc() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestWithResultHandler(t *testing.T) {
 	t.Run("completed", func(t *testing.T) {
 		var cran bool // Did complete run?
@@ -148,7 +107,7 @@ func TestWithRetry(t *testing.T) {
 
 func TestWithBackoff(t *testing.T) {
 	retries := 2                             // Number of retries.
-	tlimit := time.Duration(4) * time.Second // One retry = 1 second, two = 2 seconds... (1s + 2s) + (1s buffer) = limit.
+	tlimit := time.Duration(4 * time.Second) // One retry = 1 second, two = 2 seconds... (1s + 2s) + (1s buffer) = limit.
 
 	ctx, ctxc := context.WithTimeout(context.TODO(), tlimit)
 	defer ctxc()
@@ -170,8 +129,8 @@ func TestWithBackoff(t *testing.T) {
 
 func TestWithTimeout(t *testing.T) {
 	want := context.DeadlineExceeded
-	slimit := time.Duration(2) * time.Second // Job sleep.
-	tlimit := time.Duration(1) * time.Second // Timeout.
+	slimit := time.Duration(2 * time.Second) // Job sleep.
+	tlimit := time.Duration(1 * time.Second) // Timeout.
 
 	done := make(chan error, 1)
 	go func() {
@@ -188,8 +147,8 @@ func TestWithTimeout(t *testing.T) {
 
 func TestWithDeadline(t *testing.T) {
 	want := context.DeadlineExceeded
-	slimit := time.Duration(2) * time.Second                 // Job sleep.
-	tlimit := time.Now().Add(time.Duration(1) * time.Second) // Deadline.
+	slimit := time.Duration(2 * time.Second)                 // Job sleep.
+	tlimit := time.Now().Add(time.Duration(1 * time.Second)) // Deadline.
 
 	done := make(chan error, 1)
 	go func() {

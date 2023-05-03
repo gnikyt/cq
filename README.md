@@ -37,7 +37,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
 
 Example result:
 
-    ok      github.com/gnikyt/cq    10.484s coverage: 93.6% of statements
+    ok      github.com/gnikyt/cq    10.484s coverage: 91.4% of statements
     PASS
 
 \>90% coverage currently, on the important parts. Tests are time-based which will be swapped/improved in the future.
@@ -74,7 +74,7 @@ Binary will be located in `dist/cq`. You will need to grant execution permission
 
 ### Queue
 
-Queue needs a minimum and maximum amount of workers to run. There are other options you can tap into as well.
+Queue needs a minimum to maximum amount of workers to run and a capacity. There are other options you can configure as well.
 
 ```go
 // Create a queue with 1 always-running worker.
@@ -91,10 +91,15 @@ defer queue.Stop(true)
 You can pull current stats for the queue.
 
 * `RunningWorkers() int` returns the number of running workers.
+  - Example: `fmt.Printf("%d running workers", queue.RunningWorkers())`
 * `IdleWorkers() int` returns the number of idle workers.
+  - Example: `fmt.Printf("%d idle workers", queue.IdleWorkers())`
 * `Capacity() int` returns the configured job capacity.
+  - Example: `fmt.Printf("%d capacity for jobs", queue.Capacity())`
 * `WorkerRange() (int, int)` returns the configured minimum and maximum workers.
-* `TallyOf(cq.JobState) int` returns the number of jobs for a given state, example `TallyOf(cq.JobStateCreated)` will give the number of jobs pushed to the queue so far.
+  - Example: `fmt.Printf("%d max workers", queue.WorkerRange()[1])`
+* `TallyOf(JobState) int` returns the number of jobs for a given state.
+  - Example: `fmt.Printf("%d failed jobs", queue.TallyOf(JobStateFailed))`
 
 #### Enqueue
 
@@ -102,10 +107,10 @@ You can push jobs to the queue in a few ways.
 
 * `Enqueue(Job)` will push the job to the queue, non-blocking.
   - Example: `Enqueue(job)`
-* `TryEnqueue(Job) bool` will try and push the job to the queue, and return if successful or not.
+* `TryEnqueue(Job) bool` will try and push the job to the queue, and return if successful or not, blocking.
   - Example: `ok := TryEnqueue(job)`
-* `DelayEnqueue(Job, delay time.Duration)` will push the job to the queue in a seperate goroutine after the delay.
-  - Example: `DelayEnqueue(job, time.Duration(2) * time.Minute)`
+* `DelayEnqueue(Job, delay time.Duration)` will push the job to the queue in a seperate goroutine after the delay, non-blocking.
+  - Example: `DelayEnqueue(job, time.Duration(2 * time.Minute))`
 
 #### Idle worker tick
 
@@ -117,13 +122,15 @@ queue := NewQueue(
   2,
   5,
   100,
-  WithWorkerIdleTick(time.Duration(500) * time.Millisecond),
+  WithWorkerIdleTick(time.Duration(500 * time.Millisecond)),
 )
 ```
 
 ### Panic handler
 
-You can configure a handler for panics so the queue does not die if a panic happens. A panic can happen from running a job itself, or if the queue happens to be maxed out and the job can not push to the queue (using `Enqueue`, not `TryEnqueue`).
+Configure a handler for panics so the queue does not crash if/when a panic happens.
+
+A panic can happen from the job itself or if the queue has reached max capacity (using `Enqueue`, not `TryEnqueue`).
 
 ```go
 queue := NewQueue(
@@ -139,11 +146,15 @@ queue := NewQueue(
 
 ### Context
 
-You can pass a custom context to the queue. By default, the queue will configure a cancelable background context. This option may be useful if you want to terminate the queue after running for a certain period of time, for example.
+Pass a custom context to the queue.
+
+By default, the queue will configure a cancelable background context. An example usecase is if you would need to terminate the queue after running for a certain period of time or terminate the queue upon a sigterm/sigint.
 
 ```go
 queue := NewQueue(2, 5, 100, WithContext(yourCtx))
-// or...
+
+// Or...
+
 queue := NewQueue(2, 5, 100, WithCancelableContext(yourCtx, yourCtxCancel))
 ```
 
@@ -151,18 +162,18 @@ queue := NewQueue(2, 5, 100, WithCancelableContext(yourCtx, yourCtxCancel))
 
 You can stop a queue in a few ways.
 
-* `Stop(jobWait bool)` will flag the queue to stop, optionally wait for jobs to complete in the queue if you pass `true`, wait for workers to complete, and runs some cleanup.
-* `Terminate()` will flag the queue to stop, hard stop all workers and jobs regardless of what they are doing.
+* `Stop(jobWait bool)` will flag the queue to stop, it will wait for the workers to be completed and optionally wait for jobs to complete as well if you pass `true`. It will then run some post operations for cleanup.
+* `Terminate()` will flag the queue to stop, and hard stop all workers, including jobs, regardless of their status.
 
 See `example/web_direct.go` for an example on how you can configure sigterm/sigint context to stop the queue.
 
 ### Jobs
 
-You can set your jobs in any way you please, so long as it matches the signature of `func() error`. You can use basic functions, composed functions, struct methods, etc.
+Setup your jobs in any way you please, as long as it matches the signature of `func() error`.
 
-Each of the built-in methods can be composed ontop of one-another to build your desired requirements. And since any function that matches the signature will work, you can build your own wrapping functions as well.
+You can use basic functions, composed functions, struct methods, and so on.
 
-Examples below should help in understanding what you can do. Ignore the job functions themselves and method names inside; used simply to demonstrate.
+Each of the built-in methods can be composed/wrapped ontop of one-another to build your desired requirements. Additionally, since any function that matches the signature will work, you can build your own wrapping functions as well.
 
 #### Function
 
@@ -187,44 +198,54 @@ queue.Enqueue(job2)
 
 #### Retries
 
-Retry, on error.
+Retry, on error, to a maximum number of retries.
+
+An example usecase is retrying an HTTP fetch job X times because the server is possibily down.
 
 ```go
-// Retry twice before giving up.
+retries := 2
 job := WithRetry(func () error {
   req := fetchSomeEndpoint()
   if err != nil {
     return fmt.Errorf("special job: %w", err)
   }
   return finalize(req)
-}, 2)
+}, retries)
 ```
 
 #### Backoff
 
-Retry, on error, with backoff.
+To be used with `WithRetry`, adds a backoff delay before recalling the job.
+
+An example usecase is retrying an HTTP fetch job X times, at delayed intervals, because the server is possibily down.
 
 ```go
-// Retry four times before giving up
-//  Backoff exponentially.
-// defaultBackoffHandler is used which will exponentially delay the retries.
-// 1 retry = 1 second delay.
-// 2 retries = 2 second delay.
-// 3 retries = 4 second delay.
-// 4 retries = 8 second delay... etc
+retries := 4
+backoff := JitterBackoff // ExponentialBackoff is default if `nil` is provided to `WithBackoff`.
 job := WithRetry(WithBackoff(func () error {
   req := fetchSomeEndpoint()
   if err != nil {
     return fmt.Errorf("special job: %w", err)
   }
   return finalize(req)
-}, nil), 4)
+}, backoff), retries)
 queue.Enqueue(job)
 ```
+
+There are three built-in backoff implementations, with the ability to write your own given you match the `BackoffFunc` signature.
+
+* `ExponentialBackoff` will exponentially backoff based upon the number of retries.
+  - 1 retry = 1s, 2 retries = 1s, 3 retries = 2s, 4 retries = 4s, 5 retries = 8s...
+* `FibonacciBackoff` will create a Fibonacci sequence based upon the number of retries.
+  - 1 retry = 0s, 2 retries = 1s, 3 retries = 1s, 4 retries = 2s, 5 retries = 3s...
+* `JitterBackoff` will randomly generate a backoff based upon the number of retries.
+  - 1 retry = 717ms, 2 retries = 903ms, 3 retries = 10s, 4 retries = 4s, 5 retries = 53s...
 
 #### Result catch
 
 Capture job result, completed or failed.
+
+An example usecase is if you would like to send a message in Slack for a completed job and also push failed jobs to a database table for reprocessing later.
 
 ```go
 // We will create a job with an ID.
@@ -256,11 +277,13 @@ queue.Enqueue(job(id))
 
 Timeout a job after running it for a duration.
 
+An example usecase is if you could be generating a report from several sources of data, and maybe if the report takes longer than 30 seconds to generate, then something must be wrong, so you kill the processing by timing it out after 30 seconds.
+
 ```go
 // Job must complete 5 minutes after running.
 job := WithTimeout(func () error {
   return someExpensiveLongWork()
-}, time.Duration(5) * time.Minute)
+}, time.Duration(5 * time.Minute))
 queue.Enqueue(job)
 ```
 
@@ -268,21 +291,27 @@ queue.Enqueue(job)
 
 Complete a job by a certain datetime.
 
+An example usecase is if you are passing orders over to a shipping service for same-day shipping, in which the shipping service must recieve the order labels by a specific datetime to be considered same-day.
+
 ```go
-// Job must complete by X date.
+// Job must complete by today at 16:50.
+tn := time.Now()
 job := WithDeadline(func () error {
   return someExpensiveLongWork()
-}, time.Now().Add(time.Duration(1) * time.Minute))
+}, time.Date(tn.Year(), tn.Month(), tn.Day(), 16, 50, 0, 0, nil)
 queue.Enqueue(job)
 ```
 
 #### Overlaps
 
-To prevent mutliple of the same job from running at the same time. This is useful in example cases of where you want to modify a value, such as an accounting amount, in sequence to ensure the amount is modified correctly each time.
+Prevent mutliple of the same job from running at the same time.
+
+An example usecase is where you want to modify an accounting amount, in sequence, to ensure the amount is modified correctly each time.
 
 ```go
 // Create a new memory-based lock manager which holds mutexes.
 locker := NewOverlapMemoryLock() // NewMemoryLock[*sync.Mutex]()
+key := strings.Join([]string{"account-amount-", user.ID()}) 
 job := WithoutOverlap(func () error {
   amount := amountForUser()
   decrement := 4
@@ -291,18 +320,20 @@ job := WithoutOverlap(func () error {
     return nil
   }
   amount -= decrement
-}, "account-amount", locker)
+}, key, locker)
 queue.Enqueue(job)
 ```
 
 #### Unique
 
-Only allow one job of a provided key to be run during a window of time.
+Allow only one job of a key to be run during a window of time or until completed.
+
+An example usecase is if you have a search index job which should only run once per hour, because the indexing process is a time-intensive and large job. If subsequent jobs are pushed into the queue before the original job completed within that hour, the job is "discarded".
 
 ```go
 // Create a new memory-based lock manager.
 locker := NewUniqueMemoryLock()      // NewMemoryLock[struct{}]()
-window := time.Duration(1)*time.Hour // No other job of this key can process within an hour.
+window := time.Duration(1*time.Hour) // No other job of this key can process within an hour.
 job := WithUnqiue(func () error {
   return doSomeWork()
 }, window, locker)
