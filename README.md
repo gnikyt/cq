@@ -37,7 +37,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
 
 Example result:
 
-    ok      github.com/gnikyt/cq    10.484s coverage: 91.4% of statements
+    ok      github.com/gnikyt/cq    10.484s coverage: 91.8% of statements
     PASS
 
 \>90% coverage currently, on the important parts. Tests are time-based which will be swapped/improved in the future.
@@ -174,6 +174,8 @@ Setup your jobs in any way you please, as long as it matches the signature of `f
 You can use basic functions, composed functions, struct methods, and so on.
 
 Each of the built-in methods can be composed/wrapped ontop of one-another to build your desired requirements. Additionally, since any function that matches the signature will work, you can build your own wrapping functions as well.
+
+See below for examples of all built-in methods, but please ignore the actual job code and their silly method names, its just for display purposes.
 
 #### Function
 
@@ -338,6 +340,58 @@ job := WithUnqiue(func () error {
   return doSomeWork()
 }, window, locker)
 queue.Enqueue(job)
+```
+
+#### Chains
+
+Chain jobs together, where each job must complete, error-free, before running the next.
+
+An example usecase is if you need to create a welcome package for a customer which involves several steps and notifications, where each step must complete before moving to the next.
+
+Should you want data to pass from one job to another, you can utilize a buffered channel on your own, or use `WithPipeline`.
+
+```go
+job := func () error {
+  something()
+  return sendWelcomeEmail()
+}
+job2 := func () error {
+  return findOldSubscriptionsAndClear()
+}
+job3 := func () error {
+  coupon := createCoupon()
+  return sendUpsellEmail(coupon.code)
+}
+queue.Enqueue(WithChain(job, job2, job3))
+```
+
+#### Pipeline
+
+Chain jobs together, where each job must complete, error-free, before running the next, but additionally, include a buffered channel to pass data from one job to the next.
+
+This is identical to `WithChain`, however it will internally create a buffered channel with a capacity of 1. Each job must be wrapped to accept the channel as a parameter. If this built-in functionality does not meet your needs, you can always create a channel outside on your own and utilize `WithChain` instead.
+
+An example usecase is where you could be processing a file upload and need information about the file for each job.
+
+```go
+job := func (file File) func(chan FileInfo) {
+  return func (results chan FileInfo) Job {
+    return func() error {
+      file, _ := uploadFile(file.file, file.user)
+      results <- file
+      return nil
+    }
+  }
+}
+job2 := func(results chan FileInfo) Job {
+  info := <- results
+  return saveToDatabase(info.UserId, info.SourceUrl, info.MimeType)
+}
+
+// WithPipeline is a generic function, but Go knows based on the
+// job's parameters that the type of buffered channel to create
+// is `chan FileInfo`. 
+queue.Enqueue(WithChain(job(fileFromUser), job2)) // WithChain[FileInfo](job, job2)
 ```
 
 #### Your own

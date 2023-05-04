@@ -123,7 +123,7 @@ func WithTimeout(job Job, timeout time.Duration) Job {
 		ctx, ctxc := context.WithTimeout(context.Background(), timeout)
 		defer ctxc()
 
-		done := make(chan error, 1)
+		done := make(chan error)
 		go func() { done <- job() }()
 		select {
 		case <-ctx.Done():
@@ -142,7 +142,7 @@ func WithDeadline(job Job, deadline time.Time) Job {
 		ctx, ctxc := context.WithDeadline(context.Background(), deadline)
 		defer ctxc()
 
-		done := make(chan error, 1)
+		done := make(chan error)
 		go func() { done <- job() }()
 		select {
 		case <-ctx.Done():
@@ -212,5 +212,38 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 		})
 		defer locker.Release(key)
 		return job()
+	}
+}
+
+// WithChain allows you to chain multiple jobs together where each
+// job must complete before moving to the next. Should one of the
+// jobs in the chain cause an error, the rest of the jobs will be
+// discarded. If you would like to pass results from one job to the
+// next, you can utilize a buffered channel or WithPipeline.
+func WithChain(jobs ...Job) Job {
+	return func() error {
+		for _, job := range jobs {
+			if err := job(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// WithPipeline is identical in function to WithChain except
+// it will create a buffered channel of a supplied type to
+// pass into each job so that you do not have to create your own
+// channel setup. Each job must be wrapped to accept the channel
+// as a parameter.
+func WithPipeline[T interface{}](jobs ...func(chan T) Job) Job {
+	results := make(chan T, 1)
+	return func() error {
+		for _, job := range jobs {
+			if err := job(results)(); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }

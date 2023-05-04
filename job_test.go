@@ -57,8 +57,9 @@ func TestWithResultHandler(t *testing.T) {
 				fran = true
 			},
 		)
-		job()
-
+		if err := job(); err != nil {
+			t.Errorf("WithResultHandler(): job should not have errored: %v", err)
+		}
 		if !cran {
 			t.Error("WithResultHandler(): completed handler: should not have executed")
 		}
@@ -80,7 +81,9 @@ func TestWithResultHandler(t *testing.T) {
 				fran = true
 			},
 		)
-		job()
+		if err := job(); err == nil {
+			t.Error("WithResultHandler(): job should have errored")
+		}
 
 		if !fran {
 			t.Error("WithResultHandler(): failed handler: should not have executed")
@@ -99,7 +102,9 @@ func TestWithRetry(t *testing.T) {
 		calls++
 		return errors.New("error")
 	}, retries)
-	job()
+	if err := job(); err == nil {
+		t.Error("WithRetry(): job should have errored")
+	}
 	if calls != retries {
 		t.Errorf("WithRetry(): job ran %v times, want %v", calls, retries)
 	}
@@ -112,7 +117,7 @@ func TestWithBackoff(t *testing.T) {
 	ctx, ctxc := context.WithTimeout(context.TODO(), tlimit)
 	defer ctxc()
 
-	done := make(chan error, 1)
+	done := make(chan error)
 	go func() {
 		job := WithRetry(WithBackoff(func() error {
 			return errors.New("error")
@@ -132,7 +137,7 @@ func TestWithTimeout(t *testing.T) {
 	slimit := time.Duration(2 * time.Second) // Job sleep.
 	tlimit := time.Duration(1 * time.Second) // Timeout.
 
-	done := make(chan error, 1)
+	done := make(chan error)
 	go func() {
 		job := WithTimeout(func() error {
 			time.Sleep(slimit)
@@ -150,7 +155,7 @@ func TestWithDeadline(t *testing.T) {
 	slimit := time.Duration(2 * time.Second)                 // Job sleep.
 	tlimit := time.Now().Add(time.Duration(1 * time.Second)) // Deadline.
 
-	done := make(chan error, 1)
+	done := make(chan error)
 	go func() {
 		job := WithDeadline(func() error {
 			time.Sleep(slimit)
@@ -278,6 +283,91 @@ func TestWithUnqiue(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		if calls != want {
 			t.Errorf("WithUnique: calls: got %v, want %v", calls, want)
+		}
+	})
+}
+
+func TestWithChain(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		job := func() error {
+			return nil
+		}
+		job2 := func() error {
+			return nil
+		}
+		chain := WithChain(job, job2)
+		if err := chain(); err != nil {
+			t.Errorf("WithChain() = %v, want nil", err)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		job := func() error {
+			return nil
+		}
+		job2 := func() error {
+			return errors.New("error")
+		}
+		job3 := func() error {
+			t.Error("WithChain: job3: should not have fired")
+			return nil
+		}
+		chain := WithChain(job, job2, job3)
+		if err := chain(); err == nil {
+			t.Errorf("WithChain() = %v, want error", err)
+		}
+	})
+}
+
+func TestWithPipeline(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		job := func(results chan int) Job {
+			return func() error {
+				results <- 1
+				return nil
+			}
+		}
+		job2 := func(results chan int) Job {
+			return func() error {
+				want := 1
+				if val := <-results; val != want {
+					t.Errorf("WithPipeline: job2: got %v, want %v", val, want)
+				}
+				return nil
+			}
+		}
+		pipeline := WithPipeline(job, job2)
+		if err := pipeline(); err != nil {
+			t.Errorf("WithChain() = %v, want nil", err)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		job := func(results chan int) Job {
+			return func() error {
+				results <- 1
+				return nil
+			}
+		}
+		job2 := func(results chan int) Job {
+			return func() error {
+				want := 1
+				if val := <-results; val != want {
+					t.Errorf("WithPipeline: job2: got result %v, want %v", val, want)
+				}
+				results <- 2
+				return errors.New("error")
+			}
+		}
+		job3 := func(results chan int) Job {
+			return func() error {
+				t.Error("WithPipeline: job3: should not have fired")
+				return nil
+			}
+		}
+		pipeline := WithPipeline(job, job2, job3)
+		if err := pipeline(); err == nil {
+			t.Errorf("WithChain() = %v, want error", err)
 		}
 	})
 }
