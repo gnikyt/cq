@@ -28,6 +28,8 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Deadline](#deadline)
     + [Overlaps](#overlaps)
     + [Unique](#unique)
+    + [Chains](#chains)
+    + [Pipeline](#pipeline)
     + [Your own](#your-own)
   - [Demo](#demo)
 
