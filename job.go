@@ -160,22 +160,18 @@ func WithDeadline(job Job, deadline time.Time) Job {
 // without race conditions.
 func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 	return func() error {
-		var mut *sync.Mutex
-		lock, exists := locker.Get(key)
-		if exists {
-			mut = lock.Value
-		} else {
-			mut = &sync.Mutex{}
-		}
+		// Ensure a lock exists for this key.
+		locker.Aquire(key, LockValue[*sync.Mutex]{
+			ExpiresAt: time.Time{},
+			Value:     &sync.Mutex{},
+		})
+
+		// Get the lock, whoever won the race will have the lock.
+		lock, _ := locker.Get(key)
+		mut := lock.Value
 		mut.Lock()
 		defer mut.Unlock()
-		if !exists {
-			// Aquire a new lock for this job since one does not exist.
-			locker.Aquire(key, LockValue[*sync.Mutex]{
-				ExpiresAt: time.Time{},
-				Value:     mut,
-			})
-		}
+
 		return job()
 	}
 }
@@ -188,7 +184,7 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 // This could be useful in an example of where you want to ensure a
 // notification email can only be sent once every 5 minutes.
 // Note: Ideally the job would be kicked out before being pushed into
-// the queue,however that would require the jobs to be more than just
+// the queue, however that would require the jobs to be more than just
 // functions, it would require them to be structs with state, which
 // adds overhead to the setup.
 func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) Job {
@@ -236,7 +232,7 @@ func WithChain(jobs ...Job) Job {
 // pass into each job so that you do not have to create your own
 // channel setup. Each job must be wrapped to accept the channel
 // as a parameter.
-func WithPipeline[T interface{}](jobs ...func(chan T) Job) Job {
+func WithPipeline[T any](jobs ...func(chan T) Job) Job {
 	results := make(chan T, 1)
 	return func() error {
 		for _, job := range jobs {

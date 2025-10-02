@@ -25,7 +25,7 @@ type Queue struct {
 	jobs                chan Job           // Job channel.
 	ctx                 context.Context    // Context.
 	ctxCancel           context.CancelFunc // Context cancel function.
-	panicHandler        func(interface{})  // Panic handler.
+	panicHandler        func(any)          // Panic handler.
 	mut                 sync.Mutex         // Mutex for handling checks on active worker space.
 	stopped             atomic.Bool        // Done flag.
 	workersRunningTally atomic.Int32       // Number of running workers. int32 should suffice, allows for decrements.
@@ -377,7 +377,7 @@ func WithCancelableContext(ctx context.Context, ctxCancel context.CancelFunc) Qu
 // WithPanicHandler allows for manually handling panics for jobs
 // or for the queue itself.
 // The handler is passed in the value from recover.
-func WithPanicHandler(handler func(interface{})) QueueOption {
+func WithPanicHandler(handler func(any)) QueueOption {
 	return func(q *Queue) {
 		q.panicHandler = handler
 	}

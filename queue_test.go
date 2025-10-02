@@ -113,7 +113,7 @@ func TestQueueEnqueueMaxed(t *testing.T) {
 	sleep := time.Duration(1 * time.Second)        // Check sleep.
 	var pMsg string                                // Panic message.
 
-	q := NewQueue(1, 1, 0, WithPanicHandler(func(err interface{}) {
+	q := NewQueue(1, 1, 0, WithPanicHandler(func(err any) {
 		pMsg = fmt.Sprintf("%v", err)
 	}))
 	q.Start()
@@ -201,7 +201,7 @@ func TestQueueTallies(t *testing.T) {
 func TestQueuePanic(t *testing.T) {
 	var called bool
 
-	q := NewQueue(1, 1, 1, WithPanicHandler(func(err interface{}) {
+	q := NewQueue(1, 1, 1, WithPanicHandler(func(err any) {
 		called = true
 	}))
 	q.Start()

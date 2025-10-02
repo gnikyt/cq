@@ -139,7 +139,7 @@ queue := NewQueue(
   2,
   5,
   100,
-  WithPanicHandler(func (err interface{}) {
+  WithPanicHandler(func (err any) {
     // err can be a string, error, etc.. you can use type assert to check and handle as you need..
     log.Errorf("Job or queue failed: %v", %v)
   }),

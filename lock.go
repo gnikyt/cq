@@ -6,7 +6,7 @@ import (
 )
 
 // LockValue reprecents the value an expiration of a lock for a key.
-type LockValue[T interface{}] struct {
+type LockValue[T any] struct {
 	Value     T
 	ExpiresAt time.Time
 }
@@ -22,7 +22,7 @@ func (lv LockValue[T]) IsExpired() bool {
 }
 
 // Locker reprecents a lock manager.
-type Locker[T interface{}] interface {
+type Locker[T any] interface {
 	Exists(key string) bool
 	Get(key string) (LockValue[T], bool)
 	Aquire(key string, lock LockValue[T]) bool
@@ -37,7 +37,7 @@ type MemoryLocker[T any] struct {
 
 // NewMemoryLocker creates a new MemoryLocker instance for a type.
 // The type, T, reprecents the type of Value for a LockValue.
-func NewMemoryLocker[T interface{}]() *MemoryLocker[T] {
+func NewMemoryLocker[T any]() *MemoryLocker[T] {
 	return &MemoryLocker[T]{}
 }
 
