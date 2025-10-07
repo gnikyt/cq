@@ -269,8 +269,8 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 	(&q.activeJobsTally).Add(1)
 	(&q.pendingJobsTally).Add(-1)
 
-	// Run the job, then update the tallies.
-	if err := job(); err != nil {
+	// Run the job with the queue's context, then update the tallies.
+	if err := job(q.ctx); err != nil {
 		(&q.activeJobsTally).Add(-1)
 		(&q.failedJobsTally).Add(1)
 	} else {

@@ -171,7 +171,7 @@ See `example/web_direct.go` for an example on how you can configure sigterm/sigi
 
 ### Jobs
 
-Setup your jobs in any way you please, as long as it matches the signature of `func() error`.
+Setup your jobs in any way you please, as long as it matches the signature of `func(ctx context.Context) error`.
 
 You can use basic functions, composed functions, struct methods, and so on.
 
@@ -185,7 +185,7 @@ A basic function.
 
 ```go
 job := func(ss SomeService) error {
-  return func() error {
+  return func(ctx context.Context) error {
     ss.doWork()
   }
 }
@@ -193,7 +193,7 @@ queue.Enqueue(job(ss))
 
 // ...
 
-job2 := func() error {
+job2 := func(ctx context.Context) error {
   log.Info("Basic function")
   return nil
 }
@@ -208,7 +208,7 @@ An example usecase is retrying an HTTP fetch job X times because the server is p
 
 ```go
 retries := 2
-job := WithRetry(func () error {
+job := WithRetry(func (ctx context.Context) error {
   req := fetchSomeEndpoint()
   if err != nil {
     return fmt.Errorf("special job: %w", err)
@@ -226,7 +226,7 @@ An example usecase is retrying an HTTP fetch job X times, at delayed intervals, 
 ```go
 retries := 4
 backoff := JitterBackoff // ExponentialBackoff is default if `nil` is provided to `WithBackoff`.
-job := WithRetry(WithBackoff(func () error {
+job := WithRetry(WithBackoff(func (ctx context.Context) error {
   req := fetchSomeEndpoint()
   if err != nil {
     return fmt.Errorf("special job: %w", err)
@@ -257,7 +257,7 @@ An example usecase is if you would like to send a message in Slack for a complet
 // If failed, we will move the job to a table to process later.
 job := func (id int) error {
   return WithResult(
-    WithRetry(func () error {
+    WithRetry(func (ctx context.Context) error {
       req := fetchSomeEndpoint()
       if err != nil {
         return fmt.Errorf("special job: %w", err)
@@ -285,7 +285,7 @@ An example usecase is if you could be generating a report from several sources o
 
 ```go
 // Job must complete 5 minutes after running.
-job := WithTimeout(func () error {
+job := WithTimeout(func (ctx context.Context) error {
   return someExpensiveLongWork()
 }, time.Duration(5 * time.Minute))
 queue.Enqueue(job)
@@ -300,7 +300,7 @@ An example usecase is if you are passing orders over to a shipping service for s
 ```go
 // Job must complete by today at 16:50.
 tn := time.Now()
-job := WithDeadline(func () error {
+job := WithDeadline(func (ctx context.Context) error {
   return someExpensiveLongWork()
 }, time.Date(tn.Year(), tn.Month(), tn.Day(), 16, 50, 0, 0, nil)
 queue.Enqueue(job)
@@ -316,7 +316,7 @@ An example usecase is where you want to modify an accounting amount, in sequence
 // Create a new memory-based lock manager which holds mutexes.
 locker := NewOverlapMemoryLock() // NewMemoryLock[*sync.Mutex]()
 key := strings.Join([]string{"account-amount-", user.ID()}) 
-job := WithoutOverlap(func () error {
+job := WithoutOverlap(func (ctx context.Context) error {
   amount := amountForUser()
   decrement := 4
   if amount < decrement {
@@ -338,7 +338,7 @@ An example usecase is if you have a search index job which should only run once 
 // Create a new memory-based lock manager.
 locker := NewUniqueMemoryLock()      // NewMemoryLock[struct{}]()
 window := time.Duration(1*time.Hour) // No other job of this key can process within an hour.
-job := WithUnqiue(func () error {
+job := WithUnqiue(func (ctx context.Context) error {
   return doSomeWork()
 }, window, locker)
 queue.Enqueue(job)
@@ -353,14 +353,14 @@ An example usecase is if you need to create a welcome package for a customer whi
 Should you want data to pass from one job to another, you can utilize a buffered channel on your own, or use `WithPipeline`.
 
 ```go
-job := func () error {
+job := func (ctx context.Context) error {
   something()
   return sendWelcomeEmail()
 }
-job2 := func () error {
+job2 := func (ctx context.Context) error {
   return findOldSubscriptionsAndClear()
 }
-job3 := func () error {
+job3 := func (ctx context.Context) error {
   coupon := createCoupon()
   return sendUpsellEmail(coupon.code)
 }
@@ -378,7 +378,7 @@ An example usecase is where you could be processing a file upload and need infor
 ```go
 job := func (file File) func(chan FileInfo) {
   return func (results chan FileInfo) Job {
-    return func() error {
+    return func(ctx context.Context) error {
       file, _ := uploadFile(file.file, file.user)
       results <- file
       return nil
@@ -403,7 +403,7 @@ As long as you match the job signature of `func() error`, you can create anythin
 ```go
 func withSmiles(job Job) Job {
   smile := ":)"
-  if err := job(); err != nil {
+  if err := job(context.Background()); err != nil {
     smile = ":("
   }
   log.Print(smile)
@@ -411,7 +411,7 @@ func withSmiles(job Job) Job {
 
 // ...
 
-job := withSmiles(func () error {
+job := withSmiles(func (ctx context.Context) error {
   return doSomeWork()
 })
 queue.Enqueue(job)

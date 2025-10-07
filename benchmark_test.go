@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"context"
 	"math/rand"
 	"sync"
 	"testing"
@@ -48,7 +49,7 @@ func BenchmarkScenarios(b *testing.B) {
 				wg.Add(load.reqs * load.jobs)
 
 				enqueue, stop := factory()
-				tf := Job(func() error {
+				tf := Job(func(ctx context.Context) error {
 					rand.Float64()
 					wg.Done()
 					return nil
@@ -73,7 +74,7 @@ func BenchmarkSingle(b *testing.B) {
 		wg.Add(1 * 1)
 
 		enqueue, stop := factory()
-		tf := Job(func() error {
+		tf := Job(func(ctx context.Context) error {
 			rand.Float64()
 			wg.Done()
 			return nil

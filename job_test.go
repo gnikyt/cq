@@ -49,7 +49,7 @@ func TestWithResultHandler(t *testing.T) {
 		var fran bool // Did fail run?
 
 		job := WithResultHandler(
-			func() error {
+			func(ctx context.Context) error {
 				return nil
 			}, func() {
 				cran = true
@@ -57,7 +57,7 @@ func TestWithResultHandler(t *testing.T) {
 				fran = true
 			},
 		)
-		if err := job(); err != nil {
+		if err := job(context.Background()); err != nil {
 			t.Errorf("WithResultHandler(): job should not have errored: %v", err)
 		}
 		if !cran {
@@ -73,7 +73,7 @@ func TestWithResultHandler(t *testing.T) {
 		var fran bool // Did fail run?
 
 		job := WithResultHandler(
-			func() error {
+			func(ctx context.Context) error {
 				return errors.New("error")
 			}, func() {
 				cran = true
@@ -81,7 +81,7 @@ func TestWithResultHandler(t *testing.T) {
 				fran = true
 			},
 		)
-		if err := job(); err == nil {
+		if err := job(context.Background()); err == nil {
 			t.Error("WithResultHandler(): job should have errored")
 		}
 
@@ -98,11 +98,11 @@ func TestWithRetry(t *testing.T) {
 	var calls int // Number of times job was called.
 	retries := 2  // Number of retries to do.
 
-	job := WithRetry(func() error {
+	job := WithRetry(func(ctx context.Context) error {
 		calls++
 		return errors.New("error")
 	}, retries)
-	if err := job(); err == nil {
+	if err := job(context.Background()); err == nil {
 		t.Error("WithRetry(): job should have errored")
 	}
 	if calls != retries {
@@ -119,10 +119,10 @@ func TestWithBackoff(t *testing.T) {
 
 	done := make(chan error)
 	go func() {
-		job := WithRetry(WithBackoff(func() error {
+		job := WithRetry(WithBackoff(func(ctx context.Context) error {
 			return errors.New("error")
 		}, nil), retries)
-		done <- job()
+		done <- job(context.Background())
 	}()
 	select {
 	case <-ctx.Done():
@@ -139,11 +139,11 @@ func TestWithTimeout(t *testing.T) {
 
 	done := make(chan error)
 	go func() {
-		job := WithTimeout(func() error {
+		job := WithTimeout(func(ctx context.Context) error {
 			time.Sleep(slimit)
 			return nil
 		}, tlimit)
-		done <- job()
+		done <- job(context.Background())
 	}()
 	if err := <-done; !errors.Is(err, want) {
 		t.Errorf("WithTimeout(): error was %v, want %v", err, want)
@@ -157,11 +157,11 @@ func TestWithDeadline(t *testing.T) {
 
 	done := make(chan error)
 	go func() {
-		job := WithDeadline(func() error {
+		job := WithDeadline(func(ctx context.Context) error {
 			time.Sleep(slimit)
 			return nil
 		}, tlimit)
-		done <- job()
+		done <- job(context.Background())
 	}()
 	if err := <-done; !errors.Is(err, want) {
 		t.Errorf("WithDeadline(): error was %v, want %v", err, want)
@@ -179,7 +179,7 @@ func TestWithoutOverlap(t *testing.T) {
 	want := amountBase % decrement     // Based on how many times amount can be cleanly decremented.
 
 	jobo := func(i int) Job {
-		return WithoutOverlap(func() error {
+		return WithoutOverlap(func(ctx context.Context) error {
 			defer wg.Done()
 			ac := amounto // Copy amount.
 			if i%3 == 0 {
@@ -195,7 +195,7 @@ func TestWithoutOverlap(t *testing.T) {
 	}
 
 	jobno := func(i int) Job {
-		return func() error {
+		return func(ctx context.Context) error {
 			defer wg.Done()
 			ac := amountno // Copy amount.
 			if i%3 == 0 {
@@ -213,12 +213,12 @@ func TestWithoutOverlap(t *testing.T) {
 	wg.Add(runs * 2)
 	go func() {
 		for i := 0; i < runs; i += 1 {
-			go jobo(i)()
+			go jobo(i)(context.Background())
 		}
 	}()
 	go func() {
 		for i := 0; i < runs; i += 1 {
-			go jobno(i)()
+			go jobno(i)(context.Background())
 		}
 	}()
 	wg.Wait()
@@ -238,19 +238,19 @@ func TestWithUnqiue(t *testing.T) {
 		var called bool
 		locker := NewUniqueMemoryLocker()
 
-		go WithUnique(func() error {
+		go WithUnique(func(ctx context.Context) error {
 			time.Sleep(50 * time.Millisecond)
 			called = true
 			return nil
-		}, "test", 1*time.Minute, locker)()
+		}, "test", 1*time.Minute, locker)(context.Background())
 		// Allow goroutine to run.
 		time.Sleep(10 * time.Millisecond)
 		// This job should not fire since the uniqueness of initial
 		// job is set to 1m, and the "work" is taking 50ms.
-		go WithUnique(func() error {
+		go WithUnique(func(ctx context.Context) error {
 			t.Error("WithUnique: job should not fire")
 			return nil
-		}, "test", 1*time.Minute, locker)()
+		}, "test", 1*time.Minute, locker)(context.Background())
 
 		time.Sleep(60 * time.Millisecond)
 		if !called {
@@ -265,19 +265,19 @@ func TestWithUnqiue(t *testing.T) {
 
 		// The lock on this job should be released since it
 		// expires 10ms from now.
-		go WithUnique(func() error {
+		go WithUnique(func(ctx context.Context) error {
 			time.Sleep(500 * time.Millisecond)
 			calls++
 			return nil
-		}, "test", 10*time.Millisecond, locker)()
+		}, "test", 10*time.Millisecond, locker)(context.Background())
 		// Allow goroutine to run.
 		time.Sleep(10 * time.Millisecond)
 		for i := 0; i < 2; i += 1 {
 			// Each job should run fine.
-			go WithUnique(func() error {
+			go WithUnique(func(ctx context.Context) error {
 				calls++
 				return nil
-			}, "test", 0*time.Millisecond, locker)()
+			}, "test", 0*time.Millisecond, locker)(context.Background())
 		}
 
 		time.Sleep(20 * time.Millisecond)
@@ -289,31 +289,31 @@ func TestWithUnqiue(t *testing.T) {
 
 func TestWithChain(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		job := func() error {
+		job := func(ctx context.Context) error {
 			return nil
 		}
-		job2 := func() error {
+		job2 := func(ctx context.Context) error {
 			return nil
 		}
 		chain := WithChain(job, job2)
-		if err := chain(); err != nil {
+		if err := chain(context.Background()); err != nil {
 			t.Errorf("WithChain() = %v, want nil", err)
 		}
 	})
 
 	t.Run("failure", func(t *testing.T) {
-		job := func() error {
+		job := func(ctx context.Context) error {
 			return nil
 		}
-		job2 := func() error {
+		job2 := func(ctx context.Context) error {
 			return errors.New("error")
 		}
-		job3 := func() error {
+		job3 := func(ctx context.Context) error {
 			t.Error("WithChain: job3: should not have fired")
 			return nil
 		}
 		chain := WithChain(job, job2, job3)
-		if err := chain(); err == nil {
+		if err := chain(context.Background()); err == nil {
 			t.Errorf("WithChain() = %v, want error", err)
 		}
 	})
@@ -322,13 +322,13 @@ func TestWithChain(t *testing.T) {
 func TestWithPipeline(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		job := func(results chan int) Job {
-			return func() error {
+			return func(ctx context.Context) error {
 				results <- 1
 				return nil
 			}
 		}
 		job2 := func(results chan int) Job {
-			return func() error {
+			return func(ctx context.Context) error {
 				want := 1
 				if val := <-results; val != want {
 					t.Errorf("WithPipeline: job2: got %v, want %v", val, want)
@@ -337,20 +337,20 @@ func TestWithPipeline(t *testing.T) {
 			}
 		}
 		pipeline := WithPipeline(job, job2)
-		if err := pipeline(); err != nil {
+		if err := pipeline(context.Background()); err != nil {
 			t.Errorf("WithChain() = %v, want nil", err)
 		}
 	})
 
 	t.Run("error", func(t *testing.T) {
 		job := func(results chan int) Job {
-			return func() error {
+			return func(ctx context.Context) error {
 				results <- 1
 				return nil
 			}
 		}
 		job2 := func(results chan int) Job {
-			return func() error {
+			return func(ctx context.Context) error {
 				want := 1
 				if val := <-results; val != want {
 					t.Errorf("WithPipeline: job2: got result %v, want %v", val, want)
@@ -360,13 +360,13 @@ func TestWithPipeline(t *testing.T) {
 			}
 		}
 		job3 := func(results chan int) Job {
-			return func() error {
+			return func(ctx context.Context) error {
 				t.Error("WithPipeline: job3: should not have fired")
 				return nil
 			}
 		}
 		pipeline := WithPipeline(job, job2, job3)
-		if err := pipeline(); err == nil {
+		if err := pipeline(context.Background()); err == nil {
 			t.Errorf("WithChain() = %v, want error", err)
 		}
 	})

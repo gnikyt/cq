@@ -53,7 +53,7 @@ func jobFailed(id int) func(error) {
 func job(id int, data []byte) Job {
 	retries := 3
 	return WithResultHandler(
-		WithRetry(func() error {
+		WithRetry(func(ctx context.Context) error {
 			time.Sleep(50 * time.Millisecond) // Simulate some "real work".
 
 			// Fail every 30th job, just for an example of metrics.

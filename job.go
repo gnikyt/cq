@@ -25,14 +25,14 @@ func (js JobState) String() string {
 }
 
 // Job is type alias for the job signature.
-type Job = func() error
+type Job = func(ctx context.Context) error
 
 // WithResultHandler allows for notifying of the job completing or failing.
 // If completed, the completed function will execute.
 // If failed, the failed function will execute and be passed in the error.
 func WithResultHandler(job Job, completed func(), failed func(error)) Job {
-	return func() error {
-		if err := job(); err != nil {
+	return func(ctx context.Context) error {
+		if err := job(ctx); err != nil {
 			if failed != nil {
 				failed(err)
 			}
@@ -52,9 +52,9 @@ func WithResultHandler(job Job, completed func(), failed func(error)) Job {
 func WithRetry(job Job, limit int) Job {
 	var retries int
 	var err error
-	return func() error {
+	return func(ctx context.Context) error {
 		for retries < limit {
-			if err = job(); err != nil {
+			if err = job(ctx); err != nil {
 				retries++
 			} else {
 				break
@@ -105,12 +105,12 @@ func WithBackoff(job Job, bf BackoffFunc) Job {
 	if bf == nil {
 		bf = ExponentialBackoff
 	}
-	return func() error {
+	return func(ctx context.Context) error {
 		if calls > 0 {
 			<-time.After(bf(calls))
 		}
 		calls++
-		return job()
+		return job(ctx)
 	}
 }
 
@@ -119,17 +119,23 @@ func WithBackoff(job Job, bf BackoffFunc) Job {
 // ran in goroutine where it's error result is passed to a channel
 // waiting for the result.
 func WithTimeout(job Job, timeout time.Duration) Job {
-	return func() error {
-		ctx, ctxc := context.WithTimeout(context.Background(), timeout)
-		defer ctxc()
+	return func(ctx context.Context) error {
+		// Create a new context with timeout, but inherit cancellation from parent
+		timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 
-		done := make(chan error)
-		go func() { done <- job() }()
+		done := make(chan error, 1)
+		go func() {
+			done <- job(timeoutCtx)
+		}()
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-done:
-			return nil
+		case <-timeoutCtx.Done():
+			return timeoutCtx.Err()
+		case err := <-done:
+			return err
 		}
 	}
 }
@@ -138,17 +144,23 @@ func WithTimeout(job Job, timeout time.Duration) Job {
 // A context is created and the job is ran in goroutine where it's
 // error result is passed to a channel waiting for the result.
 func WithDeadline(job Job, deadline time.Time) Job {
-	return func() error {
-		ctx, ctxc := context.WithDeadline(context.Background(), deadline)
-		defer ctxc()
+	return func(ctx context.Context) error {
+		// Create a new context with deadline, but inherit cancellation from parent
+		deadlineCtx, cancel := context.WithDeadline(ctx, deadline)
+		defer cancel()
 
-		done := make(chan error)
-		go func() { done <- job() }()
+		done := make(chan error, 1)
+		go func() {
+			done <- job(deadlineCtx)
+		}()
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-done:
-			return nil
+		case <-deadlineCtx.Done():
+			return deadlineCtx.Err()
+		case err := <-done:
+			return err
 		}
 	}
 }
@@ -159,7 +171,7 @@ func WithDeadline(job Job, deadline time.Time) Job {
 // a dollar amount, where the amount must must be decremented one at a time
 // without race conditions.
 func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
-	return func() error {
+	return func(ctx context.Context) error {
 		// Ensure a lock exists for this key.
 		locker.Aquire(key, LockValue[*sync.Mutex]{
 			ExpiresAt: time.Time{},
@@ -172,7 +184,7 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 		mut.Lock()
 		defer mut.Unlock()
 
-		return job()
+		return job(ctx)
 	}
 }
 
@@ -188,7 +200,7 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 // functions, it would require them to be structs with state, which
 // adds overhead to the setup.
 func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) Job {
-	return func() error {
+	return func(ctx context.Context) error {
 		lock, exists := locker.Get(key)
 		if exists {
 			if !lock.IsExpired() {
@@ -207,7 +219,7 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 			Value:     es,
 		})
 		defer locker.Release(key)
-		return job()
+		return job(ctx)
 	}
 }
 
@@ -217,9 +229,9 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 // discarded. If you would like to pass results from one job to the
 // next, you can utilize a buffered channel or WithPipeline.
 func WithChain(jobs ...Job) Job {
-	return func() error {
+	return func(ctx context.Context) error {
 		for _, job := range jobs {
-			if err := job(); err != nil {
+			if err := job(ctx); err != nil {
 				return err
 			}
 		}
@@ -234,9 +246,9 @@ func WithChain(jobs ...Job) Job {
 // as a parameter.
 func WithPipeline[T any](jobs ...func(chan T) Job) Job {
 	results := make(chan T, 1)
-	return func() error {
+	return func(ctx context.Context) error {
 		for _, job := range jobs {
-			if err := job(results)(); err != nil {
+			if err := job(results)(ctx); err != nil {
 				return err
 			}
 		}
