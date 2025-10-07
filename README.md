@@ -340,7 +340,7 @@ locker := NewUniqueMemoryLock()      // NewMemoryLock[struct{}]()
 window := time.Duration(1*time.Hour) // No other job of this key can process within an hour.
 job := WithUnqiue(func (ctx context.Context) error {
   return doSomeWork()
-}, window, locker)
+}, "job-key-here", window, locker)
 queue.Enqueue(job)
 ```
 
