@@ -285,6 +285,30 @@ func TestWithUnqiue(t *testing.T) {
 			t.Errorf("WithUnique: calls: got %v, want %v", calls, want)
 		}
 	})
+
+	t.Run("zero_duration", func(t *testing.T) {
+		var called bool
+		locker := NewUniqueMemoryLocker()
+
+		// Zero duration means lock doesn't expire until job completes.
+		go WithUnique(func(ctx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			called = true
+			return nil
+		}, "test", time.Duration(0), locker)(context.Background())
+		// Allow goroutine to run.
+		time.Sleep(10 * time.Millisecond)
+		// This job should not fire since the lock doesn't expire (zero duration).
+		go WithUnique(func(ctx context.Context) error {
+			t.Error("WithUnique: job should not fire with zero duration lock")
+			return nil
+		}, "test", time.Duration(0), locker)(context.Background())
+
+		time.Sleep(60 * time.Millisecond)
+		if !called {
+			t.Error("WithUnique: job should have been called")
+		}
+	})
 }
 
 func TestWithChain(t *testing.T) {
