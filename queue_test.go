@@ -108,6 +108,81 @@ func TestQueueDelayEnqueue(t *testing.T) {
 	}
 }
 
+func TestQueueEnqueueBatch(t *testing.T) {
+	q := NewQueue(2, 5, 10)
+	q.Start()
+	defer q.Stop(true)
+
+	var called1 bool
+	var called2 bool
+	var called3 bool
+
+	jobs := []Job{
+		func(ctx context.Context) error {
+			called1 = true
+			return nil
+		},
+		func(ctx context.Context) error {
+			called2 = true
+			return nil
+		},
+		func(ctx context.Context) error {
+			called3 = true
+			return nil
+		},
+	}
+
+	q.EnqueueBatch(jobs)
+
+	// Wait for all jobs to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	if !called1 || !called2 || !called3 {
+		t.Errorf("EnqueueBatch(): jobs not all executed: called1=%v, called2=%v, called3=%v", called1, called2, called3)
+	}
+
+	// Check tallies.
+	if created := q.TallyOf(JobStateCreated); created != 3 {
+		t.Errorf("EnqueueBatch(): TallyOf(JobStateCreated): got %d, want 3", created)
+	}
+	if completed := q.TallyOf(JobStateCompleted); completed != 3 {
+		t.Errorf("EnqueueBatch(): TallyOf(JobStateCompleted): got %d, want 3", completed)
+	}
+}
+
+func TestQueueDelayEnqueueBatch(t *testing.T) {
+	delay := time.Duration(500 * time.Millisecond)
+	sleep := time.Duration(600 * time.Millisecond)
+
+	q := NewQueue(2, 5, 10)
+	q.Start()
+	defer q.Stop(true)
+
+	jobs := []Job{
+		func(ctx context.Context) error { return nil },
+		func(ctx context.Context) error { return nil },
+		func(ctx context.Context) error { return nil },
+	}
+
+	q.DelayEnqueueBatch(jobs, delay)
+
+	// Jobs should not be created yet.
+	if njc := q.TallyOf(JobStateCreated); njc != 0 {
+		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCreated): should not have created jobs yet, got %v, want 0", njc)
+	}
+
+	// Wait for jobs to enqueue and run.
+	time.Sleep(sleep)
+
+	// All jobs should now be created.
+	if njc := q.TallyOf(JobStateCreated); njc != 3 {
+		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCreated): should have created 3 jobs, got %v, want 3", njc)
+	}
+	if completed := q.TallyOf(JobStateCompleted); completed != 3 {
+		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCompleted): got %d, want 3", completed)
+	}
+}
+
 func TestQueueEnqueueMaxed(t *testing.T) {
 	jobs := 150                                    // Number of jobs.
 	delay := time.Duration(500 * time.Millisecond) // Job sleep.

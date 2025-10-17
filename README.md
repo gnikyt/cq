@@ -4,7 +4,7 @@
 
 An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
 
-Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, and potential to write your own!
+Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own!
 
 This is inspired from great projects such as Bull, Pond, Ants, and more.
 
@@ -30,7 +30,14 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Unique](#unique)
     + [Chains](#chains)
     + [Pipeline](#pipeline)
+    + [Batch](#batch)
+    + [Release](#release)
+    + [Tagged](#tagged)
     + [Your own](#your-own)
+  - [Priority Queue](#priority-queue)
+    + [Basic Usage](#basic-usage)
+    + [Priority Levels](#priority-levels)
+    + [Weighting](#weighting)
   - [Demo](#demo)
 
 ## Testing
@@ -113,6 +120,10 @@ You can push jobs to the queue in a few ways.
   - Example: `ok := TryEnqueue(job)`
 * `DelayEnqueue(Job, delay time.Duration)` will push the job to the queue in a seperate goroutine after the delay, non-blocking.
   - Example: `DelayEnqueue(job, time.Duration(2 * time.Minute))`
+* `EnqueueBatch([]Job)` will enqueue multiple jobs at once.
+  - Example: `EnqueueBatch(jobs)`
+* `DelayEnqueueBatch([]Job, delay time.Duration)` will enqueue multiple jobs after a delay.
+  - Example: `DelayEnqueueBatch(jobs, time.Duration(30 * time.Second))`
 
 #### Idle worker tick
 
@@ -396,6 +407,128 @@ job2 := func(results chan FileInfo) Job {
 queue.Enqueue(WithChain(job(fileFromUser), job2)) // WithChain[FileInfo](job, job2)
 ```
 
+#### Batch
+
+Track multiple jobs as a single batch with callbacks for completion, failure, and progress.
+
+An example usecase is processing a large dataset and notifying when all processing is complete, or tracking progress as each item completes.
+
+```go
+jobs := []Job{
+  func(ctx context.Context) error {
+    return processRecord(1)
+  },
+  func(ctx context.Context) error {
+    return processRecord(2)
+  },
+  func(ctx context.Context) error {
+    return processRecord(3)
+  },
+}
+
+batchJobs, batchState := WithBatch(
+  jobs,
+  func() {
+    fmt.Println("All jobs completed successfully!")
+  },
+  func(errs []error) {
+    fmt.Printf("Batch failed with %d errors: %v\n", len(errs), errs)
+  },
+  func(completed, total int) {
+    fmt.Printf("Progress: %d/%d (%.0f%%)\n", completed, total, float64(completed)/float64(total)*100)
+  },
+)
+
+// Method 1: Enqueue all batch jobs.
+for _, job := range batchJobs {
+    queue.Enqueue(job)
+}
+// OR, Method 2: use EnqueueBatch for convenience.
+queue.EnqueueBatch(batchJobs)
+
+// Check batch state.
+fmt.Printf(
+  "Completed: %d, Failed: %d\n", 
+  batchState.CompletedJobs.Load(), 
+  batchState.FailedJobs.Load(),
+)
+```
+
+#### Release
+
+Re-enqueue a job after a delay if it returns a specific error. Useful for handling temporary failures like network issues or rate limits.
+
+An example usecase is retrying an HTTP request after a service returns a 503 (temporarily unavailable) or 429 (rate limited).
+
+```go
+var ErrServiceUnavailable = errors.New("service unavailable")
+var ErrRateLimited = errors.New("rate limited")
+
+job := WithRelease(
+  func(ctx context.Context) error {
+    resp, err := http.Get("https://api.example.com/data")
+    if err != nil || resp.StatusCode == 503 {
+      return ErrServiceUnavailable
+    }
+    if resp.StatusCode == 429 {
+      return ErrRateLimited
+    }
+    // Process response...
+    return nil
+  },
+  queue,
+  30*time.Second,  // Wait 30 seconds before re-enqueueing.
+  3,               // Maximum 3 releases (4 total attempts).
+  func(err error) bool {
+    // Release on these specific errors.
+    return errors.Is(err, ErrServiceUnavailable) || errors.Is(err, ErrRateLimited)
+  },
+)
+queue.Enqueue(job)
+
+// For unlimited releases, use 0 as maxReleases.
+jobUnlimited := WithRelease(job, queue, 30*time.Second, 0, shouldRelease)
+```
+
+#### Tagged
+
+Tag jobs for tracking and cancellation. Useful for cancelling groups of related jobs (example, all jobs for a specific user or resource).
+
+An example usecase is cancelling all processing jobs when a user deletes their account.
+
+```go
+registry := NewJobRegistry()
+
+// Create tagged jobs.
+job1 := WithTagged(func(ctx context.Context) error {.
+  time.Sleep(5 * time.Second)
+  return nil
+}, registry, "user:123", "data-export")
+
+job2 := WithTagged(func(ctx context.Context) error {
+  // Another job for same user...
+  return nil
+}, registry, "user:123", "email-campaign")
+
+queue.Enqueue(job1)
+queue.Enqueue(job2)
+
+// Later: Cancel all jobs for user:123.
+cancelled := registry.CancelForTag("user:123")
+fmt.Printf("Cancelled %d jobs\n", cancelled)
+
+// Check how many jobs are tagged.
+count := registry.CountForTag("email-campaign")
+fmt.Printf("Active email campaigns: %d\n", count)
+
+// Get all active tags.
+tags := registry.Tags()
+fmt.Printf("Active tags: %v\n", tags)
+
+// Cancel all jobs.
+registry.CancelAll()
+```
+
 #### Your own
 
 As long as you match the job signature of `func() error`, you can create anything to wrap your job.
@@ -416,6 +549,81 @@ job := withSmiles(func (ctx context.Context) error {
 })
 queue.Enqueue(job)
 ```
+
+### Priority Queue
+
+`PriorityQueue` wraps a regular `Queue` to add priority-based job processing. Jobs with higher priority are processed before lower priority jobs, using a weighted dispatch system to prevent starvation. Very basic implementation.
+
+#### Basic Usage
+
+Create a priority queue by wrapping an existing queue:
+
+```go
+// Create base queue.
+queue := NewQueue(2, 10, 100)
+queue.Start()
+
+// Wrap with priority queue (50 capacity per priority level).
+priorityQueue := NewPriorityQueue(queue, 50)
+defer priorityQueue.Stop(true) // true = also stop underlying queue.
+
+// Enqueue jobs with different priorities.
+priorityQueue.EnqueuePriority(criticalJob, PriorityHighest)
+priorityQueue.EnqueuePriority(normalJob, PriorityMedium)
+priorityQueue.EnqueuePriority(cleanupJob, PriorityLowest)
+```
+
+#### Priority Levels
+
+Five priority levels are available:
+
+* `PriorityHighest` - Critical system operations.
+* `PriorityHigh` - Important user-facing requests.
+* `PriorityMedium` - Standard background processing.
+* `PriorityLow` - Non-urgent tasks.
+* `PriorityLowest` - Cleanup and maintenance.
+
+**Default weights (attempts per tick):** 5:3:2:1:1
+
+This means highest priority jobs get 5 attempts per tick, high gets 3, etc. This ensures higher priority jobs process faster while preventing lower priority jobs from starving.
+
+#### Weighting
+
+Customize priority weights using `WithWeighting` with either `NumberWeight` (raw counts) or `PercentWeight` (percentages):
+
+```go
+// Using NumberWeight.
+priorityQueue := NewPriorityQueue(queue, 50,
+  WithWeighting(
+    NumberWeight(10),  // Highest: 10 attempts per tick.
+    NumberWeight(5),   // High: 5 attempts per tick.
+    NumberWeight(3),   // Medium: 3 attempts per tick.
+    NumberWeight(2),   // Low: 2 attempts per tick.
+    NumberWeight(1),   // Lowest: 1 attempt per tick.
+  ),
+)
+
+// Using PercentWeight (percentages of 12).
+priorityQueue := NewPriorityQueue(queue, 50,
+  WithWeighting(
+    PercentWeight(60),  // Highest: ~7 attempts (60% of 12).
+    PercentWeight(25),  // High: 3 attempts (25% of 12).
+    PercentWeight(10),  // Medium: 1 attempt (10% of 12).
+    PercentWeight(5),   // Low: 1 attempt (5% of 12, min 1).
+    PercentWeight(5),   // Lowest: 1 attempt (5% of 12, min 1).
+  ),
+)
+
+// Adjust tick duration (default 10ms).
+priorityQueue := NewPriorityQueue(queue, 50,
+  WithPriorityTick(50*time.Millisecond),
+)
+```
+
+**Stop behavior:**
+
+* `Stop(true)` - Stops both dispatcher and underlying queue.
+* `Stop(false)` - Stops only dispatcher, leaves queue running.
 
 ### Demo
 

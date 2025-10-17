@@ -395,3 +395,202 @@ func TestWithPipeline(t *testing.T) {
 		}
 	})
 }
+
+func TestWithBatch(t *testing.T) {
+	t.Run("all_success", func(t *testing.T) {
+		var completed bool
+		var failed bool
+		var progressCalls int
+
+		jobs := []Job{
+			func(ctx context.Context) error { return nil }, // Success.
+			func(ctx context.Context) error { return nil }, // Success.
+			func(ctx context.Context) error { return nil }, // Success.
+		}
+
+		batchJobs, state := WithBatch(
+			jobs,
+			func() { completed = true },
+			func(errs []error) { failed = true },
+			func(c, t int) { progressCalls++ },
+		)
+
+		// Run all jobs
+		for _, job := range batchJobs {
+			if err := job(context.Background()); err != nil {
+				t.Errorf("WithBatch(): job should not have errored: %v", err)
+			}
+		}
+
+		if !completed {
+			t.Error("WithBatch(): onComplete should have been called")
+		}
+		if failed {
+			t.Error("WithBatch(): onFailure should not have been called")
+		}
+		if progressCalls != 3 {
+			t.Errorf("WithBatch(): progress calls: got %d, want 3", progressCalls)
+		}
+		if int(state.CompletedJobs.Load()) != 3 {
+			t.Errorf("WithBatch(): completed jobs: got %d, want 3", state.CompletedJobs.Load())
+		}
+		if int(state.FailedJobs.Load()) != 0 {
+			t.Errorf("WithBatch(): failed jobs: got %d, want 0", state.FailedJobs.Load())
+		}
+	})
+
+	t.Run("with_failure", func(t *testing.T) {
+		var completed bool
+		var failedErrors []error
+
+		jobs := []Job{
+			func(ctx context.Context) error { return nil },                      // Success.
+			func(ctx context.Context) error { return errors.New("job2 error") }, // Failure.
+			func(ctx context.Context) error { return errors.New("job3 error") }, // Failure.
+		}
+
+		batchJobs, state := WithBatch(
+			jobs,
+			func() {
+				completed = true
+			},
+			func(errs []error) {
+				failedErrors = errs
+			},
+			nil,
+		)
+
+		// Run all jobs
+		for _, job := range batchJobs {
+			_ = job(context.Background())
+		}
+
+		if completed {
+			t.Error("WithBatch(): onComplete should not have been called")
+		}
+		if len(failedErrors) != 2 {
+			t.Errorf("WithBatch(): failed errors: got %d, want 2", len(failedErrors))
+		}
+		if int(state.CompletedJobs.Load()) != 3 {
+			t.Errorf("WithBatch(): completed jobs: got %d, want 3", state.CompletedJobs.Load())
+		}
+		if int(state.FailedJobs.Load()) != 2 {
+			t.Errorf("WithBatch(): failed jobs: got %d, want 2", state.FailedJobs.Load())
+		}
+	})
+
+	t.Run("empty_jobs", func(t *testing.T) {
+		jobs, state := WithBatch([]Job{}, nil, nil, nil)
+		if jobs != nil || state != nil {
+			t.Error("WithBatch(): empty jobs should return nil")
+		}
+	})
+}
+
+func TestWithRelease(t *testing.T) {
+	t.Run("release_on_error", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		var calls int
+		releaseErr := errors.New("release me")
+
+		job := WithRelease(
+			func(ctx context.Context) error {
+				calls++
+				if calls < 2 {
+					return releaseErr
+				}
+				return nil
+			},
+			queue,
+			10*time.Millisecond,
+			2,
+			func(err error) bool {
+				return errors.Is(err, releaseErr)
+			},
+		)
+
+		// First call... should release.
+		if err := job(context.Background()); err != nil {
+			t.Errorf("WithRelease(): should return nil on release: %v", err)
+		}
+
+		// Wait for re-enqueue.
+		time.Sleep(20 * time.Millisecond)
+
+		// Should have been called twice (initial + 1 release).
+		if calls < 2 {
+			t.Errorf("WithRelease(): calls: got %d, want >= 2", calls)
+		}
+	})
+
+	t.Run("max_releases_exceeded", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		var calls int
+		releaseErr := errors.New("release me")
+		maxReleases := 2
+
+		job := WithRelease(
+			func(ctx context.Context) error {
+				calls++
+				return releaseErr
+			},
+			queue,
+			10*time.Millisecond,
+			maxReleases,
+			func(err error) bool {
+				return errors.Is(err, releaseErr)
+			},
+		)
+
+		// Call until max releases.
+		for i := 0; i <= maxReleases; i++ {
+			err := job(context.Background())
+			if i < maxReleases {
+				if err != nil {
+					t.Errorf("WithRelease(): should return nil for release %d: %v", i, err)
+				}
+			} else {
+				// Should return error after max releases.
+				if err == nil {
+					t.Error("WithRelease(): should return error after max releases")
+				}
+			}
+		}
+	})
+
+	t.Run("no_release_on_different_error", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		releaseErr := errors.New("release me")
+		otherErr := errors.New("other error")
+
+		job := WithRelease(
+			func(ctx context.Context) error {
+				return otherErr
+			},
+			queue,
+			10*time.Millisecond,
+			2,
+			func(err error) bool {
+				return errors.Is(err, releaseErr)
+			},
+		)
+
+		// Should return error, not release.
+		err := job(context.Background())
+		if err == nil {
+			t.Error("WithRelease(): should return error for non-release error")
+		}
+		if !errors.Is(err, otherErr) {
+			t.Errorf("WithRelease(): got error %v, want %v", err, otherErr)
+		}
+	})
+}
