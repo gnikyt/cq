@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,19 +28,33 @@ func (js JobState) String() string {
 // Job is type alias for the job signature.
 type Job = func(ctx context.Context) error
 
+// BatchState tracks the state of a batch of jobs.
+type BatchState struct {
+	TotalJobs     int32        // Total number of jobs in the batch.
+	CompletedJobs atomic.Int32 // Number of jobs that have completed (both successes and failures).
+	FailedJobs    atomic.Int32 // Number of jobs that have failed.
+
+	OnComplete func()                     // Callback executed when all jobs complete successfully.
+	OnFailure  func([]error)              // Callback executed when any job fails, passed all errors.
+	OnProgress func(completed, total int) // Optional callback executed after each job completes.
+
+	Errors    []error    // Slice of all errors from failed jobs.
+	errorsMut sync.Mutex // Mutex for protecting the Errors slice.
+}
+
 // WithResultHandler allows for notifying of the job completing or failing.
-// If completed, the completed function will execute.
-// If failed, the failed function will execute and be passed in the error.
-func WithResultHandler(job Job, completed func(), failed func(error)) Job {
+// If completed, the onCompleted function will execute.
+// If failed, the onFailed function will execute and be passed in the error.
+func WithResultHandler(job Job, onCompleted func(), onFailed func(error)) Job {
 	return func(ctx context.Context) error {
 		if err := job(ctx); err != nil {
-			if failed != nil {
-				failed(err)
+			if onFailed != nil {
+				onFailed(err)
 			}
 			return err
 		}
-		if completed != nil {
-			completed()
+		if onCompleted != nil {
+			onCompleted()
 		}
 		return nil
 	}
@@ -262,4 +277,60 @@ func WithPipeline[T any](jobs ...func(chan T) Job) Job {
 		}
 		return nil
 	}
+}
+
+// WithBatch wraps multiple jobs to track them as a single batch.
+// When all jobs complete, onComplete is called.
+// If any job fails, onFailure is called with all errors.
+// The onProgress callback is optional and called after each job completes.
+func WithBatch(jobs []Job, onComplete func(), onFailure func([]error), onProgress func(completed, total int)) ([]Job, *BatchState) {
+	if len(jobs) == 0 {
+		return nil, nil
+	}
+
+	state := &BatchState{
+		TotalJobs:  int32(len(jobs)),
+		Errors:     make([]error, 0),
+		OnComplete: onComplete,
+		OnFailure:  onFailure,
+		OnProgress: onProgress,
+	}
+
+	wrappedJobs := make([]Job, len(jobs))
+	for i, job := range jobs {
+		wrappedJobs[i] = func(ojob Job) Job {
+			return func(ctx context.Context) error {
+				err := ojob(ctx)
+				if err != nil {
+					state.FailedJobs.Add(1)
+					state.errorsMut.Lock()
+					state.Errors = append(state.Errors, err)
+					state.errorsMut.Unlock()
+				}
+
+				// Job ran without error, increment completed jobs.
+				completed := state.CompletedJobs.Add(1)
+
+				if state.OnProgress != nil {
+					// Call onProgress callback, if provided.
+					state.OnProgress(int(completed), int(state.TotalJobs))
+				}
+
+				// Check if this is the last job.
+				if completed == state.TotalJobs {
+					if state.FailedJobs.Load() > 0 && state.OnFailure != nil {
+						// Call onFailure callback, if provided.
+						state.OnFailure(state.Errors)
+					} else if state.FailedJobs.Load() == 0 && state.OnComplete != nil {
+						// Call onComplete callback, if provided.
+						state.OnComplete()
+					}
+				}
+
+				return err
+			}
+		}(job)
+	}
+
+	return wrappedJobs, state
 }

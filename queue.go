@@ -194,6 +194,24 @@ func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
 	}()
 }
 
+// EnqueueBatch accepts a slice of jobs and enqueues each one.
+func (q *Queue) EnqueueBatch(jobs []Job) {
+	for _, job := range jobs {
+		q.doEnqueue(job)
+	}
+}
+
+// DelayEnqueueBatch accepts a slice of jobs and will push them into
+// the queue after the set delay duration.
+func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
+	go func() {
+		<-time.After(delay)
+		for _, job := range jobs {
+			q.doEnqueue(job)
+		}
+	}()
+}
+
 // doEnqueue accepts a job and attempts to start a worker initially dedicated
 // to this job, so long as we are not above our maximum number of workers.
 // If it fails to start a dedicated worker, it will push the job into the
