@@ -58,7 +58,7 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		pq.EnqueuePriority(job, PriorityHigh)
+		pq.Enqueue(job, PriorityHigh)
 
 		// Wait for job to process.
 		time.Sleep(50 * time.Millisecond)
@@ -89,11 +89,11 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		// Enqueue in reverse priority order.
-		pq.EnqueuePriority(makeJob(5), PriorityLowest)
-		pq.EnqueuePriority(makeJob(4), PriorityLow)
-		pq.EnqueuePriority(makeJob(3), PriorityMedium)
-		pq.EnqueuePriority(makeJob(2), PriorityHigh)
-		pq.EnqueuePriority(makeJob(1), PriorityHighest)
+		pq.Enqueue(makeJob(5), PriorityLowest)
+		pq.Enqueue(makeJob(4), PriorityLow)
+		pq.Enqueue(makeJob(3), PriorityMedium)
+		pq.Enqueue(makeJob(2), PriorityHigh)
+		pq.Enqueue(makeJob(1), PriorityHighest)
 
 		// Wait for all jobs to process.
 		time.Sleep(100 * time.Millisecond)
@@ -239,15 +239,15 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		// Should succeed as channel has capacity.
-		if ok := pq.TryEnqueuePriority(job, PriorityHigh); !ok {
-			t.Error("TryEnqueuePriority(): should succeed on non-full channel")
+		if ok := pq.TryEnqueue(job, PriorityHigh); !ok {
+			t.Error("TryEnqueue(): should succeed on non-full channel")
 		}
 
 		// Wait for job to process.
 		time.Sleep(50 * time.Millisecond)
 
 		if !executed.Load() {
-			t.Error("TryEnqueuePriority(): job should have executed")
+			t.Error("TryEnqueue(): job should have executed")
 		}
 	})
 
@@ -265,12 +265,12 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		pq.EnqueuePriority(blockingJob, PriorityHigh)
-		pq.EnqueuePriority(blockingJob, PriorityHigh)
+		pq.Enqueue(blockingJob, PriorityHigh)
+		pq.Enqueue(blockingJob, PriorityHigh)
 
 		// Channel should now be full.
-		if ok := pq.TryEnqueuePriority(blockingJob, PriorityHigh); ok {
-			t.Error("TryEnqueuePriority(): should fail on full channel")
+		if ok := pq.TryEnqueue(blockingJob, PriorityHigh); ok {
+			t.Error("TryEnqueue(): should fail on full channel")
 		}
 	})
 
@@ -289,18 +289,18 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		delay := 100 * time.Millisecond
-		pq.DelayEnqueuePriority(job, PriorityHigh, delay)
+		pq.DelayEnqueue(job, PriorityHigh, delay)
 
 		// Should not be executed immediately.
 		time.Sleep(50 * time.Millisecond)
 		if executed.Load() {
-			t.Error("DelayEnqueuePriority(): job should not have executed yet")
+			t.Error("DelayEnqueue(): job should not have executed yet")
 		}
 
 		// Should be executed after delay.
 		time.Sleep(100 * time.Millisecond)
 		if !executed.Load() {
-			t.Error("DelayEnqueuePriority(): job should have executed after delay")
+			t.Error("DelayEnqueue(): job should have executed after delay")
 		}
 	})
 
@@ -318,10 +318,10 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		// Enqueue jobs at different priorities.
-		pq.EnqueuePriority(slowJob, PriorityHighest)
-		pq.EnqueuePriority(slowJob, PriorityHighest)
-		pq.EnqueuePriority(slowJob, PriorityHigh)
-		pq.EnqueuePriority(slowJob, PriorityMedium)
+		pq.Enqueue(slowJob, PriorityHighest)
+		pq.Enqueue(slowJob, PriorityHighest)
+		pq.Enqueue(slowJob, PriorityHigh)
+		pq.Enqueue(slowJob, PriorityMedium)
 
 		// Allow jobs to queue up before dispatcher pulls them.
 		time.Sleep(10 * time.Millisecond)
@@ -351,9 +351,9 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		// Enqueue jobs at different priorities.
-		pq.EnqueuePriority(slowJob, PriorityHighest)
-		pq.EnqueuePriority(slowJob, PriorityHigh)
-		pq.EnqueuePriority(slowJob, PriorityMedium)
+		pq.Enqueue(slowJob, PriorityHighest)
+		pq.Enqueue(slowJob, PriorityHigh)
+		pq.Enqueue(slowJob, PriorityMedium)
 
 		time.Sleep(10 * time.Millisecond)
 

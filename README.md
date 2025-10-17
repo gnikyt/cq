@@ -568,17 +568,17 @@ priorityQueue := NewPriorityQueue(queue, 50)
 defer priorityQueue.Stop(true) // true = also stop underlying queue.
 
 // Enqueue jobs with different priorities.
-priorityQueue.EnqueuePriority(criticalJob, PriorityHighest)
-priorityQueue.EnqueuePriority(normalJob, PriorityMedium)
-priorityQueue.EnqueuePriority(cleanupJob, PriorityLowest)
+priorityQueue.Enqueue(criticalJob, PriorityHighest)
+priorityQueue.Enqueue(normalJob, PriorityMedium)
+priorityQueue.Enqueue(cleanupJob, PriorityLowest)
 
 // Non-blocking enqueue... returns false if priority channel is full.
-if !priorityQueue.TryEnqueuePriority(job, PriorityHigh) {
+if !priorityQueue.TryEnqueue(job, PriorityHigh) {
   log.Warn("High priority queue is full")
 }
 
 // Delay enqueue with priority.
-priorityQueue.DelayEnqueuePriority(scheduledJob, PriorityMedium, 30*time.Second)
+priorityQueue.DelayEnqueue(scheduledJob, PriorityMedium, 30*time.Second)
 
 // Monitor pending jobs by priority.
 highPending := priorityQueue.CountByPriority(PriorityHigh)

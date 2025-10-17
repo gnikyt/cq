@@ -102,8 +102,8 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 	return pq
 }
 
-// EnqueuePriority adds a job to the priority queue with the specified priority level.
-func (pq *PriorityQueue) EnqueuePriority(job Job, priority Priority) {
+// Enqueue adds a job to the priority queue with the specified priority level.
+func (pq *PriorityQueue) Enqueue(job Job, priority Priority) {
 	var ch chan Job
 	switch priority {
 	case PriorityHighest:
@@ -128,9 +128,9 @@ func (pq *PriorityQueue) EnqueuePriority(job Job, priority Priority) {
 	}
 }
 
-// TryEnqueuePriority attempts to add a job to the priority queue without blocking.
+// TryEnqueue attempts to add a job to the priority queue without blocking.
 // Returns true if the job was successfully added, false if the priority channel is full.
-func (pq *PriorityQueue) TryEnqueuePriority(job Job, priority Priority) bool {
+func (pq *PriorityQueue) TryEnqueue(job Job, priority Priority) bool {
 	var ch chan Job
 	switch priority {
 	case PriorityHighest:
@@ -157,12 +157,12 @@ func (pq *PriorityQueue) TryEnqueuePriority(job Job, priority Priority) bool {
 	}
 }
 
-// DelayEnqueuePriority adds a job to the priority queue after the specified delay.
+// DelayEnqueue adds a job to the priority queue after the specified delay.
 // It runs in its own goroutine to avoid blocking.
-func (pq *PriorityQueue) DelayEnqueuePriority(job Job, priority Priority, delay time.Duration) {
+func (pq *PriorityQueue) DelayEnqueue(job Job, priority Priority, delay time.Duration) {
 	go func() {
 		<-time.After(delay)
-		pq.EnqueuePriority(job, priority)
+		pq.Enqueue(job, priority)
 	}()
 }
 
