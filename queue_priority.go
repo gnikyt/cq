@@ -128,6 +128,75 @@ func (pq *PriorityQueue) EnqueuePriority(job Job, priority Priority) {
 	}
 }
 
+// TryEnqueuePriority attempts to add a job to the priority queue without blocking.
+// Returns true if the job was successfully added, false if the priority channel is full.
+func (pq *PriorityQueue) TryEnqueuePriority(job Job, priority Priority) bool {
+	var ch chan Job
+	switch priority {
+	case PriorityHighest:
+		ch = pq.highest
+	case PriorityHigh:
+		ch = pq.high
+	case PriorityMedium:
+		ch = pq.medium
+	case PriorityLow:
+		ch = pq.low
+	case PriorityLowest:
+		ch = pq.lowest
+	default:
+		return false
+	}
+
+	select {
+	case ch <- job:
+		return true
+	case <-pq.ctx.Done():
+		return false
+	default:
+		return false
+	}
+}
+
+// DelayEnqueuePriority adds a job to the priority queue after the specified delay.
+// It runs in its own goroutine to avoid blocking.
+func (pq *PriorityQueue) DelayEnqueuePriority(job Job, priority Priority, delay time.Duration) {
+	go func() {
+		<-time.After(delay)
+		pq.EnqueuePriority(job, priority)
+	}()
+}
+
+// CountByPriority returns the number of pending jobs in the specified priority level.
+func (pq *PriorityQueue) CountByPriority(priority Priority) int {
+	var ch chan Job
+	switch priority {
+	case PriorityHighest:
+		ch = pq.highest
+	case PriorityHigh:
+		ch = pq.high
+	case PriorityMedium:
+		ch = pq.medium
+	case PriorityLow:
+		ch = pq.low
+	case PriorityLowest:
+		ch = pq.lowest
+	default:
+		return 0
+	}
+	return len(ch)
+}
+
+// PendingByPriority returns a map of all priority levels with their pending job counts.
+func (pq *PriorityQueue) PendingByPriority() map[Priority]int {
+	return map[Priority]int{
+		PriorityHighest: len(pq.highest),
+		PriorityHigh:    len(pq.high),
+		PriorityMedium:  len(pq.medium),
+		PriorityLow:     len(pq.low),
+		PriorityLowest:  len(pq.lowest),
+	}
+}
+
 // dispatcher pulls jobs from priority channels and enqueues them
 // to the underlying queue using weighted attempts per tick.
 // Higher priority levels get more attempts per tick based on weight configuration.

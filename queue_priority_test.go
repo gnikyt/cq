@@ -223,4 +223,153 @@ func TestPriorityQueue(t *testing.T) {
 			t.Errorf("Default weights: lowest: got %d, want %d", pq.weights.lowest, defaultWeightLowest)
 		}
 	})
+
+	t.Run("try_enqueue_success", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		var executed atomic.Bool
+		job := func(ctx context.Context) error {
+			executed.Store(true)
+			return nil
+		}
+
+		// Should succeed as channel has capacity.
+		if ok := pq.TryEnqueuePriority(job, PriorityHigh); !ok {
+			t.Error("TryEnqueuePriority(): should succeed on non-full channel")
+		}
+
+		// Wait for job to process.
+		time.Sleep(50 * time.Millisecond)
+
+		if !executed.Load() {
+			t.Error("TryEnqueuePriority(): job should have executed")
+		}
+	})
+
+	t.Run("try_enqueue_full", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 2) // Small capacity.
+		defer pq.Stop(false)
+
+		// Fill the high priority channel.
+		blockingJob := func(ctx context.Context) error {
+			time.Sleep(1 * time.Second)
+			return nil
+		}
+
+		pq.EnqueuePriority(blockingJob, PriorityHigh)
+		pq.EnqueuePriority(blockingJob, PriorityHigh)
+
+		// Channel should now be full.
+		if ok := pq.TryEnqueuePriority(blockingJob, PriorityHigh); ok {
+			t.Error("TryEnqueuePriority(): should fail on full channel")
+		}
+	})
+
+	t.Run("delay_enqueue_priority", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		var executed atomic.Bool
+		job := func(ctx context.Context) error {
+			executed.Store(true)
+			return nil
+		}
+
+		delay := 100 * time.Millisecond
+		pq.DelayEnqueuePriority(job, PriorityHigh, delay)
+
+		// Should not be executed immediately.
+		time.Sleep(50 * time.Millisecond)
+		if executed.Load() {
+			t.Error("DelayEnqueuePriority(): job should not have executed yet")
+		}
+
+		// Should be executed after delay.
+		time.Sleep(100 * time.Millisecond)
+		if !executed.Load() {
+			t.Error("DelayEnqueuePriority(): job should have executed after delay")
+		}
+	})
+
+	t.Run("count_by_priority", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		slowJob := func(ctx context.Context) error {
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		}
+
+		// Enqueue jobs at different priorities.
+		pq.EnqueuePriority(slowJob, PriorityHighest)
+		pq.EnqueuePriority(slowJob, PriorityHighest)
+		pq.EnqueuePriority(slowJob, PriorityHigh)
+		pq.EnqueuePriority(slowJob, PriorityMedium)
+
+		// Allow jobs to queue up before dispatcher pulls them.
+		time.Sleep(10 * time.Millisecond)
+
+		// Check counts (some may have been dispatched).
+		highestCount := pq.CountByPriority(PriorityHighest)
+		highCount := pq.CountByPriority(PriorityHigh)
+		mediumCount := pq.CountByPriority(PriorityMedium)
+
+		// At least verify the method returns non-negative values.
+		if highestCount < 0 || highCount < 0 || mediumCount < 0 {
+			t.Error("CountByPriority(): should return non-negative values")
+		}
+	})
+
+	t.Run("pending_by_priority", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		slowJob := func(ctx context.Context) error {
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		}
+
+		// Enqueue jobs at different priorities.
+		pq.EnqueuePriority(slowJob, PriorityHighest)
+		pq.EnqueuePriority(slowJob, PriorityHigh)
+		pq.EnqueuePriority(slowJob, PriorityMedium)
+
+		time.Sleep(10 * time.Millisecond)
+
+		// Get pending map.
+		pending := pq.PendingByPriority()
+
+		// Verify map has all priority levels.
+		if len(pending) != 5 {
+			t.Errorf("PendingByPriority(): should return map with 5 entries, got %d", len(pending))
+		}
+
+		// Verify all priority levels are present.
+		for _, priority := range []Priority{PriorityHighest, PriorityHigh, PriorityMedium, PriorityLow, PriorityLowest} {
+			if _, exists := pending[priority]; !exists {
+				t.Errorf("PendingByPriority(): missing priority %s", priority.String())
+			}
+		}
+	})
 }

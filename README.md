@@ -571,6 +571,22 @@ defer priorityQueue.Stop(true) // true = also stop underlying queue.
 priorityQueue.EnqueuePriority(criticalJob, PriorityHighest)
 priorityQueue.EnqueuePriority(normalJob, PriorityMedium)
 priorityQueue.EnqueuePriority(cleanupJob, PriorityLowest)
+
+// Non-blocking enqueue... returns false if priority channel is full.
+if !priorityQueue.TryEnqueuePriority(job, PriorityHigh) {
+  log.Warn("High priority queue is full")
+}
+
+// Delay enqueue with priority.
+priorityQueue.DelayEnqueuePriority(scheduledJob, PriorityMedium, 30*time.Second)
+
+// Monitor pending jobs by priority.
+highPending := priorityQueue.CountByPriority(PriorityHigh)
+fmt.Printf("High priority jobs pending: %d\n", highPending)
+
+// Get all pending counts.
+allPending := priorityQueue.PendingByPriority()
+fmt.Printf("Pending: %+v\n", allPending)
 ```
 
 #### Priority Levels
