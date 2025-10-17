@@ -334,3 +334,24 @@ func WithBatch(jobs []Job, onComplete func(), onFailure func([]error), onProgres
 
 	return wrappedJobs, state
 }
+
+// WithRelease returns a job back to the queue after a delay if it returns
+// an error that matches the shouldRelease. This is useful when you want to
+// re-enqueue a job after a certain amount of time if it fails (example, bad network call).
+// The job will be released back to the queue and not marked as failed up to maxReleases times.
+// After maxReleases is reached, the error will be returned and the job marked as failed.
+// If maxReleases is 0, the job will be released forever.
+func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, shouldRelease func(error) bool) Job {
+	var releases int
+	return func(ctx context.Context) error {
+		err := job(ctx)
+		if err != nil && shouldRelease(err) {
+			if maxReleases == 0 || releases < maxReleases {
+				releases++
+				queue.DelayEnqueue(job, delay)
+				return nil
+			}
+		}
+		return err
+	}
+}
