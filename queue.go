@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -271,8 +272,12 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 			(&q.failedJobsTally).Add(1)
 			if q.panicHandler != nil {
 				q.panicHandler(err)
+			} else {
+				// Default behavior: log to stderr.
+				fmt.Fprintf(os.Stderr, "workJob: job panic (no handler set): %v\n", err)
 			}
 		}
+
 		// Mark job done, mark worker as idle as it is not processing a job anymore.
 		q.jobWg.Done()
 		(&q.workersIdleTally).Add(1)

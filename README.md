@@ -32,6 +32,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Pipeline](#pipeline)
     + [Batch](#batch)
     + [Release](#release)
+    + [Recover](#recover)
     + [Tagged](#tagged)
     + [Your own](#your-own)
   - [Priority Queue](#priority-queue)
@@ -488,6 +489,36 @@ queue.Enqueue(job)
 
 // For unlimited releases, use 0 as maxReleases.
 jobUnlimited := WithRelease(job, queue, 30*time.Second, 0, shouldRelease)
+```
+
+#### Recover
+
+Wrap a job to recover from panics and convert them to errors. This allows panics to be handled by `WithResultHandler` or other wrappers.
+
+Without `WithRecover`:
+  * Panics are caught by the queue itself and logged to stderr (or sent to the panic handler, if configured).
+
+With `WithRecover`:
+  * Panics become normal errors that can be handled in your job composition.
+
+```go
+var failedJobs []error
+
+job := WithResultHandler(
+  WithRecover(func(ctx context.Context) error {
+    panic("Oh no!") // This panic will be converted to an error.
+    return nil
+  }),
+  func() {
+    fmt.Println("Job completed")
+  },
+  func(err error) {
+    fmt.Printf("Job failed: %v\n", err) // Job failed: Oh no!
+    failedJobs = append(failedJobs, err)
+  },
+)
+
+queue.Enqueue(job)
 ```
 
 #### Tagged

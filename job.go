@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -353,6 +354,28 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 			}
 		}
 		return err
+	}
+}
+
+// WithRecover wraps a job to recover from panics and return them as errors.
+// This allows panic errors to be handled by WithResultHandler and similar wrappers.
+// Without this wrapper, panics are caught by the queue and logged to stderr (or sent
+// to the panic handler if configured).
+func WithRecover(job Job) Job {
+	return func(ctx context.Context) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				switch x := r.(type) {
+				case string:
+					err = fmt.Errorf("job panic: %s", x)
+				case error:
+					err = fmt.Errorf("job panic: %w", x)
+				default:
+					err = fmt.Errorf("job panic: %v", x)
+				}
+			}
+		}()
+		return job(ctx)
 	}
 }
 
