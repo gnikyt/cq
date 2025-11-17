@@ -147,11 +147,11 @@ func WithTimeout(job Job, timeout time.Duration) Job {
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return ctx.Err() // Context cancelled, return error.
 		case <-timeoutCtx.Done():
-			return timeoutCtx.Err()
+			return timeoutCtx.Err() // Timeout context cancelled, return error.
 		case err := <-done:
-			return err
+			return err // Job completed (with error or nil), return error.
 		}
 	}
 }
@@ -172,11 +172,11 @@ func WithDeadline(job Job, deadline time.Time) Job {
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return ctx.Err() // Context cancelled, return error.
 		case <-deadlineCtx.Done():
-			return deadlineCtx.Err()
+			return deadlineCtx.Err() // Deadline context cancelled, return error.
 		case err := <-done:
-			return err
+			return err // Job completed (with error or nil), return error.
 		}
 	}
 }
@@ -220,15 +220,14 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 		lock, exists := locker.Get(key)
 		if exists {
 			if !lock.IsExpired() {
-				// Return this job as "done" since original job has not yet completed.
-				return nil
+				return nil // Return this job as "done" since original job has not yet completed.
 			} else {
 				// Lock exists, but is expired, release it. In this event, the job may have
 				// not been processed yet, took too long to complete, etc.
 				locker.Release(key)
 			}
 		}
-		// Lock either doesnt exist or was released, aquire a new lock.
+		// Lock either doesn't exist or was released, aquire a new lock.
 		var es struct{}
 		var expiresAt time.Time
 		if ut == 0 {

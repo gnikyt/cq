@@ -4,7 +4,7 @@
 
 An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
 
-Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own!
+Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own! It also contains an optional priority queue on top of the queue system and a job builder pattern.
 
 This is inspired from great projects such as Bull, Pond, Ants, and more.
 
@@ -35,6 +35,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Recover](#recover)
     + [Tagged](#tagged)
     + [Your own](#your-own)
+    + [Builder Pattern](#builder-pattern)
   - [Priority Queue](#priority-queue)
     + [Basic Usage](#basic-usage)
     + [Priority Levels](#priority-levels)
@@ -570,7 +571,8 @@ func withSmiles(job Job) Job {
   if err := job(context.Background()); err != nil {
     smile = ":("
   }
-  log.Print(smile)
+  log.Print(smile) // Result of job.
+  return nil // No error.
 }
 
 // ...
@@ -579,7 +581,74 @@ job := withSmiles(func (ctx context.Context) error {
   return doSomeWork()
 })
 queue.Enqueue(job)
+
+// ...
+
+func withSemaphore(job cq.Job, queueName string, ignoreContextErrors bool) cq.Job {
+	sem := semaphoreFor(queueName)
+	return func(ctx context.Context) error {
+		if err := sem.Aquire(ctx); err != nil {
+			// Check if we should ignore context errors.
+			if ignoreContextErrors && errors.Is(err, context.Canceled) {
+				return nil // Context was cancelled, but we ignore it and continue.
+			} else if ignoreContextErrors && errors.Is(err, context.DeadlineExceeded) {
+				return nil // Context deadline exceeded, but we ignore it and continue.
+			} else {
+				return err // Return the error (either not a context error, or we don't ignore context errors).
+			}
+		}
+		defer sem.Release()
+		return job(ctx)
+	}
+}
+
+job := withRetry(
+  withSemaphore(rateLimitedJob, "product", false),
+  2,
+)
+queue.Enqueue(job)
 ```
+
+#### Builder Pattern
+
+As an alternative to nested calls, you can use the `JobBuilder` for a chainable API.. both approaches produce the same result.
+
+##### Nested
+
+```go
+job := WithTagged(
+  WithResultHandler(
+    WithTimeout(
+      WithUnique(
+        WithBackoff(
+          WithRetry(
+            WithRecover(myJob),
+            5),
+          ExponentialBackoff),
+        "key", dur, locker),
+      2*time.Minute),
+    onSuccess, onFailure),
+  registry, "tag1", "tag2")
+
+queue.Enqueue(job)
+```
+
+##### Chained
+
+```go
+NewJob(myJob, queue).
+  ThenRecover().
+  ThenRetryWithBackoff(5, ExponentialBackoff).
+  ThenUnique("key", dur, locker).
+  ThenTimeout(2*time.Minute).
+  ThenOnComplete(onSuccess, onFailure).
+  ThenTag(registry, "tag1", "tag2").
+  Dispatch()
+```
+
+The builder applies wrappers in reverse order (bottom-to-top), matching the nested approach. In the example above, `ThanTag` (`WithTag`) is applied first and `ThenRecover` (`WithRecover`) is applied last before the job is ran.
+
+All `With*` methods available except for `WithPipeline` and `WithBatch` as they operate on multiple jobs rather than wrapping a single job.
 
 ### Priority Queue
 

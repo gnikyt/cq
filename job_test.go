@@ -213,12 +213,12 @@ func TestWithoutOverlap(t *testing.T) {
 
 	wg.Add(runs * 2)
 	go func() {
-		for i := 0; i < runs; i += 1 {
+		for i := 0; i < runs; i++ {
 			go jobo(i)(context.Background())
 		}
 	}()
 	go func() {
-		for i := 0; i < runs; i += 1 {
+		for i := 0; i < runs; i++ {
 			go jobno(i)(context.Background())
 		}
 	}()
@@ -273,7 +273,7 @@ func TestWithUnqiue(t *testing.T) {
 		}, "test", 10*time.Millisecond, locker)(context.Background())
 		// Allow goroutine to run.
 		time.Sleep(10 * time.Millisecond)
-		for i := 0; i < 2; i += 1 {
+		for i := 0; i < 2; i++ {
 			// Each job should run fine.
 			go WithUnique(func(ctx context.Context) error {
 				calls++

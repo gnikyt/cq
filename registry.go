@@ -13,7 +13,7 @@ import (
 // operations like cancelling all jobs for a specific resource.
 // Jobs can have multiple tags, and can be cancelled by any of the tags.
 type JobRegistry struct {
-	jobs   map[string]map[string]context.CancelFunc // tag -> jobID -> cancelFunc
+	jobs   map[string]map[string]context.CancelFunc // tag -> jobID -> cancelFunc.
 	mut    sync.RWMutex                             // Mutex for protecting the jobs map.
 	nextID atomic.Int64                             // Atomic counter for generating unique job IDs.
 }

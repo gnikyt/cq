@@ -208,8 +208,7 @@ func (pq *PriorityQueue) dispatcher() {
 	for {
 		select {
 		case <-pq.ctx.Done():
-			// Context cancelled, stop dispatcher.
-			return
+			return // Context cancelled, stop dispatcher.
 		case <-ticker.C:
 			for i := 0; i < pq.weights.highest; i++ {
 				pq.tryEnqueue(pq.highest)
@@ -272,15 +271,11 @@ func WithWeighting(highest, high, medium, low, lowest interface{}) PriorityQueue
 			case NumberWeight:
 				return int(v)
 			case PercentWeight:
-				// Convert percentage to count based on default total.
-				count := max((defaultWeightTotal*int(v))/100, 1)
-				return count
+				return max((defaultWeightTotal*int(v))/100, 1) // Convert percentage to count based on default total.
 			case int:
-				// Support raw int, no need to use NumberWeight specifically.
-				return v
+				return v // Support raw int, no need to use NumberWeight specifically.
 			default:
-				// Fallback to 1 attempt per tick.
-				return 1
+				return 1 // Fallback to 1 attempt per tick.
 			}
 		}
 

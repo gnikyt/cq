@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-const (
-	defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
-)
+const defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
 
 // Queue is responsible for pushing jobs to workers.
 // It will dynamically scale workers, if parameters for min
@@ -76,7 +74,7 @@ func (q *Queue) Capacity() int {
 func (q *Queue) Start() {
 	q.workerWg.Add(1)
 	go q.cleanupIdleWorkers()
-	for i := 0; i < q.workersMin; i += 1 {
+	for i := 0; i < q.workersMin; i++ {
 		q.newWorker(nil)
 	}
 }
@@ -219,8 +217,7 @@ func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
 // queue for an idling worker to pick up on when freed.
 func (q *Queue) doEnqueue(job Job) (ok bool) {
 	if q.IsStopped() {
-		// Do not submit, queue is stopped. Panic could happen if submitted.
-		return
+		return // Do not submit, queue is stopped. Panic could happen if submitted.
 	}
 
 	// Add job to job waitgroup, add to tallies.
@@ -313,12 +310,10 @@ func (q *Queue) workJobs(initialJob Job) {
 	for {
 		select {
 		case <-q.ctx.Done():
-			// Context closed, stop worker.
-			return
+			return // Context cancelled, stop worker.
 		case job := <-q.jobs:
 			if job == nil {
-				// Recieved a nil job, so this worker must be idle: exit.
-				return
+				return // Recieved a nil job, so this worker must be idle: exit.
 			}
 			q.workJob(job, false)
 		}
@@ -332,8 +327,7 @@ func (q *Queue) workJobs(initialJob Job) {
 // unless pushed into the job channel somewhere else.
 func (q *Queue) newWorker(initialJob Job) (ok bool) {
 	if ok = q.addRunningWorker(); !ok {
-		// Can not add a worker.
-		return
+		return // Can not add a worker.
 	}
 	if initialJob == nil {
 		// No initial job provided, mark this worker idle.
@@ -357,12 +351,10 @@ func (q *Queue) cleanupIdleWorkers() {
 	for {
 		select {
 		case <-q.ctx.Done():
-			// Context closed, stop idle worker ticker.
-			return
+			return // Context closed, stop idle worker ticker.
 		case <-pt.C:
 			if ok := q.subtractRunningWorker(); ok {
-				// An idle worker can be stopped.
-				q.jobs <- nil
+				q.jobs <- nil // An idle worker can be stopped.
 			}
 		}
 	}
