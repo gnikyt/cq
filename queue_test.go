@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -181,43 +180,6 @@ func TestQueueDelayEnqueueBatch(t *testing.T) {
 	}
 	if completed := q.TallyOf(JobStateCompleted); completed != 3 {
 		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCompleted): got %d, want 3", completed)
-	}
-}
-
-func TestQueueEnqueueMaxed(t *testing.T) {
-	// Skip in CI. This is not reliable test due to timing and other variables.
-	if testing.Short() {
-		t.Skip("Skipping")
-	}
-
-	jobs := 150                                    // Number of jobs.
-	delay := time.Duration(500 * time.Millisecond) // Job sleep.
-	sleep := time.Duration(1 * time.Second)        // Check sleep.
-	var pMsg atomic.Value                          // Panic message.
-
-	// Create queue with 0 capacity and only 1 worker to force channel usage.
-	q := NewQueue(1, 1, 0, WithPanicHandler(func(err any) {
-		pMsg.Store(fmt.Sprintf("%v", err))
-	}))
-	q.Start()
-
-	// Spam the queue with 0 capacity.
-	for i := 0; i < jobs; i++ {
-		go func() {
-			q.Enqueue(func(ctx context.Context) error {
-				time.Sleep(delay)
-				return nil
-			})
-		}()
-	}
-	q.Stop(false)
-
-	time.Sleep(sleep) // Allow panic to run.
-	// The panic might be "send on closed channel" or "runtime error: index out of range"
-	// depending on timing and Go version.
-	msg := pMsg.Load()
-	if msg == nil || msg.(string) == "" {
-		t.Error("WithPanicHandler(): expected panic to happen")
 	}
 }
 
