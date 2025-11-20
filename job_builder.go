@@ -64,9 +64,9 @@ func (jb *JobBuilder) ThenRetry(times int) *JobBuilder {
 }
 
 // ThenRetryWithBackoff implements builder usage for WithBackoff + WithRetry combined.
-func (jb *JobBuilder) ThenRetryWithBackoff(times int, backoff BackoffFunc) *JobBuilder {
+func (jb *JobBuilder) ThenRetryWithBackoff(limit int, bf BackoffFunc) *JobBuilder {
 	return jb.Then(func(job Job) Job {
-		return WithBackoff(WithRetry(job, times), backoff)
+		return WithRetry(WithBackoff(job, bf), limit)
 	})
 }
 
