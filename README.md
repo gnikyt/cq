@@ -741,6 +741,179 @@ priorityQueue := NewPriorityQueue(queue, 50,
 * `Stop(true)` - Stops both dispatcher and underlying queue.
 * `Stop(false)` - Stops only dispatcher, leaves queue running.
 
+### Scheduler
+
+`Scheduler` provides interval-based scheduling for recurring and one-time jobs. Jobs are enqueued into the provided `Queue` when their schedule triggers, allowing you to schedule jobs to run at specific intervals or at specific times.
+
+#### Basic Usage
+
+Create a scheduler and schedule jobs:
+
+```go
+// Create queue and scheduler.
+queue := NewQueue(2, 10, 100)
+queue.Start()
+
+scheduler := NewScheduler(context.Background(), queue)
+defer scheduler.Stop()
+
+// Schedule a recurring job every 10 minutes.
+err := scheduler.Every("cleanup-task", 10*time.Minute, func(ctx context.Context) error {
+    fmt.Println("Running cleanup...")
+    return performCleanup()
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Schedule a one-time job to run at a specific time.
+reminderTime := time.Now().Add(1 * time.Hour)
+err = scheduler.At("reminder", reminderTime, func(ctx context.Context) error {
+    fmt.Println("Time for your meeting!")
+    return sendNotification()
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check if a job exists.
+if scheduler.Has("cleanup-task") {
+    fmt.Println("Cleanup task is scheduled")
+}
+
+// List all scheduled jobs.
+jobs := scheduler.List()
+fmt.Printf("Scheduled jobs: %v\n", jobs)
+
+// Remove a scheduled job.
+if scheduler.Remove("cleanup-task") {
+    fmt.Println("Cleanup task removed")
+}
+```
+
+#### Recurring Jobs
+
+Use `Every()` to schedule jobs that run at regular intervals:
+
+```go
+// Run every 5 minutes.
+scheduler.Every("status-check", 5*time.Minute, statusCheckJob)
+
+// Run every 30 seconds.
+scheduler.Every("heartbeat", 30*time.Second, heartbeatJob)
+
+// Run every hour.
+scheduler.Every("hourly-report", 1*time.Hour, reportJob)
+```
+
+Notes:
+- Jobs are enqueued at each interval regardless of execution time
+- Multiple instances can queue/run if interval < execution time... use `WithoutOverlap` wrapper to prevent concurrent executions or `ThenNoOverlap` if using the builder method
+
+```go
+// Prevent overlapping executions (standard method).
+noOverlapJob := WithoutOverlap(longRunningJob, "long-task", locker)
+scheduler.Every("long-task", 1*time.Minute, noOverlapJob)
+
+// Prevent overlapping executions (builder method).
+NewJob(longRunningJob, queue).
+    ThenNoOverlap("long-task", locker).
+    ScheduleEvery(scheduler, "long-task", 1*time.Minute)
+```
+
+#### One-Time Jobs
+
+Use `At()` to schedule jobs that run once at a specific time:
+
+```go
+// Run at a specific time.
+runTime := time.Date(2025, 12, 25, 9, 0, 0, 0, time.UTC)
+scheduler.At("christmas-greeting", runTime, greetingJob)
+
+// Run after a delay.
+futureTime := time.Now().Add(2 * time.Hour)
+scheduler.At("delayed-task", futureTime, delayedJob)
+```
+
+Notes:
+- Jobs are automatically removed after execution
+- Returns error if scheduled time is in the past
+- Job is enqueued at the specified time
+
+#### Managing Jobs
+
+Scheduler provides methods for managing scheduled jobs:
+
+```go
+// Check if a job exists.
+exists := scheduler.Has("my-job")
+
+// Get count of scheduled jobs.
+count := scheduler.Count()
+
+// List all job IDs.
+jobIDs := scheduler.List()
+
+// Remove a specific job.
+removed := scheduler.Remove("my-job")
+
+// Stop all scheduled jobs.
+scheduler.Stop()
+```
+
+#### Job IDs
+
+Job IDs are user-provided strings that identify scheduled jobs:
+
+```go
+// Use descriptive IDs.
+scheduler.Every("database-backup", 24*time.Hour, backupJob)
+scheduler.Every("cache-cleanup", 1*time.Hour, cleanupJob)
+scheduler.At("midnight-report", midnight, reportJob)
+
+// IDs must be unique.
+err := scheduler.Every("backup", 1*time.Hour, job1)  // OK
+err = scheduler.Every("backup", 2*time.Hour, job2)   // Error: duplicate ID
+```
+
+#### Lifecycle
+
+Scheduler lifecycle is controlled by context and independent of the Queue:
+
+```go
+queue := NewQueue(2, 10, 100)
+queue.Start()
+
+// Simple usage with context.Background().
+scheduler := NewScheduler(context.Background(), queue)
+// Note: No explicit Start() needed, jobs start when added.
+
+// Later, stop scheduler (does not stop queue).
+scheduler.Stop()
+
+// Stop queue separately.
+queue.Stop(true)
+```
+
+You can pass in a context to handle stopping as needed, such as one handling a signal interrupt.
+
+#### Builder Integration
+
+Use the JobBuilder with scheduling:
+
+```go
+// Schedule a job with retries.
+err := NewJob(myJob, queue).
+    ThenRetry(3).
+    ThenTimeout(30*time.Second).
+    ScheduleEvery(scheduler, "retry-task", 10*time.Minute)
+
+// Schedule a one-time job with backoff.
+err = NewJob(myJob, queue).
+    ThenRetryWithBackoff(5, ExponentialBackoff).
+    ScheduleAt(scheduler, "one-time", futureTime)
+```
+
 ### Demo
 
 An example of running a HTTP server and queue at once. This is without relying on a source to store or pull the jobs, such as Redis... it will take the jobs and directly process them.

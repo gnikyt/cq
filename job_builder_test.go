@@ -145,4 +145,59 @@ func TestJobBuilder(t *testing.T) {
 
 		time.Sleep(50 * time.Millisecond)
 	})
+
+	t.Run("schedule_every", func(t *testing.T) {
+		queue := NewQueue(1, 10, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		scheduler := NewScheduler(context.Background(), queue)
+		defer scheduler.Stop()
+
+		var count atomic.Value
+		count.Store(0)
+
+		err := NewJob(func(ctx context.Context) error {
+			count.Store(count.Load().(int) + 1)
+			return nil
+		}, queue).ScheduleEvery(scheduler, "test-every", 50*time.Millisecond)
+
+		if err != nil {
+			t.Errorf("ScheduleEvery(): unexpected error: %v", err)
+		}
+
+		time.Sleep(125 * time.Millisecond)
+
+		if count.Load().(int) < 2 {
+			t.Errorf("ScheduleEvery(): expected at least 2 executions, got %d", count.Load().(int))
+		}
+	})
+
+	t.Run("schedule_at", func(t *testing.T) {
+		queue := NewQueue(1, 10, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		scheduler := NewScheduler(context.Background(), queue)
+		defer scheduler.Stop()
+
+		var executed atomic.Value
+		executed.Store(false)
+
+		futureTime := time.Now().Add(100 * time.Millisecond)
+		err := NewJob(func(ctx context.Context) error {
+			executed.Store(true)
+			return nil
+		}, queue).ScheduleAt(scheduler, "test-at", futureTime)
+
+		if err != nil {
+			t.Errorf("ScheduleAt(): unexpected error: %v", err)
+		}
+
+		time.Sleep(150 * time.Millisecond)
+
+		if !executed.Load().(bool) {
+			t.Error("ScheduleAt(): job was not executed")
+		}
+	})
 }

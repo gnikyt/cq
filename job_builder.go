@@ -149,3 +149,15 @@ func (jb *JobBuilder) ThenChainBefore(jobs ...Job) *JobBuilder {
 	jb.job = WithChain(append([]Job{job}, jobs...)...)
 	return jb
 }
+
+// ScheduleEvery builds the job and schedules it to run at the specified interval.
+// Returns an error if a job with the same ID already exists in the scheduler.
+func (jb *JobBuilder) ScheduleEvery(scheduler *Scheduler, id string, interval time.Duration) error {
+	return scheduler.Every(id, interval, jb.Build())
+}
+
+// ScheduleAt builds the job and schedules it to run once at the specified time.
+// Returns an error if a job with the same ID already exists in the scheduler.
+func (jb *JobBuilder) ScheduleAt(scheduler *Scheduler, id string, t time.Time) error {
+	return scheduler.At(id, t, jb.Build())
+}
