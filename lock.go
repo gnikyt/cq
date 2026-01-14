@@ -30,6 +30,13 @@ type Locker[T any] interface {
 	ForceRelease(key string)
 }
 
+// CleanableLocker extends Locker with cleanup capabilities for removing expired locks.
+// This is optional... lockers that handle expiration automatically (like Redis) don't need it.
+type CleanableLocker[T any] interface {
+	Locker[T]
+	Cleanup() int
+}
+
 // MemoryLocker is memory-based Locker implementation utilizing sync map.
 type MemoryLocker[T any] struct {
 	locks sync.Map
@@ -103,4 +110,21 @@ func (ml *MemoryLocker[T]) Release(key string) bool {
 // ForceRelease will release (remove) a lock for a given key.
 func (ml *MemoryLocker[T]) ForceRelease(key string) {
 	ml.locks.Delete(key)
+}
+
+// Cleanup removes all expired locks from memory and returns the count of removed locks.
+// This is useful for preventing memory buildup in long-running applications with many
+// unique lock keys. Safe to call concurrently with other Locker operations.
+// You can call this in a ticker for example, to cleanup expired locks.
+func (ml *MemoryLocker[T]) Cleanup() int {
+	var removed int
+	ml.locks.Range(func(key any, value any) bool {
+		lv := value.(LockValue[T])
+		if lv.IsExpired() {
+			ml.locks.Delete(key)
+			removed++
+		}
+		return true
+	})
+	return removed
 }

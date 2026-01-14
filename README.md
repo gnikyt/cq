@@ -4,7 +4,7 @@
 
 An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
 
-Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own! It also contains an optional priority queue on top of the queue system and a job builder pattern.
+Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own! It also contains an optional priority queue on top of the queue system.
 
 This is inspired from great projects such as Bull, Pond, Ants, and more.
 
@@ -35,7 +35,6 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Recover](#recover)
     + [Tagged](#tagged)
     + [Your own](#your-own)
-    + [Builder Pattern](#builder-pattern)
   - [Priority Queue](#priority-queue)
     + [Basic Usage](#basic-usage)
     + [Priority Levels](#priority-levels)
@@ -411,7 +410,7 @@ queue.Enqueue(WithChain(job(fileFromUser), job2)) // WithChain[FileInfo](job, jo
 
 #### Batch
 
-Track multiple jobs as a single batch with callbacks for completion, failure, and progress.
+Track multiple jobs as a single batch with callbacks for completion and progress. When all jobs finish, the completion callback receives any errors that occurred (empty slice if all succeeded).
 
 An example usecase is processing a large dataset and notifying when all processing is complete, or tracking progress as each item completes.
 
@@ -430,11 +429,12 @@ jobs := []Job{
 
 batchJobs, batchState := WithBatch(
   jobs,
-  func() {
-    fmt.Println("All jobs completed successfully!")
-  },
   func(errs []error) {
-    fmt.Printf("Batch failed with %d errors: %v\n", len(errs), errs)
+    if len(errs) == 0 {
+      fmt.Println("All jobs completed successfully!")
+    } else {
+      fmt.Printf("Batch completed with %d errors: %v\n", len(errs), errs)
+    }
   },
   func(completed, total int) {
     fmt.Printf("Progress: %d/%d (%.0f%%)\n", completed, total, float64(completed)/float64(total)*100)
@@ -609,47 +609,6 @@ job := withRetry(
 queue.Enqueue(job)
 ```
 
-#### Builder Pattern
-
-As an alternative to nested calls, you can use the `JobBuilder` for a chainable API.. both approaches produce the same result.
-
-##### Nested
-
-```go
-job := WithTagged(
-  WithResultHandler(
-    WithTimeout(
-      WithUnique(
-        WithBackoff(
-          WithRetry(
-            WithRecover(myJob),
-            5),
-          ExponentialBackoff),
-        "key", dur, locker),
-      2*time.Minute),
-    onSuccess, onFailure),
-  registry, "tag1", "tag2")
-
-queue.Enqueue(job)
-```
-
-##### Chained
-
-```go
-NewJob(myJob, queue).
-  ThenRecover().
-  ThenRetryWithBackoff(5, ExponentialBackoff).
-  ThenUnique("key", dur, locker).
-  ThenTimeout(2*time.Minute).
-  ThenOnComplete(onSuccess, onFailure).
-  ThenTag(registry, "tag1", "tag2").
-  Dispatch()
-```
-
-The builder applies wrappers in reverse order (bottom-to-top), matching the nested approach. In the example above, `ThanTag` (`WithTag`) is applied first and `ThenRecover` (`WithRecover`) is applied last before the job is ran.
-
-All `With*` methods available except for `WithPipeline` and `WithBatch` as they operate on multiple jobs rather than wrapping a single job.
-
 ### Priority Queue
 
 `PriorityQueue` wraps a regular `Queue` to add priority-based job processing. Jobs with higher priority are processed before lower priority jobs, using a weighted dispatch system to prevent starvation. Very basic implementation.
@@ -808,17 +767,12 @@ scheduler.Every("hourly-report", 1*time.Hour, reportJob)
 
 Notes:
 - Jobs are enqueued at each interval regardless of execution time
-- Multiple instances can queue/run if interval < execution time... use `WithoutOverlap` wrapper to prevent concurrent executions or `ThenNoOverlap` if using the builder method
+- Multiple instances can queue/run if interval < execution time... use `WithoutOverlap` wrapper to prevent concurrent executions
 
 ```go
-// Prevent overlapping executions (standard method).
+// Prevent overlapping executions.
 noOverlapJob := WithoutOverlap(longRunningJob, "long-task", locker)
 scheduler.Every("long-task", 1*time.Minute, noOverlapJob)
-
-// Prevent overlapping executions (builder method).
-NewJob(longRunningJob, queue).
-    ThenNoOverlap("long-task", locker).
-    ScheduleEvery(scheduler, "long-task", 1*time.Minute)
 ```
 
 #### One-Time Jobs
@@ -896,23 +850,6 @@ queue.Stop(true)
 ```
 
 You can pass in a context to handle stopping as needed, such as one handling a signal interrupt.
-
-#### Builder Integration
-
-Use the JobBuilder with scheduling:
-
-```go
-// Schedule a job with retries.
-err := NewJob(myJob, queue).
-    ThenRetry(3).
-    ThenTimeout(30*time.Second).
-    ScheduleEvery(scheduler, "retry-task", 10*time.Minute)
-
-// Schedule a one-time job with backoff.
-err = NewJob(myJob, queue).
-    ThenRetryWithBackoff(5, ExponentialBackoff).
-    ScheduleAt(scheduler, "one-time", futureTime)
-```
 
 ### Demo
 
