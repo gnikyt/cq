@@ -99,4 +99,3 @@ func TestWithErrorClassifier(t *testing.T) {
 		}
 	})
 }
-

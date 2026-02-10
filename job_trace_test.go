@@ -109,4 +109,3 @@ func TestWithTracing(t *testing.T) {
 		}
 	})
 }
-

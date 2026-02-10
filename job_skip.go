@@ -20,4 +20,3 @@ func WithSkipIf(job Job, shouldSkip SkipIfFunc) Job {
 		return job(ctx)
 	}
 }
-
