@@ -11,35 +11,34 @@ import (
 
 const defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
 
-// Queue is responsible for pushing jobs to workers.
-// It will dynamically scale workers, if parameters for min
-// and max allow it to do so. As well, it keeps track of
-// various job metrics.
+// Queue dispatches jobs to workers.
+// It dynamically scales workers between configured minimum and maximum limits,
+// and tracks runtime job and worker metrics.
 type Queue struct {
-	workersMin          int                // Minimum number of workers.
-	workersMax          int                // Maximum number of workers.
-	workerIdleTick      time.Duration      // Idle worker timeout.
-	workerWg            sync.WaitGroup     // Wait group for workers.
-	jobWg               sync.WaitGroup     // Wait group of jobs.
-	jobs                chan Job           // Job channel.
-	ctx                 context.Context    // Context.
-	ctxCancel           context.CancelFunc // Context cancel function.
-	panicHandler        func(any)          // Panic handler.
-	mut                 sync.Mutex         // Mutex for handling checks on active worker space.
-	stopped             atomic.Bool        // Done flag.
-	workersRunningTally atomic.Int32       // Number of running workers. int32 should suffice, allows for decrements.
-	workersIdleTally    atomic.Int32       // Number of idle workers. int32 should suffice, allows for decrements.
-	createdJobsTally    atomic.Int64       // Number of jobs pushed.
-	activeJobsTally     atomic.Int64       // Number of active jobs.
-	pendingJobsTally    atomic.Int64       // Number of pending jobs to be processed.
-	failedJobsTally     atomic.Int64       // Number of jobs failed.
-	completedJobsTally  atomic.Int64       // Number of completed jobs.
+	workersMin          int                // Minimum worker count.
+	workersMax          int                // Maximum worker count.
+	workerIdleTick      time.Duration      // Interval for idle-worker cleanup.
+	workerWg            sync.WaitGroup     // Tracks worker and cleanup goroutines.
+	jobWg               sync.WaitGroup     // Tracks in-flight jobs.
+	jobs                chan Job           // Buffered job queue.
+	ctx                 context.Context    // Queue context for workers/jobs.
+	ctxCancel           context.CancelFunc // Cancels the queue context.
+	panicHandler        func(any)          // Optional panic handler for job panics.
+	mut                 sync.Mutex         // Guards worker scaling decisions.
+	stopped             atomic.Bool        // Indicates queue shutdown has started.
+	workersRunningTally atomic.Int32       // Reserved/active worker slots used for scaling decisions.
+	workersIdleTally    atomic.Int32       // Reserved idle worker slots available for new jobs.
+	createdJobsTally    atomic.Int64       // Total jobs accepted.
+	activeJobsTally     atomic.Int64       // Jobs currently executing.
+	pendingJobsTally    atomic.Int64       // Jobs waiting in the queue.
+	failedJobsTally     atomic.Int64       // Jobs completed with error.
+	completedJobsTally  atomic.Int64       // Jobs completed successfully.
 }
 
-// NewQueue returns a new Queue.
-// Pass in the minumum running workers as wmin, pass in the maxiumum
-// workers as wmax, and a job capacity as cap. Additional configuration
-// options can be passed in as the remaining parameters.
+// NewQueue creates a queue with worker and buffer limits.
+// `wmin` is the minimum worker count, `wmax` is the maximum worker count,
+// and `cap` is the jobs channel capacity. Optional settings can be passed
+// via `opts`.
 func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 	q := &Queue{
 		workersMin:     wmin,
@@ -69,23 +68,22 @@ func (q *Queue) Capacity() int {
 	return cap(q.jobs)
 }
 
-// Start will begin the idle worker ticker and start the minimum
-// number of workers configured.
+// Start begins the idle-worker ticker and starts the configured minimum workers.
 func (q *Queue) Start() {
 	q.workerWg.Add(1)
 	go q.cleanupIdleWorkers()
-	for i := 0; i < q.workersMin; i++ {
+
+	for range q.workersMin {
 		q.newWorker(nil)
 	}
 }
 
-// Stop atomically sets the flag to tell the workers to stop when done
-// processing the jobs and additionally resets the tallies and closes
-// the jobs channel. If jobWait is true, in addition to waiting for the
-// workers to finish, it will also wait for the jobs in the queue to
-// finish.
+// Stop gracefully shuts down the queue.
+// It marks the queue as stopped, optionally waits for queued jobs to finish
+// when `jobWait` is true, waits for worker goroutines to exit, resets worker
+// tallies, and closes the jobs channel.
 func (q *Queue) Stop(jobWait bool) {
-	(&q.stopped).Store(true)
+	q.stopped.Store(true)
 	if jobWait {
 		q.jobWg.Wait()
 	}
@@ -95,10 +93,10 @@ func (q *Queue) Stop(jobWait bool) {
 	close(q.jobs)
 }
 
-// Terminate is the same as Stop except it will immediately stop
-// everything without waits on jobs or workers.
+// Terminate forces an immediate shutdown.
+// Unlike Stop, it does not wait for jobs or worker goroutines to finish.
 func (q *Queue) Terminate() {
-	(&q.stopped).Store(true)
+	q.stopped.Store(true)
 	q.ctxCancel()
 	q.resetWorkers()
 	close(q.jobs)
@@ -106,7 +104,7 @@ func (q *Queue) Terminate() {
 
 // IsStopped atomically checks if the queue is stopped.
 func (q *Queue) IsStopped() bool {
-	return (&q.stopped).Load()
+	return q.stopped.Load()
 }
 
 // TallyOf atomically returns the number of jobs for a given state.
@@ -114,141 +112,207 @@ func (q *Queue) TallyOf(js JobState) int {
 	var val int64
 	switch js {
 	case JobStateCompleted:
-		val = (&q.completedJobsTally).Load()
+		val = q.completedJobsTally.Load()
 	case JobStateFailed:
-		val = (&q.failedJobsTally).Load()
+		val = q.failedJobsTally.Load()
 	case JobStatePending:
-		val = (&q.pendingJobsTally).Load()
+		val = q.pendingJobsTally.Load()
 	case JobStateActive:
-		val = (&q.activeJobsTally).Load()
+		val = q.activeJobsTally.Load()
 	default:
-		val = (&q.createdJobsTally).Load()
+		val = q.createdJobsTally.Load()
 	}
 	return int(val)
 }
 
 // RunningWorkers atomically returns the number of running workers.
 func (q *Queue) RunningWorkers() int {
-	return int((&q.workersRunningTally).Load())
+	return int(q.workersRunningTally.Load())
 }
 
 // IdleWorkers atomically returns the number of idle workers.
 func (q *Queue) IdleWorkers() int {
-	return int((&q.workersIdleTally).Load())
+	return int(q.workersIdleTally.Load())
 }
 
-// addRunningWorker checks to see if active workers can be incremented.
-func (q *Queue) addRunningWorker() bool {
-	q.mut.Lock()
-	defer q.mut.Unlock()
-
-	active := q.RunningWorkers()
-	if active >= q.workersMax || (active >= q.workersMin && q.IdleWorkers() > 0) {
-		return false
-	}
-	(&q.workersRunningTally).Add(1)
-	return true
-}
-
-// subtrackRunningWorker checks to see if running workers can be decremented.
-func (q *Queue) subtractRunningWorker() bool {
-	q.mut.Lock()
-	defer q.mut.Unlock()
-
-	if q.IdleWorkers() == 0 || q.RunningWorkers() <= q.workersMin {
-		return false
-	}
-	(&q.workersRunningTally).Add(-1)
-	(&q.workersIdleTally).Add(-1)
-	return true
-}
-
-// resetWorkers will reset the running and idle values.
-func (q *Queue) resetWorkers() {
-	q.mut.Lock()
-	defer q.mut.Unlock()
-	(&q.workersRunningTally).Store(0)
-	(&q.workersIdleTally).Store(0)
-}
-
-// Enqueue accepts a job and pushes it into the queue. Non-blocking.
-// If queue is at capacity, this will cause a panic.
+// Enqueue submits a job to the queue.
+// It blocks if no worker can be started and the jobs channel is full.
 func (q *Queue) Enqueue(job Job) {
-	q.doEnqueue(job)
+	q.doEnqueue(job, true)
 }
 
-// TryEnqueue accepts a job and trys to push it into the queue. Blocking.
-// Will return true if was added, false if not (queue capacity reached).
+// TryEnqueue attempts to submit a job without blocking.
+// It returns true if accepted, or false if no worker can be started and the
+// jobs channel is full.
 func (q *Queue) TryEnqueue(job Job) bool {
-	return q.doEnqueue(job)
+	return q.doEnqueue(job, false)
 }
 
-// DelayEnqueue accepts a job and will push it into the queue after
-// the set delay duration. It will do this its own goroutine to not
-// have to block other actions of your code.
+// DelayEnqueue submits a job after the given delay.
+// The delay runs in its own goroutine so the caller is not blocked.
 func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
+	timer := time.NewTimer(delay)
 	go func() {
-		<-time.After(delay)
-		q.doEnqueue(job)
+		defer timer.Stop()
+
+		select {
+		case <-q.ctx.Done():
+			return // Context cancelled, stop delay.
+		case <-timer.C:
+			q.doEnqueue(job, true) // Job can be submitted now.
+		}
 	}()
 }
 
 // EnqueueBatch accepts a slice of jobs and enqueues each one.
 func (q *Queue) EnqueueBatch(jobs []Job) {
 	for _, job := range jobs {
-		q.doEnqueue(job)
+		q.doEnqueue(job, true)
 	}
 }
 
-// DelayEnqueueBatch accepts a slice of jobs and will push them into
-// the queue after the set delay duration.
+// DelayEnqueueBatch submits a slice of jobs after the given delay.
 func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
+	timer := time.NewTimer(delay)
 	go func() {
-		<-time.After(delay)
-		for _, job := range jobs {
-			q.doEnqueue(job)
+		defer timer.Stop()
+
+		select {
+		case <-q.ctx.Done():
+			return // Context cancelled, stop delay.
+		case <-timer.C:
+			for _, job := range jobs {
+				q.doEnqueue(job, true) // Jobs can be submitted now.
+			}
 		}
 	}()
 }
 
-// doEnqueue accepts a job and attempts to start a worker initially dedicated
-// to this job, so long as we are not above our maximum number of workers.
-// If it fails to start a dedicated worker, it will push the job into the
-// queue for an idling worker to pick up on when freed.
-func (q *Queue) doEnqueue(job Job) (ok bool) {
-	if q.IsStopped() {
-		return // Do not submit, queue is stopped. Panic could happen if submitted.
+// reserveWorkerSlot checks limits under lock and reserves one running-worker slot.
+// The tally is incremented before starting a goroutine to avoid oversubscribing workersMax.
+func (q *Queue) reserveWorkerSlot() bool {
+	q.mut.Lock()
+	defer q.mut.Unlock()
+
+	running := q.RunningWorkers()
+	if running >= q.workersMax || (running >= q.workersMin && q.IdleWorkers() > 0) {
+		return false
 	}
 
-	// Add job to job waitgroup, add to tallies.
+	q.workersRunningTally.Add(1)
+	return true
+}
+
+// reserveIdleWorkerStop reserves one idle worker to be stopped under lock.
+// Tallies are decremented before signaling stop to avoid double-reserving capacity.
+func (q *Queue) reserveIdleWorkerStop() bool {
+	q.mut.Lock()
+	defer q.mut.Unlock()
+
+	if q.IdleWorkers() == 0 || q.RunningWorkers() <= q.workersMin {
+		return false
+	}
+
+	q.workersRunningTally.Add(-1)
+	q.workersIdleTally.Add(-1)
+	return true
+}
+
+// resetWorkers resets running and idle worker tallies.
+func (q *Queue) resetWorkers() {
+	q.mut.Lock()
+	defer q.mut.Unlock()
+
+	q.workersRunningTally.Store(0)
+	q.workersIdleTally.Store(0)
+}
+
+// markJobEnqueued records a job accepted by the queue.
+func (q *Queue) markJobEnqueued() {
+	q.createdJobsTally.Add(1)
+	q.pendingJobsTally.Add(1)
+}
+
+// rollbackJobEnqueued reverts markJobEnqueued when enqueue fails.
+func (q *Queue) rollbackJobEnqueued() {
+	q.createdJobsTally.Add(-1)
+	q.pendingJobsTally.Add(-1)
+}
+
+// markJobStarted records a pending job transitioning to active.
+func (q *Queue) markJobStarted() {
+	q.activeJobsTally.Add(1)
+	q.pendingJobsTally.Add(-1)
+}
+
+// markJobFailed records a failed active job.
+func (q *Queue) markJobFailed() {
+	q.activeJobsTally.Add(-1)
+	q.failedJobsTally.Add(1)
+}
+
+// markJobCompleted records a successfully completed active job.
+func (q *Queue) markJobCompleted() {
+	q.activeJobsTally.Add(-1)
+	q.completedJobsTally.Add(1)
+}
+
+// markWorkerIdle records a worker becoming idle.
+func (q *Queue) markWorkerIdle() {
+	q.workersIdleTally.Add(1)
+}
+
+// unmarkWorkerIdle records a worker leaving idle state.
+func (q *Queue) unmarkWorkerIdle() {
+	q.workersIdleTally.Add(-1)
+}
+
+// doEnqueue submits a job to the queue internals.
+// It first tries to start a dedicated worker for the job when scaling limits allow.
+// If no worker can be started, it falls back to pushing the job onto `q.jobs`.
+// When `blocking` is false, the fallback channel send is non-blocking.
+func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
+	if q.IsStopped() {
+		return // Queue stopped.
+	}
+
+	// Track the job and record enqueue tallies.
 	q.jobWg.Add(1)
-	(&q.createdJobsTally).Add(1)
-	(&q.pendingJobsTally).Add(1)
+	q.markJobEnqueued()
 
 	defer func() {
-		if r := recover(); r != nil || !ok {
-			// Try and run panic handler.
+		if r := recover(); r != nil {
+			// Panic occurred; notify handler if configured.
 			if q.panicHandler != nil {
 				q.panicHandler(r)
 			}
-			// Was not able to add to queue, everything is full.
-			(&q.createdJobsTally).Add(-1)
-			(&q.pendingJobsTally).Add(-1)
+		}
+		if !ok {
+			// Job could not be enqueued, rollback tallies.
+			q.rollbackJobEnqueued()
 			q.jobWg.Done()
 		}
 	}()
 
 	// Attempt to create a dedicated worker for this job.
 	if ok = q.newWorker(job); !ok {
-		q.jobs <- job
-		ok = true
+		if blocking {
+			q.jobs <- job
+			ok = true
+		} else {
+			select {
+			case q.jobs <- job:
+				ok = true
+			default:
+				ok = false
+			}
+		}
 	}
 	return
 }
 
-// workJob handles processing a job from queue.
-// If isFirst is true, we know that the job passed in
-// is being processed as dedicated.
+// workJob executes a single job.
+// `isFirst` is true when the job is the worker's initial dedicated job.
 func (q *Queue) workJob(job Job, isFirst bool) {
 	// No matter what, mark job as done and attempt to
 	// recover from a panic in the handler.
@@ -264,97 +328,94 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 				err = fmt.Errorf("workJob: unknown panic: %v", x)
 			}
 
-			// Update tallies, run panic handler if set.
-			(&q.activeJobsTally).Add(-1)
-			(&q.failedJobsTally).Add(1)
+			// Update job tallies and run panic handler if set.
+			q.markJobFailed()
 			if q.panicHandler != nil {
 				q.panicHandler(err)
 			} else {
-				// Default behavior: log to stderr.
+				// Default behavior: log to stderr if no handler is set.
 				fmt.Fprintf(os.Stderr, "workJob: job panic (no handler set): %v\n", err)
 			}
 		}
 
-		// Mark job done, mark worker as idle as it is not processing a job anymore.
+		// Mark the job done and return the worker to idle state.
 		q.jobWg.Done()
-		(&q.workersIdleTally).Add(1)
+		q.markWorkerIdle()
 	}()
 
 	if !isFirst {
-		// Not the first job this worker has ran, mark as not idle.
-		(&q.workersIdleTally).Add(-1)
+		// Worker is taking a queued job, so it is no longer idle.
+		q.unmarkWorkerIdle()
 	}
 
 	// Update tallies.
-	(&q.activeJobsTally).Add(1)
-	(&q.pendingJobsTally).Add(-1)
+	q.markJobStarted()
 
-	// Run the job with the queue's context, then update the tallies.
+	// Run the job with the queue context and record the result.
 	if err := job(q.ctx); err != nil {
-		(&q.activeJobsTally).Add(-1)
-		(&q.failedJobsTally).Add(1)
+		q.markJobFailed()
 	} else {
-		(&q.activeJobsTally).Add(-1)
-		(&q.completedJobsTally).Add(1)
+		q.markJobCompleted()
 	}
 }
 
-// workJobs handles processing the channels for jobs, failures, done, etc.
-// If initial job is provided, this job will be worked on right away.
+// workJobs runs the worker loop until context cancellation or idle-stop signal.
+// If `initialJob` is set, it is executed before the loop starts.
 func (q *Queue) workJobs(initialJob Job) {
 	defer q.workerWg.Done()
+
 	if initialJob != nil {
-		// Initial job provided, work it right away.
+		// Execute the initial job provided.
 		q.workJob(initialJob, true)
 	}
+
 	for {
 		select {
 		case <-q.ctx.Done():
 			return // Context cancelled, stop worker.
 		case job := <-q.jobs:
 			if job == nil {
-				return // Recieved a nil job, so this worker must be idle: exit.
+				return // Received a nil job, so this worker must be idle: exit.
 			}
 			q.workJob(job, false)
 		}
 	}
 }
 
-// newWorker will attempt to create a new worker, if allowed by limits.
-// If an initial job is provided, this will be worked on right away by
-// the new spun-up worker.
-// If a new worker can not be created, the job will not be processed
-// unless pushed into the job channel somewhere else.
+// newWorker tries to start a worker when scaling limits allow.
+// If `initialJob` is set, the worker executes it immediately.
+// Returns false when no worker slot can be reserved.
 func (q *Queue) newWorker(initialJob Job) (ok bool) {
-	if ok = q.addRunningWorker(); !ok {
-		return // Can not add a worker.
+	if ok = q.reserveWorkerSlot(); !ok {
+		return // No worker slot available.
 	}
+
 	if initialJob == nil {
-		// No initial job provided, mark this worker idle.
-		(&q.workersIdleTally).Add(1)
+		// Worker is idle until it takes a job.
+		q.markWorkerIdle()
 	}
-	// Add to worker wait group, go listen for jobs.
+
+	// Add to worker wait group and start the worker loop.
 	q.workerWg.Add(1)
 	go q.workJobs(initialJob)
 	ok = true
 	return
 }
 
-// cleanupIdleWorkers will take the workerIdleTick and
-// run a ticker at that interval to try and stop idle
-// workers. Idle workers are stopped by sending a nil
-// job to the job channel.
+// cleanupIdleWorkers periodically tries to stop extra idle workers.
+// It ticks at `workerIdleTick` and signals a worker to exit by sending nil.
 func (q *Queue) cleanupIdleWorkers() {
 	pt := time.NewTicker(q.workerIdleTick)
 	defer pt.Stop()
 	defer q.workerWg.Done()
+
 	for {
 		select {
 		case <-q.ctx.Done():
-			return // Context closed, stop idle worker ticker.
+			return // Context cancelled, stop idle worker ticker.
 		case <-pt.C:
-			if ok := q.subtractRunningWorker(); ok {
-				q.jobs <- nil // An idle worker can be stopped.
+			if ok := q.reserveIdleWorkerStop(); ok {
+				q.jobs <- nil // Send nil to signal an idle worker to exit.
 			}
 		}
 	}
@@ -363,35 +424,30 @@ func (q *Queue) cleanupIdleWorkers() {
 // Functional options for queue.
 type QueueOption func(*Queue)
 
-// WithWorkerIdleTick is a functional option for Queue to
-// set when idle workers timeout for cleanup.
+// WithWorkerIdleTick sets how often idle-worker cleanup runs.
 func WithWorkerIdleTick(tt time.Duration) QueueOption {
 	return func(q *Queue) {
 		q.workerIdleTick = tt
 	}
 }
 
-// WithContext is a functional option for Queue to
-// set a context handler for the queue itself.
+// WithContext sets the queue context and derives its cancel function.
 func WithContext(ctx context.Context) QueueOption {
 	return func(q *Queue) {
 		q.ctx, q.ctxCancel = context.WithCancel(ctx)
 	}
 }
 
-// WithCancelableContext is a functional option for Queue to
-// set a context handler for the queue itself.
-// This is useful for passing in a signal notify context
-// for example, to tell the queue to stop on sigterm/sigint.
+// WithCancelableContext sets the queue context and cancel function directly.
+// This is useful with signal-aware contexts to stop on SIGTERM/SIGINT.
 func WithCancelableContext(ctx context.Context, ctxCancel context.CancelFunc) QueueOption {
 	return func(q *Queue) {
 		q.ctx, q.ctxCancel = ctx, ctxCancel
 	}
 }
 
-// WithPanicHandler allows for manually handling panics for jobs
-// or for the queue itself.
-// The handler is passed in the value from recover.
+// WithPanicHandler sets a panic handler for job and queue panics.
+// The handler receives the value returned by recover.
 func WithPanicHandler(handler func(any)) QueueOption {
 	return func(q *Queue) {
 		q.panicHandler = handler

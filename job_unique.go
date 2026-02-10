@@ -7,7 +7,7 @@ import (
 )
 
 // WithoutOverlap ensures multiple jobs of a given key cannot run concurrently.
-// This is useful when jobs touch shared data (such asaccount balances) and must
+// This is useful when jobs touch shared data (such as account balances) and must
 // execute sequentially to prevent race conditions.
 // Jobs with the same key will block workers while waiting for the mutex.
 // If many jobs with the same key are enqueued, workers become tied up waiting,
@@ -51,7 +51,7 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 				locker.Release(key)
 			}
 		}
-		// Lock either doesn't exist or was released, aquire a new lock.
+		// Lock either does not exist or was released; acquire a new lock.
 		var es struct{}
 		var expiresAt time.Time
 		if ut == 0 {
@@ -61,10 +61,13 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 			// Append duration to now.
 			expiresAt = time.Now().Add(ut)
 		}
-		locker.Aquire(key, LockValue[struct{}]{
+		if !locker.Aquire(key, LockValue[struct{}]{
 			ExpiresAt: expiresAt,
 			Value:     es,
-		})
+		}) {
+			// Another worker acquired the lock first.
+			return nil
+		}
 		defer locker.Release(key)
 		return job(ctx)
 	}
@@ -85,11 +88,14 @@ func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[s
 				locker.Release(key)
 			}
 		}
-		// Aquire lock for the full window duration.
-		locker.Aquire(key, LockValue[struct{}]{
+		// Acquire lock for the full window duration.
+		if !locker.Aquire(key, LockValue[struct{}]{
 			ExpiresAt: time.Now().Add(window),
 			Value:     struct{}{},
-		})
+		}) {
+			// Another worker acquired the lock first.
+			return nil
+		}
 		return job(ctx)
 	}
 }

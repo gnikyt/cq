@@ -4,9 +4,8 @@ import (
 	"context"
 )
 
-// WithResultHandler allows for notifying of the job completing or failing.
-// If completed, the onCompleted function will execute.
-// If failed, the onFailed function will execute and be passed in the error.
+// WithResultHandler invokes callbacks on job success or failure.
+// onCompleted runs after a nil error; onFailed runs with the returned error.
 func WithResultHandler(job Job, onCompleted func(), onFailed func(error)) Job {
 	return func(ctx context.Context) error {
 		if err := job(ctx); err != nil {

@@ -2,12 +2,13 @@
 
 [![Testing](https://github.com/gnikyt/cq/actions/workflows/cq.yml/badge.svg)](https://github.com/gnikyt/cq/actions/workflows/cq.yml)
 
-An auto-scalling queue which processes functions as jobs. The jobs can be simple functions or composed of the supporting job wrappers.
+An auto-scaling queue that processes functions as jobs. Jobs can be simple functions or composed with job wrappers.
 
-Wrapper supports for retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and potential to write your own! It also contains an optional priority queue on top of the queue system.
+Wrappers support retries, timeouts, deadlines, delays, backoffs, overlap prevention, uniqueness, batch operations, job release/retry, job tagging, priority queues, and custom wrappers. It also includes an optional priority queue on top of the base queue system.
 
 This is inspired from great projects such as Bull, Pond, Ants, and more.
 
+* [Quick Start](#quick-start)
 * [Testing](#testing)
   - [Benchmarks](#benchmarks)
 * [Building](#building)
@@ -39,7 +40,39 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Basic Usage](#basic-usage)
     + [Priority Levels](#priority-levels)
     + [Weighting](#weighting)
+  - [Scheduler](#scheduler)
+    + [Basic Usage](#basic-usage-1)
+    + [Recurring Jobs](#recurring-jobs)
+    + [One-Time Jobs](#one-time-jobs)
+    + [Managing Jobs](#managing-jobs)
+    + [Job IDs](#job-ids)
+    + [Lifecycle](#lifecycle)
+    + [Cron-like Scheduling (Optional)](#cron-like-scheduling-optional)
   - [Demo](#demo)
+
+## Quick Start
+
+```go
+package main
+
+import (
+  "context"
+  "fmt"
+
+  "github.com/gnikyt/cq"
+)
+
+func main() {
+  queue := cq.NewQueue(1, 10, 100)
+  queue.Start()
+  defer queue.Stop(true) // Wait for queued/running jobs before exit.
+
+  queue.Enqueue(func(ctx context.Context) error {
+    fmt.Println("processing job")
+    return nil
+  })
+}
+```
 
 ## Testing
 
@@ -47,44 +80,41 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
 
 Example result:
 
-    ok      github.com/gnikyt/cq    10.484s coverage: 91.8% of statements
+    ok      github.com/gnikyt/cq    15.832s coverage: 90.3% of statements
     PASS
 
-\>90% coverage currently, on the important parts. Tests are time-based which will be swapped/improved in the future.
+Current coverage is around 90% on the core paths. Some tests are time-based and may be improved in the future.
 
 ### Benchmarks
 
 `make bench`
 
-Runs the following benchmarks:
+Load benchmarks run these request/job mixes: `100x10,000`, `1,000x1,000`, and `10,000x100`.
 
-1. 100 requests each pushing 10,000 jobs
-2. 1,000 requests each pushing 1,000 jobs
-3. 10,000 requests each pushing 100 jobs
-4. 1,000,000 requests each pushing 10 jobs
-5. 1 request pushing 1 job
+Example result (Darwin ARM64):
 
-Example result (WSL):
-
-    cpu: Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz
-    BenchmarkScenarios/100Req--10kJobs-8                   2         582232006 ns/op         8204560 B/op       2028 allocs/op
-    BenchmarkScenarios/1kReq--1kJobs-8                     2         658066621 ns/op         8512672 B/op       6693 allocs/op
-    BenchmarkScenarios/10kReq--100Jobs-8                   2        2067297391 ns/op        34609016 B/op     169945 allocs/op
-    BenchmarkScenarios/1mReq--10Jobs-8                     2        8600135828 ns/op        43627288 B/op    1017660 allocs/op
-    BenchmarkSingle-8                                      2            813900 ns/op         8004360 B/op         16 allocs/op
+    cpu: Apple M5
+    BenchmarkScenarios/100Req--10kJobs-10                             7    192443179 ns/op    107037 B/op      235 allocs/op
+    BenchmarkScenarios/1kReq--1kJobs-10                               7    194722393 ns/op    130395 B/op     1180 allocs/op
+    BenchmarkScenarios/10kReq--100Jobs-10                             7    352322048 ns/op    542281 B/op    11390 allocs/op
+    BenchmarkScenariosSteadyState/100Req--10kJobs-10                  8    221076688 ns/op     18163 B/op      118 allocs/op
+    BenchmarkScenariosSteadyState/1kReq--1kJobs-10                    6    354617493 ns/op     85909 B/op     1088 allocs/op
+    BenchmarkScenariosSteadyState/10kReq--100Jobs-10                  4    414824562 ns/op    886610 B/op    12358 allocs/op
+    BenchmarkSingle-10                                             80572        14407 ns/op     82768 B/op       15 allocs/op
+    BenchmarkSingleSteadyState-10                                3063700        393.4 ns/op        32 B/op        2 allocs/op
     PASS
 
 ## Building
 
 `make build`
 
-Binary will be located in `dist/cq`. You will need to grant execution permissions.
+The binary is built at `dist/cq`.
 
 ## Examples
 
 ### Queue
 
-Queue needs a minimum to maximum amount of workers to run and a capacity. There are other options you can configure as well.
+A queue requires minimum/maximum worker counts and a capacity. Additional options are also available.
 
 ```go
 // Create a queue with 1 always-running worker.
@@ -115,15 +145,15 @@ You can pull current stats for the queue.
 
 You can push jobs to the queue in a few ways.
 
-* `Enqueue(Job)` will push the job to the queue, non-blocking.
+* `Enqueue(Job)` submits a job and may block if no worker can be started and the jobs channel is full.
   - Example: `Enqueue(job)`
-* `TryEnqueue(Job) bool` will try and push the job to the queue, and return if successful or not, blocking.
+* `TryEnqueue(Job) bool` attempts to submit a job without blocking and returns whether it was accepted.
   - Example: `ok := TryEnqueue(job)`
-* `DelayEnqueue(Job, delay time.Duration)` will push the job to the queue in a seperate goroutine after the delay, non-blocking.
+* `DelayEnqueue(Job, delay time.Duration)` submits a job after the given delay in a separate goroutine.
   - Example: `DelayEnqueue(job, time.Duration(2 * time.Minute))`
-* `EnqueueBatch([]Job)` will enqueue multiple jobs at once.
+* `EnqueueBatch([]Job)` submits multiple jobs at once.
   - Example: `EnqueueBatch(jobs)`
-* `DelayEnqueueBatch([]Job, delay time.Duration)` will enqueue multiple jobs after a delay.
+* `DelayEnqueueBatch([]Job, delay time.Duration)` submits multiple jobs after a delay.
   - Example: `DelayEnqueueBatch(jobs, time.Duration(30 * time.Second))`
 
 #### Idle worker tick
@@ -142,18 +172,19 @@ queue := NewQueue(
 
 ### Panic handler
 
-Configure a handler for panics so the queue does not crash if/when a panic happens.
+Configure a panic handler so the queue does not crash when a panic happens.
 
-A panic can happen from the job itself or if the queue has reached max capacity (using `Enqueue`, not `TryEnqueue`).
+A panic can come from job code itself. Use `WithPanicHandler` to centralize panic handling.
 
 ```go
 queue := NewQueue(
   2,
   5,
   100,
-  WithPanicHandler(func (err any) {
-    // err can be a string, error, etc.. you can use type assert to check and handle as you need..
-    log.Errorf("Job or queue failed: %v", %v)
+  WithPanicHandler(func(err any) {
+    // err can be a string, error, etc.
+    // Use type assertions if you need different handling by type.
+    log.Errorf("Job or queue failed: %v", err)
   }),
 )
 ```
@@ -162,7 +193,7 @@ queue := NewQueue(
 
 Pass a custom context to the queue.
 
-By default, the queue will configure a cancelable background context. An example usecase is if you would need to terminate the queue after running for a certain period of time or terminate the queue upon a sigterm/sigint.
+By default, the queue configures a cancelable background context. A common use case is stopping after a certain time period or in response to SIGTERM/SIGINT.
 
 ```go
 queue := NewQueue(2, 5, 100, WithContext(yourCtx))
@@ -176,8 +207,9 @@ queue := NewQueue(2, 5, 100, WithCancelableContext(yourCtx, yourCtxCancel))
 
 You can stop a queue in a few ways.
 
-* `Stop(jobWait bool)` will flag the queue to stop, it will wait for the workers to be completed and optionally wait for jobs to complete as well if you pass `true`. It will then run some post operations for cleanup.
-* `Terminate()` will flag the queue to stop, and hard stop all workers, including jobs, regardless of their status.
+* `Stop(true)` gracefully stops the queue and waits for queued/running jobs, then worker goroutines, then performs cleanup.
+* `Stop(false)` gracefully stops the queue without waiting for queued jobs to finish first.
+* `Terminate()` forces an immediate shutdown and does not wait for jobs or worker goroutines to finish.
 
 See `example/web_direct.go` for an example on how you can configure sigterm/sigint context to stop the queue.
 
@@ -187,9 +219,9 @@ Setup your jobs in any way you please, as long as it matches the signature of `f
 
 You can use basic functions, composed functions, struct methods, and so on.
 
-Each of the built-in methods can be composed/wrapped ontop of one-another to build your desired requirements. Additionally, since any function that matches the signature will work, you can build your own wrapping functions as well.
+Built-in wrappers can be composed on top of each other to match your requirements. Any function with the job signature can be used, so you can also build your own wrappers.
 
-See below for examples of all built-in methods, but please ignore the actual job code and their silly method names, its just for display purposes.
+The examples below show each built-in wrapper. The job code and names are simplified for demonstration.
 
 #### Function
 
@@ -216,7 +248,7 @@ queue.Enqueue(job2)
 
 Retry, on error, to a maximum number of retries.
 
-An example usecase is retrying an HTTP fetch job X times because the server is possibily down.
+An example use case is retrying an HTTP fetch job X times because the server is possibly down.
 
 ```go
 retries := 2
@@ -233,7 +265,7 @@ job := WithRetry(func (ctx context.Context) error {
 
 To be used with `WithRetry`, adds a backoff delay before recalling the job.
 
-An example usecase is retrying an HTTP fetch job X times, at delayed intervals, because the server is possibily down.
+An example use case is retrying an HTTP fetch job X times at delayed intervals because the server is possibly down.
 
 ```go
 retries := 4
@@ -261,14 +293,14 @@ There are three built-in backoff implementations, with the ability to write your
 
 Capture job result, completed or failed.
 
-An example usecase is if you would like to send a message in Slack for a completed job and also push failed jobs to a database table for reprocessing later.
+An example use case is sending a Slack message for successful jobs and moving failed jobs to a database table for later reprocessing.
 
 ```go
 // We will create a job with an ID.
 // We will capture its result of success and failure.
 // If failed, we will move the job to a table to process later.
-job := func (id int) error {
-  return WithResult(
+job := func(id int) error {
+  return WithResultHandler(
     WithRetry(func (ctx context.Context) error {
       req := fetchSomeEndpoint()
       if err != nil {
@@ -280,7 +312,7 @@ job := func (id int) error {
     func () {
       log.Infof("Special job #%d is done successfully!", id)
     },
-    // On failure (optional), use nil to disfregard.
+    // On failure (optional), use nil to disregard.
     func (err error) {
       moveToFailureTable(id, err)
     },
@@ -293,7 +325,7 @@ queue.Enqueue(job(id))
 
 Timeout a job after running it for a duration.
 
-An example usecase is if you could be generating a report from several sources of data, and maybe if the report takes longer than 30 seconds to generate, then something must be wrong, so you kill the processing by timing it out after 30 seconds.
+An example use case is generating a report from multiple data sources and timing it out if it takes too long.
 
 ```go
 // Job must complete 5 minutes after running.
@@ -307,22 +339,22 @@ queue.Enqueue(job)
 
 Complete a job by a certain datetime.
 
-An example usecase is if you are passing orders over to a shipping service for same-day shipping, in which the shipping service must recieve the order labels by a specific datetime to be considered same-day.
+An example use case is sending orders to a same-day shipping service where labels must be received by a specific datetime.
 
 ```go
 // Job must complete by today at 16:50.
 tn := time.Now()
 job := WithDeadline(func (ctx context.Context) error {
   return someExpensiveLongWork()
-}, time.Date(tn.Year(), tn.Month(), tn.Day(), 16, 50, 0, 0, nil)
+}, time.Date(tn.Year(), tn.Month(), tn.Day(), 16, 50, 0, 0, time.Local))
 queue.Enqueue(job)
 ```
 
 #### Overlaps
 
-Prevent mutliple of the same job from running at the same time.
+Prevent multiple jobs with the same key from running at the same time.
 
-An example usecase is where you want to modify an accounting amount, in sequence, to ensure the amount is modified correctly each time.
+An example use case is modifying an account balance in sequence to ensure each update is applied correctly.
 
 ```go
 // Create a new memory-based lock manager which holds mutexes.
@@ -332,7 +364,7 @@ job := WithoutOverlap(func (ctx context.Context) error {
   amount := amountForUser()
   decrement := 4
   if amount < decrement {
-    // Can not remove any more from the amount.
+    // Cannot remove any more from the amount.
     return nil
   }
   amount -= decrement
@@ -344,13 +376,13 @@ queue.Enqueue(job)
 
 Allow only one job of a key to be run during a window of time or until completed.
 
-An example usecase is if you have a search index job which should only run once per hour, because the indexing process is a time-intensive and large job. If subsequent jobs are pushed into the queue before the original job completed within that hour, the job is "discarded".
+An example use case is a search indexing job that should only run once per hour because indexing is expensive. If duplicate jobs arrive during that hour, they are discarded.
 
 ```go
 // Create a new memory-based lock manager.
 locker := NewUniqueMemoryLock()      // NewMemoryLock[struct{}]()
 window := time.Duration(1*time.Hour) // No other job of this key can process within an hour.
-job := WithUnqiue(func (ctx context.Context) error {
+job := WithUnique(func(ctx context.Context) error {
   return doSomeWork()
 }, "job-key-here", window, locker)
 queue.Enqueue(job)
@@ -360,7 +392,7 @@ queue.Enqueue(job)
 
 Chain jobs together, where each job must complete, error-free, before running the next.
 
-An example usecase is if you need to create a welcome package for a customer which involves several steps and notifications, where each step must complete before moving to the next.
+An example use case is creating a customer welcome flow with several steps and notifications, where each step must complete before the next starts.
 
 Should you want data to pass from one job to another, you can utilize a buffered channel on your own, or use `WithPipeline`.
 
@@ -385,7 +417,7 @@ Chain jobs together, where each job must complete, error-free, before running th
 
 This is identical to `WithChain`, however it will internally create a buffered channel with a capacity of 1. Each job must be wrapped to accept the channel as a parameter. If this built-in functionality does not meet your needs, you can always create a channel outside on your own and utilize `WithChain` instead.
 
-An example usecase is where you could be processing a file upload and need information about the file for each job.
+An example use case is processing a file upload and passing file details between steps.
 
 ```go
 job := func (file File) func(chan FileInfo) {
@@ -412,7 +444,7 @@ queue.Enqueue(WithChain(job(fileFromUser), job2)) // WithChain[FileInfo](job, jo
 
 Track multiple jobs as a single batch with callbacks for completion and progress. When all jobs finish, the completion callback receives any errors that occurred (empty slice if all succeeded).
 
-An example usecase is processing a large dataset and notifying when all processing is complete, or tracking progress as each item completes.
+An example use case is processing a large dataset and notifying on completion while tracking per-item progress.
 
 ```go
 jobs := []Job{
@@ -460,7 +492,7 @@ fmt.Printf(
 
 Re-enqueue a job after a delay if it returns a specific error. Useful for handling temporary failures like network issues or rate limits.
 
-An example usecase is retrying an HTTP request after a service returns a 503 (temporarily unavailable) or 429 (rate limited).
+An example use case is retrying an HTTP request when a service returns 503 (temporarily unavailable) or 429 (rate limited).
 
 ```go
 var ErrServiceUnavailable = errors.New("service unavailable")
@@ -526,7 +558,7 @@ queue.Enqueue(job)
 
 Tag jobs for tracking and cancellation. Useful for cancelling groups of related jobs (example, all jobs for a specific user or resource).
 
-An example usecase is cancelling all processing jobs when a user deletes their account.
+An example use case is cancelling all processing jobs when a user deletes their account.
 
 ```go
 registry := NewJobRegistry()
@@ -563,7 +595,7 @@ registry.CancelAll()
 
 #### Your own
 
-As long as you match the job signature of `func() error`, you can create anything to wrap your job.
+As long as you match the job signature `func(ctx context.Context) error`, you can create any wrapper you need.
 
 ```go
 func withSmiles(job Job) Job {
@@ -611,7 +643,7 @@ queue.Enqueue(job)
 
 ### Priority Queue
 
-`PriorityQueue` wraps a regular `Queue` to add priority-based job processing. Jobs with higher priority are processed before lower priority jobs, using a weighted dispatch system to prevent starvation. Very basic implementation.
+`PriorityQueue` wraps a regular `Queue` to add priority-based processing. Higher priority jobs are processed first, using weighted dispatch to prevent starvation.
 
 #### Basic Usage
 
@@ -660,7 +692,7 @@ Five priority levels are available:
 
 **Default weights (attempts per tick):** 5:3:2:1:1
 
-This means highest priority jobs get 5 attempts per tick, high gets 3, etc. This ensures higher priority jobs process faster while preventing lower priority jobs from starving.
+This means highest priority jobs get 5 attempts per tick, high gets 3, and so on. This keeps high-priority work moving while still giving lower priorities processing time.
 
 #### Weighting
 
@@ -851,9 +883,74 @@ queue.Stop(true)
 
 You can pass in a context to handle stopping as needed, such as one handling a signal interrupt.
 
+#### Cron-like Scheduling (Optional)
+
+If you want cron expression support (`"*/5 * * * *"`, `"0 2 * * *"`, `@daily`, etc.),
+you can layer an external parser on top of `Scheduler.At()`.
+
+Example using [`github.com/adhocore/gronx`](https://github.com/adhocore/gronx):
+
+```go
+func ScheduleCron(scheduler *Scheduler, key string, cronExpr string, job Job) error {
+	gron := gronx.New()
+	if !gron.IsValid(cronExpr) {
+		return fmt.Errorf("ScheduleCron: invalid cron expression: %s", cronExpr)
+	}
+
+	nextRun, err := gronx.NextTick(cronExpr, true)
+	if err != nil {
+		return fmt.Errorf("ScheduleCron: failed to calculate next run: %w", err)
+	}
+
+	var scheduledJob Job
+	scheduledJob = func(ctx context.Context) error {
+		err := job(ctx)
+
+		nextRun, scheduleErr := gronx.NextTick(cronExpr, false)
+		if scheduleErr != nil {
+			log.Printf("[scheduler:%s] failed to calculate next run: %v", key, scheduleErr)
+			return err
+		}
+		if scheduleErr := scheduler.At(key, nextRun, scheduledJob); scheduleErr != nil {
+			log.Printf("[scheduler:%s] failed to reschedule: %v", key, scheduleErr)
+		}
+
+		return err
+	}
+
+	if err := scheduler.At(key, nextRun, scheduledJob); err != nil {
+		return fmt.Errorf("ScheduleCron: failed to schedule first run: %w", err)
+	}
+	return nil
+}
+```
+
+Usage:
+
+```go
+queue := NewQueue(2, 10, 100)
+queue.Start()
+defer queue.Stop(true)
+
+scheduler := NewScheduler(context.Background(), queue)
+defer scheduler.Stop()
+
+err := ScheduleCron(
+	scheduler,
+	"daily-report",
+	"0 2 * * *", // Daily at 2 AM.
+	func(ctx context.Context) error {
+		return generateDailyReport(ctx)
+	},
+)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
 ### Demo
 
-An example of running a HTTP server and queue at once. This is without relying on a source to store or pull the jobs, such as Redis... it will take the jobs and directly process them.
+Example of running an HTTP server and queue together. This setup does not rely on an external source (such as Redis); jobs are accepted and processed directly.
 
 The demo simply runs a basic job function which sometimes may have a simulated workload (time delay). It will create a queue with 1 always-running worker, to a maximum of 100 workers, and a capacity of 1000.
 

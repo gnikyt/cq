@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// LockValue reprecents the value an expiration of a lock for a key.
+// LockValue stores a lock value and optional expiration for a key.
 type LockValue[T any] struct {
 	Value     T
 	ExpiresAt time.Time
@@ -21,7 +21,7 @@ func (lv LockValue[T]) IsExpired() bool {
 	return exp.Before(time.Now())
 }
 
-// Locker reprecents a lock manager.
+// Locker represents a lock manager.
 type Locker[T any] interface {
 	Exists(key string) bool
 	Get(key string) (LockValue[T], bool)
@@ -37,13 +37,13 @@ type CleanableLocker[T any] interface {
 	Cleanup() int
 }
 
-// MemoryLocker is memory-based Locker implementation utilizing sync map.
+// MemoryLocker is an in-memory Locker implementation backed by sync.Map.
 type MemoryLocker[T any] struct {
 	locks sync.Map
 }
 
-// NewMemoryLocker creates a new MemoryLocker instance for a type.
-// The type, T, reprecents the type of Value for a LockValue.
+// NewMemoryLocker creates a new MemoryLocker for type T.
+// T is the lock value type used by LockValue.
 func NewMemoryLocker[T any]() *MemoryLocker[T] {
 	return &MemoryLocker[T]{}
 }
@@ -60,10 +60,8 @@ func NewOverlapMemoryLocker() *MemoryLocker[*sync.Mutex] {
 	return NewMemoryLocker[*sync.Mutex]()
 }
 
-// Get will load a lock from key.
-// It will return a lock and a boolean reprecenting existance.
-// Should a lock not exist for the key, an empty LockValue will be
-// returned.
+// Get loads a lock for key.
+// Returns the lock and whether it exists. If missing, returns an empty LockValue.
 func (ml *MemoryLocker[T]) Get(key string) (LockValue[T], bool) {
 	lock, ok := ml.locks.Load(key)
 	if !ok {
@@ -73,18 +71,14 @@ func (ml *MemoryLocker[T]) Get(key string) (LockValue[T], bool) {
 	return lv, ok
 }
 
-// Exists will check if a LockValue exists for a key.
+// Exists reports whether a lock exists for key.
 func (ml *MemoryLocker[T]) Exists(key string) (ok bool) {
 	_, ok = ml.Get(key)
 	return
 }
 
-// Aquire will attempt to aquire a lock for a given key.
-// If a lock exists, and the expiration is in future, it will not
-// allow for a new lock.
-// If a lock exists, and the expiration is past, it will allow
-// for a new lock.
-// If a lock does not exist, it will allow for a new lock.
+// Aquire attempts to claim a lock for key.
+// It fails if a non-expired lock already exists; otherwise it stores the new lock.
 func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
 	if lock, ok := ml.Get(key); ok {
 		if !lock.IsExpired() {
@@ -95,10 +89,8 @@ func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
 	return true
 }
 
-// Release will attempt to remove the lock for a given key.
-// If a lock exists for a given key, it will release (remove) it
-// and return true.
-// If a lock does not exist for a given key, it will return false.
+// Release removes the lock for key.
+// Returns true if a lock existed and was removed.
 func (ml *MemoryLocker[T]) Release(key string) bool {
 	if !ml.Exists(key) {
 		return false
@@ -107,7 +99,7 @@ func (ml *MemoryLocker[T]) Release(key string) bool {
 	return true
 }
 
-// ForceRelease will release (remove) a lock for a given key.
+// ForceRelease removes the lock for key without existence checks.
 func (ml *MemoryLocker[T]) ForceRelease(key string) {
 	ml.locks.Delete(key)
 }

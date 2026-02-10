@@ -3,25 +3,35 @@ package cq
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
-// WithRelease re-enqueues a job after a delay if it returns an error
-// that matches the shouldRelease predicate. The shouldRelease function
-// should return true for errors that warrant a re-enqueue (such as network
-// timeouts, rate limits, etc). If maxReleases is 0, the job will be released
-// indefinitely. If maxReleases is exceeded or shouldRelease returns false,
-// the error is returned and the job is marked as failed.
+// WithRelease re-enqueues a job after a delay when shouldRelease(err) is true.
+// shouldRelease should match transient errors such as timeouts or rate limits.
+// maxReleases == 0 means unlimited releases.
+// Once maxReleases is exceeded, or shouldRelease returns false, the error is returned.
 func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, shouldRelease func(error) bool) Job {
-	var releases int
+	var releases atomic.Int32
 	var wrappedJob Job
+
 	wrappedJob = func(ctx context.Context) error {
 		err := job(ctx)
 		if err != nil && shouldRelease(err) {
-			if maxReleases == 0 || releases < maxReleases {
-				releases++
+			if maxReleases == 0 {
 				queue.DelayEnqueue(wrappedJob, delay)
 				return nil
+			}
+
+			for {
+				current := releases.Load()
+				if int(current) >= maxReleases {
+					break
+				}
+				if releases.CompareAndSwap(current, current+1) {
+					queue.DelayEnqueue(wrappedJob, delay)
+					return nil
+				}
 			}
 		}
 		return err
@@ -29,10 +39,9 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 	return wrappedJob
 }
 
-// WithRecover wraps a job to recover from panics and return them as errors.
-// This allows panic errors to be handled by WithResultHandler and similar wrappers.
-// Without this wrapper, panics are caught by the queue and logged to stderr (or sent
-// to the panic handler if configured).
+// WithRecover converts job panics into returned errors.
+// This allows panic cases to flow through wrappers such as WithResultHandler.
+// Without this wrapper, panic handling is owned by the queue runtime.
 func WithRecover(job Job) Job {
 	return func(ctx context.Context) (err error) {
 		defer func() {

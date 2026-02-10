@@ -6,22 +6,22 @@ import (
 	"sync/atomic"
 )
 
-// BatchState tracks the state of a batch of jobs.
+// BatchState tracks runtime state for a batch of jobs.
 type BatchState struct {
 	TotalJobs     int32        // Total number of jobs in the batch.
-	CompletedJobs atomic.Int32 // Number of jobs that have completed (both successes and failures).
+	CompletedJobs atomic.Int32 // Number of jobs that have finished (success or failure).
 	FailedJobs    atomic.Int32 // Number of jobs that have failed.
 
-	OnComplete func([]error)              // Callback executed when all jobs complete, passed all errors (empty if none).
+	OnComplete func([]error)              // Callback when all jobs finish. Receives all errors (empty if none).
 	OnProgress func(completed, total int) // Optional callback executed after each job completes.
 
 	Errors    []error    // Slice of all errors from failed jobs.
 	errorsMut sync.Mutex // Mutex for protecting the Errors slice.
 }
 
-// WithBatch wraps multiple jobs to track them as a single batch.
-// When all jobs complete, onComplete is called with any errors that occurred (empty slice if all succeeded).
-// The onProgress callback is optional and called after each job completes.
+// WithBatch wraps jobs so they can be tracked as one logical batch.
+// onComplete is called once when all jobs finish, with all errors (if any).
+// onProgress is optional and called after each completed job.
 func WithBatch(jobs []Job, onComplete func([]error), onProgress func(completed, total int)) ([]Job, *BatchState) {
 	if len(jobs) == 0 {
 		return nil, nil

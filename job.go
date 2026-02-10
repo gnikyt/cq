@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// JobState is the state of the job, used for queue tally lookups.
+// JobState represents a job lifecycle state for queue tallies.
 type JobState int
 
 const (
@@ -15,10 +15,10 @@ const (
 	JobStateCompleted
 )
 
-// String() support for JobState.
+// String implements fmt.Stringer.
 func (js JobState) String() string {
 	return [5]string{"created", "pending", "active", "failed", "completed"}[js]
 }
 
-// Job is type alias for the job signature.
+// Job is the function signature processed by the queue.
 type Job = func(ctx context.Context) error

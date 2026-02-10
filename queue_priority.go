@@ -17,11 +17,11 @@ const (
 	defaultWeightLowest  = 1  // Default weight for lowest priority.
 )
 
-// NumberWeight represents a weight as a raw count of attempts per tick.
+// NumberWeight represents a raw attempt count per dispatch tick.
 type NumberWeight int
 
 // PercentWeight represents a weight as a percentage (0-100).
-// Percentages are converted to counts based on a fixed total.
+// Percentages are converted to attempt counts using a fixed total.
 type PercentWeight int
 
 // weightConfig stores the number of attempts per tick for each priority level.
@@ -36,7 +36,7 @@ type weightConfig struct {
 // Functional options for PriorityQueue.
 type PriorityQueueOption func(*PriorityQueue)
 
-// Priority levels for job execution.
+// Priority levels for job dispatch.
 type Priority int
 
 const (
@@ -47,7 +47,7 @@ const (
 	PriorityHighest
 )
 
-// String() implementation.
+// String implements fmt.Stringer.
 func (p Priority) String() string {
 	return [5]string{"LOWEST", "LOW", "MEDIUM", "HIGH", "HIGHEST"}[p]
 }
@@ -71,9 +71,9 @@ type PriorityQueue struct {
 	wg sync.WaitGroup // Wait group.
 }
 
-// NewPriorityQueue creates a new PriorityQueue that wraps the provided Queue.
-// The capacity parameter sets the buffer size for each priority level.
-// Additional configuration options can be passed in as the remaining parameters.
+// NewPriorityQueue creates a PriorityQueue that wraps the provided Queue.
+// `capacity` sets the channel buffer size for each priority level.
+// Additional options can be passed via `opts`.
 func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *PriorityQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 	pq := &PriorityQueue{
@@ -97,12 +97,14 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 	for _, opt := range opts {
 		opt(pq)
 	}
+
 	pq.wg.Add(1)
 	go pq.dispatcher()
 	return pq
 }
 
-// Enqueue adds a job to the priority queue with the specified priority level.
+// Enqueue submits a job to the selected priority channel.
+// Invalid priorities default to `PriorityMedium`.
 func (pq *PriorityQueue) Enqueue(job Job, priority Priority) {
 	var ch chan Job
 	switch priority {
@@ -128,8 +130,8 @@ func (pq *PriorityQueue) Enqueue(job Job, priority Priority) {
 	}
 }
 
-// TryEnqueue attempts to add a job to the priority queue without blocking.
-// Returns true if the job was successfully added, false if the priority channel is full.
+// TryEnqueue attempts to submit a job without blocking.
+// Returns true if accepted, or false if the channel is full, closed, or priority is invalid.
 func (pq *PriorityQueue) TryEnqueue(job Job, priority Priority) bool {
 	var ch chan Job
 	switch priority {
@@ -157,16 +159,23 @@ func (pq *PriorityQueue) TryEnqueue(job Job, priority Priority) bool {
 	}
 }
 
-// DelayEnqueue adds a job to the priority queue after the specified delay.
-// It runs in its own goroutine to avoid blocking.
+// DelayEnqueue submits a job to the priority queue after the specified delay.
+// The delay runs in its own goroutine so the caller is not blocked.
 func (pq *PriorityQueue) DelayEnqueue(job Job, priority Priority, delay time.Duration) {
+	timer := time.NewTimer(delay)
 	go func() {
-		<-time.After(delay)
-		pq.Enqueue(job, priority)
+		defer timer.Stop()
+		select {
+		case <-pq.ctx.Done():
+			return // Context cancelled, stop delay.
+		case <-timer.C:
+			pq.Enqueue(job, priority) // Job can be submitted now.
+		}
 	}()
 }
 
-// CountByPriority returns the number of pending jobs in the specified priority level.
+// CountByPriority returns pending jobs for the specified priority.
+// Returns 0 for invalid priorities.
 func (pq *PriorityQueue) CountByPriority(priority Priority) int {
 	var ch chan Job
 	switch priority {
@@ -186,7 +195,7 @@ func (pq *PriorityQueue) CountByPriority(priority Priority) int {
 	return len(ch)
 }
 
-// PendingByPriority returns a map of all priority levels with their pending job counts.
+// PendingByPriority returns pending job counts for all priority levels.
 func (pq *PriorityQueue) PendingByPriority() map[Priority]int {
 	return map[Priority]int{
 		PriorityHighest: len(pq.highest),
@@ -197,9 +206,8 @@ func (pq *PriorityQueue) PendingByPriority() map[Priority]int {
 	}
 }
 
-// dispatcher pulls jobs from priority channels and enqueues them
-// to the underlying queue using weighted attempts per tick.
-// Higher priority levels get more attempts per tick based on weight configuration.
+// dispatcher pulls jobs from priority channels and forwards them to the underlying queue.
+// Each priority gets weighted attempts per tick based on the configured weights.
 func (pq *PriorityQueue) dispatcher() {
 	defer pq.wg.Done()
 	ticker := time.NewTicker(pq.priorityTick)
@@ -229,8 +237,8 @@ func (pq *PriorityQueue) dispatcher() {
 	}
 }
 
-// tryEnqueue attempts to pull a job from the given channel and enqueue it.
-// Returns true if a job was enqueued, false otherwise.
+// tryEnqueue attempts to pull one job from `ch` and enqueue it.
+// Returns true if a job was forwarded, false otherwise.
 func (pq *PriorityQueue) tryEnqueue(ch chan Job) bool {
 	select {
 	case job := <-ch:
@@ -241,29 +249,28 @@ func (pq *PriorityQueue) tryEnqueue(ch chan Job) bool {
 	}
 }
 
-// Stop stops the priority queue dispatcher and waits for it to finish.
-// If stopQueue is true, it will also stop the underlying queue.
-// Any jobs remaining in the priority channels will not be processed.
+// Stop stops the priority dispatcher and waits for it to finish.
+// If `stopQueue` is true, it also stops the underlying queue.
+// Jobs still buffered in priority channels are dropped.
 func (pq *PriorityQueue) Stop(stopQueue bool) {
 	pq.ctxCancel()
 	pq.wg.Wait()
+
 	if stopQueue {
 		pq.queue.Stop(true)
 	}
 }
 
-// WithPriorityTick is a functional option for PriorityQueue to
-// set the tick duration for the priority dispatcher.
+// WithPriorityTick sets the dispatcher tick interval.
 func WithPriorityTick(tick time.Duration) PriorityQueueOption {
 	return func(pq *PriorityQueue) {
 		pq.priorityTick = tick
 	}
 }
 
-// WithWeighting is a functional option for PriorityQueue to set custom weights
-// for each priority level. Weights determine how many attempts per tick each
-// priority level gets. Accepts both NumberWeight (raw number) and PercentWeight
-// (percentage that converts to a raw number).
+// WithWeighting sets custom per-priority dispatch weights.
+// Weights determine attempts per tick for each priority level.
+// Accepts NumberWeight, PercentWeight, or raw int values.
 func WithWeighting(highest, high, medium, low, lowest interface{}) PriorityQueueOption {
 	return func(pq *PriorityQueue) {
 		convertWeight := func(w interface{}) int {

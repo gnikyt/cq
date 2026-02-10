@@ -15,8 +15,8 @@ var (
 	ErrScheduleInPast  = errors.New("scheduled time is in the past")
 )
 
-// Scheduler manages recurring and one-time scheduled jobs.
-// Jobs are enqueued into the provided queue when their schedule triggers.
+// Scheduler manages recurring and one-time jobs.
+// Jobs are enqueued into the provided queue when schedules trigger.
 type Scheduler struct {
 	queue     *Queue             // Queue to enqueue jobs into.
 	ctx       context.Context    // Context for scheduler lifecycle.
@@ -51,14 +51,14 @@ func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
 	}
 }
 
-// Stop stops all scheduled jobs and waits for running jobs to finish.
+// Stop stops scheduled jobs and waits for scheduler goroutines to exit.
 func (s *Scheduler) Stop() {
 	s.ctxCancel()
 	s.wg.Wait()
 }
 
-// Every schedules a job to run at the specified interval.
-// The job will be enqueued into the queue repeatedly at each interval.
+// Every schedules a recurring job at the specified interval.
+// The job is enqueued each time the interval ticks.
 // Returns an error if a job with the same ID already exists.
 func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
 	if interval <= 0 {
@@ -88,8 +88,8 @@ func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
 	return nil
 }
 
-// At schedules a job to run once at the specified time.
-// The job will be enqueued into the queue at the specified time and then removed.
+// At schedules a one-time job for the specified time.
+// The job is enqueued once and then removed from the scheduler.
 // Returns an error if a job with the same ID already exists or if the time is in the past.
 func (s *Scheduler) At(id string, t time.Time, job Job) error {
 	if time.Now().After(t) {
@@ -119,7 +119,7 @@ func (s *Scheduler) At(id string, t time.Time, job Job) error {
 	return nil
 }
 
-// Remove cancels and removes a scheduled job.
+// Remove cancels and removes a scheduled job by ID.
 // Returns true if the job was found and removed, false otherwise.
 func (s *Scheduler) Remove(id string) bool {
 	s.mu.Lock()
@@ -136,7 +136,7 @@ func (s *Scheduler) Remove(id string) bool {
 	return true
 }
 
-// Has checks if a job with the specified ID exists.
+// Has reports whether a job with ID exists.
 func (s *Scheduler) Has(id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -153,7 +153,7 @@ func (s *Scheduler) Count() int {
 	return len(s.jobs)
 }
 
-// List returns a list of all scheduled job IDs.
+// List returns all scheduled job IDs.
 func (s *Scheduler) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -165,7 +165,7 @@ func (s *Scheduler) List() []string {
 	return ids
 }
 
-// runRecurring runs a recurring job at the specified interval.
+// runRecurring runs the recurring scheduling loop for one job.
 func (s *Scheduler) runRecurring(ctx context.Context, sj *scheduledJob) {
 	defer s.wg.Done()
 
@@ -182,7 +182,7 @@ func (s *Scheduler) runRecurring(ctx context.Context, sj *scheduledJob) {
 	}
 }
 
-// runOnce runs a one-time job at the specified time and then removes it.
+// runOnce waits until runAt, enqueues the job once, then removes it.
 func (s *Scheduler) runOnce(ctx context.Context, sj *scheduledJob) {
 	defer s.wg.Done()
 

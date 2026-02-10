@@ -9,8 +9,8 @@ import (
 // using the registry's CancelForTag method.
 // The job automatically unregisters itself when it completes or fails.
 func WithTagged(job Job, registry *JobRegistry, tags ...string) Job {
-	jobID := registry.NextID()
 	return func(ctx context.Context) error {
+		jobID := registry.NextID()
 		jobCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 

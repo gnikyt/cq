@@ -5,10 +5,9 @@ import (
 	"time"
 )
 
-// WithTimeout accepts a timeout duration for which the job must
-// timeout if not completed. A context is created and the job is
-// ran in goroutine where it's error result is passed to a channel
-// waiting for the result.
+// WithTimeout enforces a maximum runtime for a job.
+// The job runs in a goroutine with a timeout child context, and the wrapper
+// returns on parent cancellation, timeout, or job completion.
 func WithTimeout(job Job, timeout time.Duration) Job {
 	return func(ctx context.Context) error {
 		// Create a new context with timeout, but inherit cancellation from parent
@@ -31,9 +30,9 @@ func WithTimeout(job Job, timeout time.Duration) Job {
 	}
 }
 
-// WithDeadline accepts a time for which the job must completed by.
-// A context is created and the job is ran in goroutine where it's
-// error result is passed to a channel waiting for the result.
+// WithDeadline enforces a fixed completion deadline for a job.
+// The job runs in a goroutine with a deadline child context, and the wrapper
+// returns on parent cancellation, deadline, or job completion.
 func WithDeadline(job Job, deadline time.Time) Job {
 	return func(ctx context.Context) error {
 		// Create a new context with deadline, but inherit cancellation from parent
