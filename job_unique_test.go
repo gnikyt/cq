@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -72,7 +73,7 @@ func TestWithoutOverlap(t *testing.T) {
 	}
 }
 
-func TestWithUnqiue(t *testing.T) {
+func TestWithUnique(t *testing.T) {
 	t.Run("normal", func(tt *testing.T) {
 		var called bool
 		locker := NewUniqueMemoryLocker()
@@ -98,30 +99,41 @@ func TestWithUnqiue(t *testing.T) {
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		var calls int
+		var calls atomic.Int32
 		locker := NewUniqueMemoryLocker()
-		want := 2
 
 		// The lock on this job should be released since it
-		// expires 10ms from now.
+		// expires 50ms from now, but job takes 500ms.
 		go WithUnique(func(ctx context.Context) error {
 			time.Sleep(500 * time.Millisecond)
-			calls++
+			calls.Add(1)
 			return nil
-		}, "test", 10*time.Millisecond, locker)(context.Background())
-		// Allow goroutine to run.
-		time.Sleep(10 * time.Millisecond)
-		for i := 0; i < 2; i++ {
-			// Each job should run fine.
-			go WithUnique(func(ctx context.Context) error {
-				calls++
-				return nil
-			}, "test", 0*time.Millisecond, locker)(context.Background())
+		}, "test", 50*time.Millisecond, locker)(context.Background())
+
+		// Allow goroutine to start and acquire lock.
+		time.Sleep(20 * time.Millisecond)
+
+		// Wait for lock to expire.
+		time.Sleep(50 * time.Millisecond)
+
+		// These jobs should run because lock expired.
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				WithUnique(func(ctx context.Context) error {
+					calls.Add(1)
+					return nil
+				}, "test", 0, locker)(context.Background())
+			}()
 		}
 
-		time.Sleep(20 * time.Millisecond)
-		if calls != want {
-			t.Errorf("WithUnique(): got %v calls, want %v", calls, want)
+		wg.Wait()
+
+		// Only count the 2 jobs that ran after expiry (first job still running).
+		if got := calls.Load(); got != 2 {
+			t.Errorf("WithUnique(): got %d calls, want 2", got)
 		}
 	})
 

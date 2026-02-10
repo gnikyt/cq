@@ -69,7 +69,7 @@ func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("Every: %w: %q", ErrJobExists, id)
+		return fmt.Errorf("Every (id=%s): %w", id, ErrJobExists)
 	}
 
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -100,7 +100,7 @@ func (s *Scheduler) At(id string, t time.Time, job Job) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("At: %w: %q", ErrJobExists, id)
+		return fmt.Errorf("At (id=%s): %w", id, ErrJobExists)
 	}
 
 	ctx, cancel := context.WithCancel(s.ctx)

@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// retryAttemptKey is a context key for tracking retry attempts.
-type retryAttemptKey struct{}
-
 // BackoffFunc returns the delay before the next retry attempt.
 type BackoffFunc func(retries int) time.Duration
 
@@ -21,6 +18,7 @@ func WithRetry(job Job, limit int) Job {
 
 // WithRetryIf retries a job up to `limit` times while shouldRetry(err) is true.
 // shouldRetry is optional... if nil, any non-nil error is retried.
+// Each attempt increments JobMeta.Attempt in the context.
 func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
 	if shouldRetry == nil {
 		shouldRetry = func(err error) bool { return err != nil }
@@ -29,7 +27,11 @@ func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
 	return func(ctx context.Context) error {
 		var err error
 		for attempt := range limit {
-			attemptCtx := context.WithValue(ctx, retryAttemptKey{}, attempt)
+			// Update JobMeta with current attempt number.
+			meta := MetaFromContext(ctx)
+			meta.Attempt = attempt
+			attemptCtx := contextWithMeta(ctx, meta)
+
 			if err = job(attemptCtx); err == nil {
 				break
 			}
@@ -49,8 +51,9 @@ func WithBackoff(job Job, bf BackoffFunc) Job {
 		bf = ExponentialBackoff
 	}
 	return func(ctx context.Context) error {
-		if attempt, ok := ctx.Value(retryAttemptKey{}).(int); ok && attempt > 0 {
-			<-time.After(bf(attempt))
+		meta := MetaFromContext(ctx)
+		if meta.Attempt > 0 {
+			<-time.After(bf(meta.Attempt))
 		}
 		return job(ctx)
 	}

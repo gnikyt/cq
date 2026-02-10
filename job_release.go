@@ -2,7 +2,6 @@ package cq
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 	"time"
 )
@@ -37,25 +36,4 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 		return err
 	}
 	return wrappedJob
-}
-
-// WithRecover converts job panics into returned errors.
-// This allows panic cases to flow through wrappers such as WithResultHandler.
-// Without this wrapper, panic handling is owned by the queue runtime.
-func WithRecover(job Job) Job {
-	return func(ctx context.Context) (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				switch x := r.(type) {
-				case string:
-					err = fmt.Errorf("job panic: %s", x)
-				case error:
-					err = fmt.Errorf("job panic: %w", x)
-				default:
-					err = fmt.Errorf("job panic: %v", x)
-				}
-			}
-		}()
-		return job(ctx)
-	}
 }

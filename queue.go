@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,7 @@ type Queue struct {
 	pendingJobsTally    atomic.Int64       // Jobs waiting in the queue.
 	failedJobsTally     atomic.Int64       // Jobs completed with error.
 	completedJobsTally  atomic.Int64       // Jobs completed successfully.
+	jobIDCounter        atomic.Int64       // Counter for generating unique job IDs.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -279,6 +281,11 @@ func (q *Queue) unmarkWorkerIdle() {
 	q.workersIdleTally.Add(-1)
 }
 
+// nextJobID generates a unique job ID.
+func (q *Queue) nextJobID() string {
+	return strconv.FormatInt(q.jobIDCounter.Add(1), 10)
+}
+
 // doEnqueue submits a job to the queue internals.
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
@@ -286,6 +293,16 @@ func (q *Queue) unmarkWorkerIdle() {
 func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 	if q.IsStopped() {
 		return // Queue stopped.
+	}
+
+	// Create job metadata.
+	meta := JobMeta{
+		ID:         q.nextJobID(),
+		EnqueuedAt: time.Now(),
+		Attempt:    0,
+	}
+	wrappedJob := func(ctx context.Context) error {
+		return job(contextWithMeta(ctx, meta))
 	}
 
 	// Track the job and record enqueue tallies.
@@ -307,13 +324,13 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 	}()
 
 	// Attempt to create a dedicated worker for this job.
-	if ok = q.newWorker(job); !ok {
+	if ok = q.newWorker(wrappedJob); !ok {
 		if blocking {
-			q.jobs <- job
+			q.jobs <- wrappedJob
 			ok = true
 		} else {
 			select {
-			case q.jobs <- job:
+			case q.jobs <- wrappedJob:
 				ok = true
 			default:
 				ok = false

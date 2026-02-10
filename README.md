@@ -15,6 +15,8 @@ Inspired by Bull, Pond, Ants, and more.
 - Composable job wrappers (retries, timeouts, backoffs, etc.)
 - Priority queue with weighted dispatch
 - Job scheduler for recurring and one-time jobs
+- Job metadata (ID, enqueue time, attempt count)
+- Circuit breaker for fault tolerance
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
 - Tracing hooks for observability
@@ -98,7 +100,7 @@ job := WithResultHandler(        // 4. Outermost: catches final result.
 `make test`
 
 ```
-ok      github.com/gnikyt/cq    15.832s coverage: 90.3% of statements
+ok      github.com/gnikyt/cq    17.586s coverage: 91.2% of statements
 ```
 
 ### Benchmarks
@@ -179,6 +181,27 @@ job := func(ctx context.Context) error {
 }
 queue.Enqueue(job)
 ```
+
+#### Job Metadata
+
+Every job receives metadata through its context, including a unique ID, enqueue timestamp, and current retry attempt. Access this information for logging, debugging, or conditional logic.
+
+```go
+job := func(ctx context.Context) error {
+	meta := cq.MetaFromContext(ctx)
+	log.Printf(
+		"job %s, attempt %d, queued %v ago",
+		meta.ID, meta.Attempt, time.Since(meta.EnqueuedAt),
+	)
+	return doWork()
+}
+queue.Enqueue(job)
+```
+
+The `JobMeta` struct contains:
+- `ID` - Unique identifier for the job
+- `EnqueuedAt` - Timestamp when the job was enqueued
+- `Attempt` - Current retry attempt (0-indexed, incremented by `WithRetry`)
 
 #### Retries
 
@@ -415,6 +438,28 @@ Limit job execution rate using a token bucket algorithm. Jobs wait for a token b
 limiter := rate.NewLimiter(10, 5) // 10 per second, burst of 5.
 job := cq.WithRateLimit(actualJob, limiter)
 queue.Enqueue(job)
+```
+
+#### Circuit Breaker
+
+Stop calling a failing service after repeated failures. The circuit "opens" after a threshold of consecutive failures, rejecting jobs immediately for a cooldown period. After cooldown, the circuit "closes" and allows jobs through again. Useful for protecting against cascading failures when a dependency is down.
+
+```go
+// Shared circuit breaker across all jobs calling a payment API.
+paymentCB := cq.NewCircuitBreaker(5, 30*time.Second)
+
+for _, orderID := range orderIDs {
+	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
+		return processPayment(orderID)
+	}, paymentCB)
+	queue.Enqueue(job)
+}
+
+// If 5 consecutive jobs fail, the circuit opens.
+// Remaining jobs return cq.ErrCircuitOpen immediately without attempting.
+// After 30s cooldown, circuit closes and allows one job through to test recovery.
+// If that job succeeds, circuit stays closed and failure count resets.
+// If it fails, circuit opens again for another 30s cooldown.
 ```
 
 #### Custom Wrapper
