@@ -44,3 +44,68 @@ func TestWithBackoff(t *testing.T) {
 		return
 	}
 }
+
+func TestWithRetryIf(t *testing.T) {
+	t.Run("nil_predicate_retries_on_any_error", func(t *testing.T) {
+		var calls int
+		limit := 3
+
+		job := WithRetryIf(func(ctx context.Context) error {
+			calls++
+			return errors.New("retry me")
+		}, limit, nil)
+
+		if err := job(context.Background()); err == nil {
+			t.Fatal("WithRetryIf(): expected error")
+		}
+		if calls != limit {
+			t.Fatalf("WithRetryIf(): calls=%d, want=%d", calls, limit)
+		}
+	})
+
+	t.Run("predicate_false_stops_retries", func(t *testing.T) {
+		var calls int
+		limit := 5
+		stopErr := errors.New("do not retry")
+
+		job := WithRetryIf(func(ctx context.Context) error {
+			calls++
+			return stopErr
+		}, limit, func(err error) bool {
+			return false
+		})
+
+		err := job(context.Background())
+		if !errors.Is(err, stopErr) {
+			t.Fatalf("WithRetryIf(): got=%v, want=%v", err, stopErr)
+		}
+		if calls != 1 {
+			t.Fatalf("WithRetryIf(): calls=%d, want=1", calls)
+		}
+	})
+
+	t.Run("predicate_true_then_false", func(t *testing.T) {
+		var calls int
+		limit := 5
+		retryable := errors.New("retryable")
+		permanent := errors.New("permanent")
+
+		job := WithRetryIf(func(ctx context.Context) error {
+			calls++
+			if calls < 3 {
+				return retryable
+			}
+			return permanent
+		}, limit, func(err error) bool {
+			return errors.Is(err, retryable)
+		})
+
+		err := job(context.Background())
+		if !errors.Is(err, permanent) {
+			t.Fatalf("WithRetryIf(): got=%v, want=%v", err, permanent)
+		}
+		if calls != 3 {
+			t.Fatalf("WithRetryIf(): calls=%d, want=3", calls)
+		}
+	})
+}

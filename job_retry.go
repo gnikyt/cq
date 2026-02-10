@@ -16,11 +16,24 @@ type BackoffFunc func(retries int) time.Duration
 // WithRetry retries a job up to `limit` times until it succeeds.
 // Retries happen immediately unless composed with WithBackoff.
 func WithRetry(job Job, limit int) Job {
+	return WithRetryIf(job, limit, nil)
+}
+
+// WithRetryIf retries a job up to `limit` times while shouldRetry(err) is true.
+// shouldRetry is optional... if nil, any non-nil error is retried.
+func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
+	if shouldRetry == nil {
+		shouldRetry = func(err error) bool { return err != nil }
+	}
+
 	return func(ctx context.Context) error {
 		var err error
 		for attempt := range limit {
 			attemptCtx := context.WithValue(ctx, retryAttemptKey{}, attempt)
 			if err = job(attemptCtx); err == nil {
+				break
+			}
+			if !shouldRetry(err) {
 				break
 			}
 		}

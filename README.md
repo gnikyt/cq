@@ -25,6 +25,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Retries](#retries)
     + [Backoff](#backoff)
     + [Result catch](#result-catch)
+    + [Error classifier](#error-classifier)
     + [Timeout](#timeout)
     + [Deadline](#deadline)
     + [Overlaps](#overlaps)
@@ -261,9 +262,21 @@ job := WithRetry(func (ctx context.Context) error {
 }, retries)
 ```
 
+Use `WithRetryIf` when retries should happen only for specific error types:
+
+```go
+job := WithRetryIf(
+  WithErrorClassifier(actualJob, classifyErr),
+  5,
+  func(err error) bool {
+    return IsClass(err, ErrorClassRetryable)
+  },
+)
+```
+
 #### Backoff
 
-To be used with `WithRetry`, adds a backoff delay before recalling the job.
+To be used with `WithRetry`/`WithRetryIf`, adds a backoff delay before recalling the job.
 
 An example use case is retrying an HTTP fetch job X times at delayed intervals because the server is possibly down.
 
@@ -319,6 +332,44 @@ job := func(id int) error {
   )
 }
 queue.Enqueue(job(id))
+```
+
+#### Error classifier
+
+Classify job errors into normalized categories so other wrappers can make consistent decisions.
+
+Built-in classes:
+
+* `ErrorClassRetryable`
+* `ErrorClassPermanent`
+* `ErrorClassIgnored`
+
+Use `WithErrorClassifier` to wrap job errors and `IsClass` to branch retry/release behavior:
+
+```go
+classifyErr := func(err error) ErrorClass {
+  switch {
+  case isRateLimit(err), isTemporaryNetwork(err):
+    return ErrorClassRetryable
+  case isDuplicate(err):
+    return ErrorClassIgnored
+  default:
+    return ErrorClassPermanent
+  }
+}
+
+job := WithRetryIf(
+  WithBackoff(
+    WithErrorClassifier(actualJob, classifyErr),
+    ExponentialBackoff,
+  ),
+  5, // Number of retries.
+  func(err error) bool {
+    return IsClass(err, ErrorClassRetryable)
+  },
+)
+
+queue.Enqueue(job)
 ```
 
 #### Timeout
