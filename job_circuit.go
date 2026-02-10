@@ -55,7 +55,7 @@ func (cb *CircuitBreaker) SetHalfOpen(enabled bool) {
 	cb.halfOpen = enabled
 }
 
-// State returns the current circuit state: "closed", "open", or "half-open".
+// State returns the current circuit state.
 func (cb *CircuitBreaker) State() string {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -67,7 +67,6 @@ func (cb *CircuitBreaker) State() string {
 		}
 		return string(circuitClosed)
 	}
-
 	return string(cb.state)
 }
 

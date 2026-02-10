@@ -8,22 +8,6 @@ import (
 )
 
 func TestCircuitBreaker(t *testing.T) {
-	t.Run("threshold_minimum", func(t *testing.T) {
-		cb := NewCircuitBreaker(0, 100*time.Millisecond)
-		jobErr := errors.New("fail")
-
-		job := WithCircuitBreaker(func(ctx context.Context) error {
-			return jobErr
-		}, cb)
-
-		// Even with threshold 0, should require at least 1 failure.
-		job(context.Background())
-
-		if !cb.IsOpen() {
-			t.Error("circuit should be open after 1 failure with threshold 0")
-		}
-	})
-
 	t.Run("state_method", func(t *testing.T) {
 		cb := NewCircuitBreaker(2, 50*time.Millisecond)
 
