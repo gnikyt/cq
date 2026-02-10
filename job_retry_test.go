@@ -59,7 +59,7 @@ func TestWithRetryIf(t *testing.T) {
 			t.Fatal("WithRetryIf(): expected error")
 		}
 		if calls != limit {
-			t.Fatalf("WithRetryIf(): calls=%d, want=%d", calls, limit)
+			t.Fatalf("WithRetryIf(): got %d calls, want %d", calls, limit)
 		}
 	})
 
@@ -77,10 +77,10 @@ func TestWithRetryIf(t *testing.T) {
 
 		err := job(context.Background())
 		if !errors.Is(err, stopErr) {
-			t.Fatalf("WithRetryIf(): got=%v, want=%v", err, stopErr)
+			t.Fatalf("WithRetryIf(): got %v, want %v", err, stopErr)
 		}
 		if calls != 1 {
-			t.Fatalf("WithRetryIf(): calls=%d, want=1", calls)
+			t.Fatalf("WithRetryIf(): got %d calls, want 1", calls)
 		}
 	})
 
@@ -102,10 +102,10 @@ func TestWithRetryIf(t *testing.T) {
 
 		err := job(context.Background())
 		if !errors.Is(err, permanent) {
-			t.Fatalf("WithRetryIf(): got=%v, want=%v", err, permanent)
+			t.Fatalf("WithRetryIf(): got %v, want %v", err, permanent)
 		}
 		if calls != 3 {
-			t.Fatalf("WithRetryIf(): calls=%d, want=3", calls)
+			t.Fatalf("WithRetryIf(): got %d calls, want 3", calls)
 		}
 	})
 }

@@ -16,7 +16,7 @@ import (
 func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 	return func(ctx context.Context) error {
 		// Ensure a lock exists for this key.
-		locker.Aquire(key, LockValue[*sync.Mutex]{
+		locker.Acquire(key, LockValue[*sync.Mutex]{
 			ExpiresAt: time.Time{},
 			Value:     &sync.Mutex{},
 		})
@@ -61,7 +61,7 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 			// Append duration to now.
 			expiresAt = time.Now().Add(ut)
 		}
-		if !locker.Aquire(key, LockValue[struct{}]{
+		if !locker.Acquire(key, LockValue[struct{}]{
 			ExpiresAt: expiresAt,
 			Value:     es,
 		}) {
@@ -89,7 +89,7 @@ func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[s
 			}
 		}
 		// Acquire lock for the full window duration.
-		if !locker.Aquire(key, LockValue[struct{}]{
+		if !locker.Acquire(key, LockValue[struct{}]{
 			ExpiresAt: time.Now().Add(window),
 			Value:     struct{}{},
 		}) {

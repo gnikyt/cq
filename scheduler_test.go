@@ -33,7 +33,7 @@ func TestSchedulerEvery(t *testing.T) {
 
 	executions := count.Load()
 	if executions < 3 {
-		t.Errorf("Every(): expected at least 3 executions, got %d", executions)
+		t.Errorf("Every(): got %d executions, want >= 3", executions)
 	}
 }
 
@@ -149,7 +149,7 @@ func TestSchedulerRemove(t *testing.T) {
 	finalCount := count.Load()
 
 	if finalCount != firstCount {
-		t.Errorf("Remove(): job executed after removal (before: %d, after: %d)", firstCount, finalCount)
+		t.Errorf("Remove(): got %d executions after removal, want %d (no change)", finalCount, firstCount)
 	}
 
 	// Try to remove non-existent job.
@@ -195,7 +195,7 @@ func TestSchedulerStop(t *testing.T) {
 	countAfterStop := count.Load()
 
 	if countAfterStop != countBeforeStop {
-		t.Errorf("Stop(): jobs executed after stop (before: %d, after: %d)", countBeforeStop, countAfterStop)
+		t.Errorf("Stop(): got %d executions after stop, want %d (no change)", countAfterStop, countBeforeStop)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestSchedulerCountAndList(t *testing.T) {
 
 	// Initial count.
 	if count := scheduler.Count(); count != 0 {
-		t.Errorf("Count(): expected 0, got %d", count)
+		t.Errorf("Count(): got %d, want 0", count)
 	}
 
 	// Add jobs.
@@ -257,13 +257,13 @@ func TestSchedulerCountAndList(t *testing.T) {
 
 	// Check count.
 	if count := scheduler.Count(); count != 3 {
-		t.Errorf("Count(): expected 3, got %d", count)
+		t.Errorf("Count(): got %d, want 3", count)
 	}
 
 	// Check list.
 	list := scheduler.List()
 	if len(list) != 3 {
-		t.Errorf("List(): expected 3 jobs, got %d", len(list))
+		t.Errorf("List(): got %d jobs, want 3", len(list))
 	}
 
 	// Verify all IDs are present.
@@ -281,7 +281,7 @@ func TestSchedulerCountAndList(t *testing.T) {
 	// Remove one and check.
 	scheduler.Remove("job2")
 	if count := scheduler.Count(); count != 2 {
-		t.Errorf("Count(): expected 2 after removal, got %d", count)
+		t.Errorf("Count(): got %d after removal, want 2", count)
 	}
 }
 
@@ -418,6 +418,6 @@ func TestSchedulerContextCancellation(t *testing.T) {
 	finalCount := count.Load()
 
 	if finalCount != firstCount {
-		t.Errorf("ContextCancellation(): job executed after context cancel (before: %d, after: %d)", firstCount, finalCount)
+		t.Errorf("ContextCancellation(): got %d executions after cancel, want %d (no change)", finalCount, firstCount)
 	}
 }

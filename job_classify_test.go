@@ -19,10 +19,10 @@ func TestWithErrorClassifier(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !IsClass(err, ErrorClassRetryable) {
-			t.Fatalf("expected retryable class, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got class %v, want retryable", err)
 		}
 		if !errors.Is(err, root) {
-			t.Fatalf("expected wrapped root error, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got %v, want wrapped root error", err)
 		}
 	})
 
@@ -38,7 +38,7 @@ func TestWithErrorClassifier(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !IsClass(err, ErrorClassPermanent) {
-			t.Fatalf("expected permanent class, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got class %v, want permanent", err)
 		}
 	})
 
@@ -49,7 +49,7 @@ func TestWithErrorClassifier(t *testing.T) {
 		)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("expected nil for ignored class, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got %v, want nil (ignored class)", err)
 		}
 	})
 
@@ -77,7 +77,7 @@ func TestWithErrorClassifier(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !IsClass(err, ErrorClassPermanent) {
-			t.Fatalf("expected permanent fallback class, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got class %v, want permanent (fallback)", err)
 		}
 	})
 
@@ -92,7 +92,7 @@ func TestWithErrorClassifier(t *testing.T) {
 		)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("expected nil error, got: %v", err)
+			t.Fatalf("WithErrorClassifier(): got %v, want nil", err)
 		}
 		if called {
 			t.Fatal("classifier should not be called on nil error")

@@ -137,7 +137,7 @@ func TestWithTagged(t *testing.T) {
 		}, registry, "test-tag")
 
 		if err := job(context.Background()); err != nil {
-			t.Errorf("WithTagged(): got error %v, want nil", err)
+			t.Errorf("WithTagged(): got %v, want nil", err)
 		}
 
 		if !executed {

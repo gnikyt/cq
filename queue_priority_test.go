@@ -36,7 +36,7 @@ func TestPriorityString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := tt.priority.String(); got != tt.want {
-				t.Errorf("Priority.String() = %v, want %v", got, tt.want)
+				t.Errorf("Priority.String(): got %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -100,12 +100,12 @@ func TestPriorityQueue(t *testing.T) {
 
 		finalOrder := mu.Load().(*[]int)
 		if len(*finalOrder) != 5 {
-			t.Fatalf("PriorityQueue: expected 5 jobs, got %d", len(*finalOrder))
+			t.Fatalf("PriorityQueue: got %d jobs, want 5", len(*finalOrder))
 		}
 
 		// Highest priority should execute first.
 		if (*finalOrder)[0] != 1 {
-			t.Errorf("PriorityQueue: first job should be 1 (highest), got %d", (*finalOrder)[0])
+			t.Errorf("PriorityQueue: first job: got %d, want 1 (highest)", (*finalOrder)[0])
 		}
 	})
 
@@ -362,7 +362,7 @@ func TestPriorityQueue(t *testing.T) {
 
 		// Verify map has all priority levels.
 		if len(pending) != 5 {
-			t.Errorf("PendingByPriority(): should return map with 5 entries, got %d", len(pending))
+			t.Errorf("PendingByPriority(): got %d entries, want 5", len(pending))
 		}
 
 		// Verify all priority levels are present.
@@ -370,6 +370,59 @@ func TestPriorityQueue(t *testing.T) {
 			if _, exists := pending[priority]; !exists {
 				t.Errorf("PendingByPriority(): missing priority %s", priority.String())
 			}
+		}
+	})
+
+	t.Run("drain", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		// Use long tick to prevent dispatcher from pulling jobs.
+		pq := NewPriorityQueue(queue, 10, WithPriorityTick(10*time.Second))
+
+		var executed atomic.Int32
+		job := func(ctx context.Context) error {
+			executed.Add(1)
+			return nil
+		}
+
+		// Enqueue jobs at different priorities.
+		pq.Enqueue(job, PriorityHighest)
+		pq.Enqueue(job, PriorityHighest)
+		pq.Enqueue(job, PriorityHigh)
+		pq.Enqueue(job, PriorityMedium)
+		pq.Enqueue(job, PriorityLow)
+
+		// Drain all buffered jobs.
+		drained := pq.Drain()
+		if drained != 5 {
+			t.Errorf("Drain(): got %d drained, want 5", drained)
+		}
+
+		// Wait for drained jobs to execute.
+		time.Sleep(100 * time.Millisecond)
+
+		if executed.Load() != 5 {
+			t.Errorf("Drain(): got %d executed, want 5", executed.Load())
+		}
+
+		// Stop without stopping queue (we handle it via defer).
+		pq.Stop(false)
+	})
+
+	t.Run("drain_empty", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10, WithPriorityTick(10*time.Second))
+		defer pq.Stop(false)
+
+		// Drain empty queue.
+		drained := pq.Drain()
+		if drained != 0 {
+			t.Errorf("Drain(): got %d drained from empty queue, want 0", drained)
 		}
 	})
 }

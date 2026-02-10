@@ -33,7 +33,7 @@ func TestJobStateString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := tt.state.String(); got != tt.want {
-				t.Errorf("JobState.String() = %v, want %v", got, tt.want)
+				t.Errorf("JobState.String(): got %v, want %v", got, tt.want)
 			}
 		})
 	}

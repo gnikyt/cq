@@ -8,6 +8,11 @@ import (
 // WithTimeout enforces a maximum runtime for a job.
 // The job runs in a goroutine with a timeout child context, and the wrapper
 // returns on parent cancellation, timeout, or job completion.
+//
+// Note: If the timeout fires before the job completes, the wrapper returns
+// immediately with context.DeadlineExceeded. The job goroutine continues
+// running until the job respects ctx.Done() or finishes naturally.
+// Jobs should check ctx.Done() or use ctx.Err() to detect cancellation.
 func WithTimeout(job Job, timeout time.Duration) Job {
 	return func(ctx context.Context) error {
 		// Create a new context with timeout, but inherit cancellation from parent
@@ -33,6 +38,11 @@ func WithTimeout(job Job, timeout time.Duration) Job {
 // WithDeadline enforces a fixed completion deadline for a job.
 // The job runs in a goroutine with a deadline child context, and the wrapper
 // returns on parent cancellation, deadline, or job completion.
+//
+// Note: If the deadline fires before the job completes, the wrapper returns
+// immediately with context.DeadlineExceeded. The job goroutine continues
+// running until the job respects ctx.Done() or finishes naturally.
+// Jobs should check ctx.Done() or use ctx.Err() to detect cancellation.
 func WithDeadline(job Job, deadline time.Time) Job {
 	return func(ctx context.Context) error {
 		// Create a new context with deadline, but inherit cancellation from parent

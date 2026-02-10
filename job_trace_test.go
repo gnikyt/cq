@@ -42,10 +42,10 @@ func TestWithTracing(t *testing.T) {
 		}, "no-hook", nil)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithTracing(): expected nil error, got: %v", err)
+			t.Fatalf("WithTracing(): got %v, want nil", err)
 		}
 		if !called {
-			t.Fatal("WithTracing(): expected wrapped job to run")
+			t.Fatal("WithTracing(): wrapped job did not run")
 		}
 	})
 
@@ -61,25 +61,25 @@ func TestWithTracing(t *testing.T) {
 		}, "success-job", hook)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithTracing(): expected nil error, got: %v", err)
+			t.Fatalf("WithTracing(): got %v, want nil", err)
 		}
 		if hook.startCalls != 1 {
-			t.Fatalf("WithTracing(): startCalls=%d, want=1", hook.startCalls)
+			t.Fatalf("WithTracing(): got startCalls %d, want 1", hook.startCalls)
 		}
 		if hook.successCalls != 1 {
-			t.Fatalf("WithTracing(): successCalls=%d, want=1", hook.successCalls)
+			t.Fatalf("WithTracing(): got successCalls %d, want 1", hook.successCalls)
 		}
 		if hook.failureCalls != 0 {
-			t.Fatalf("WithTracing(): failureCalls=%d, want=0", hook.failureCalls)
+			t.Fatalf("WithTracing(): got failureCalls %d, want 0", hook.failureCalls)
 		}
 		if hook.lastName != "success-job" {
-			t.Fatalf("WithTracing(): lastName=%q, want=%q", hook.lastName, "success-job")
+			t.Fatalf("WithTracing(): got lastName %q, want %q", hook.lastName, "success-job")
 		}
 		if !ctxSeen {
-			t.Fatal("WithTracing(): expected job to receive context from Start")
+			t.Fatal("WithTracing(): job did not receive context from Start")
 		}
 		if hook.lastDuration < 0 {
-			t.Fatalf("WithTracing(): duration=%v, want>=0", hook.lastDuration)
+			t.Fatalf("WithTracing(): got duration %v, want >= 0", hook.lastDuration)
 		}
 	})
 
@@ -93,19 +93,19 @@ func TestWithTracing(t *testing.T) {
 
 		err := job(context.Background())
 		if !errors.Is(err, root) {
-			t.Fatalf("WithTracing(): got=%v, want=%v", err, root)
+			t.Fatalf("WithTracing(): got %v, want %v", err, root)
 		}
 		if hook.startCalls != 1 {
-			t.Fatalf("WithTracing(): startCalls=%d, want=1", hook.startCalls)
+			t.Fatalf("WithTracing(): got startCalls %d, want 1", hook.startCalls)
 		}
 		if hook.successCalls != 0 {
-			t.Fatalf("WithTracing(): successCalls=%d, want=0", hook.successCalls)
+			t.Fatalf("WithTracing(): got successCalls %d, want 0", hook.successCalls)
 		}
 		if hook.failureCalls != 1 {
-			t.Fatalf("WithTracing(): failureCalls=%d, want=1", hook.failureCalls)
+			t.Fatalf("WithTracing(): got failureCalls %d, want 1", hook.failureCalls)
 		}
 		if !errors.Is(hook.lastErr, root) {
-			t.Fatalf("WithTracing(): hook error=%v, want=%v", hook.lastErr, root)
+			t.Fatalf("WithTracing(): got hook error %v, want %v", hook.lastErr, root)
 		}
 	})
 }

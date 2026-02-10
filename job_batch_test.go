@@ -30,7 +30,7 @@ func TestWithBatch(t *testing.T) {
 		// Run all jobs
 		for _, job := range batchJobs {
 			if err := job(context.Background()); err != nil {
-				t.Errorf("WithBatch(): job should not have errored: %v", err)
+				t.Errorf("WithBatch(): got %v, want nil", err)
 			}
 		}
 

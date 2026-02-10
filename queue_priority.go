@@ -252,6 +252,7 @@ func (pq *PriorityQueue) tryEnqueue(ch chan Job) bool {
 // Stop stops the priority dispatcher and waits for it to finish.
 // If `stopQueue` is true, it also stops the underlying queue.
 // Jobs still buffered in priority channels are dropped.
+// use Drain() first to process remaining jobs before stopping.
 func (pq *PriorityQueue) Stop(stopQueue bool) {
 	pq.ctxCancel()
 	pq.wg.Wait()
@@ -259,6 +260,29 @@ func (pq *PriorityQueue) Stop(stopQueue bool) {
 	if stopQueue {
 		pq.queue.Stop(true)
 	}
+}
+
+// Drain forwards all buffered jobs from priority channels to the underlying
+// queue and returns the total number of jobs drained. Call this before Stop()
+// to ensure buffered jobs are processed.
+func (pq *PriorityQueue) Drain() int {
+	drained := 0
+	channels := []chan Job{pq.highest, pq.high, pq.medium, pq.low, pq.lowest}
+
+	for _, ch := range channels {
+		for {
+			select {
+			case job := <-ch:
+				pq.queue.Enqueue(job)
+				drained++
+			default:
+				goto nextChannel
+			}
+		}
+	nextChannel:
+	}
+
+	return drained
 }
 
 // WithPriorityTick sets the dispatcher tick interval.

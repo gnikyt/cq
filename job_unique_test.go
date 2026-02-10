@@ -64,11 +64,11 @@ func TestWithoutOverlap(t *testing.T) {
 
 	if amounto != want {
 		// Locks should ensure the value matches our want.
-		t.Errorf("amounto = %v, want %v", amounto, want)
+		t.Errorf("WithoutOverlap: got amounto %v, want %v", amounto, want)
 	}
 	if amountno > 0 {
 		// Without locks would cause the amount to go below 0 due to the copy.
-		t.Errorf("amountno = %v, want <0", amountno)
+		t.Errorf("WithoutOverlap: got amountno %v, want < 0", amountno)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestWithUnqiue(t *testing.T) {
 
 		time.Sleep(20 * time.Millisecond)
 		if calls != want {
-			t.Errorf("WithUnique(): calls: got %v, want %v", calls, want)
+			t.Errorf("WithUnique(): got %v calls, want %v", calls, want)
 		}
 	})
 
@@ -167,7 +167,7 @@ func TestWithUniqueWindow(t *testing.T) {
 		}, "test", window, locker)(context.Background())
 
 		if err != nil {
-			t.Errorf("WithUniqueWindow(): first job failed: %v", err)
+			t.Errorf("WithUniqueWindow(): got %v, want nil (first job)", err)
 		}
 
 		// Job completed, but lock should still be active.
@@ -180,12 +180,12 @@ func TestWithUniqueWindow(t *testing.T) {
 			return nil
 		}, "test", window, locker)(context.Background())
 		if err != nil {
-			t.Errorf("WithUniqueWindow(): duplicate job returned error: %v", err)
+			t.Errorf("WithUniqueWindow(): got %v, want nil (duplicate job)", err)
 		}
 
 		mu.Lock()
 		if calls != 1 {
-			t.Errorf("WithUniqueWindow(): calls = %d, want 1 (duplicate should be discarded)", calls)
+			t.Errorf("WithUniqueWindow(): got %d calls, want 1 (duplicate should be discarded)", calls)
 		}
 		mu.Unlock()
 
@@ -200,12 +200,12 @@ func TestWithUniqueWindow(t *testing.T) {
 			return nil
 		}, "test", window, locker)(context.Background())
 		if err != nil {
-			t.Errorf("WithUniqueWindow(): job after window failed: %v", err)
+			t.Errorf("WithUniqueWindow(): got %v, want nil (job after window)", err)
 		}
 
 		mu.Lock()
 		if calls != 2 {
-			t.Errorf("WithUniqueWindow(): calls = %d, want 2 (should run after window expires)", calls)
+			t.Errorf("WithUniqueWindow(): got %d calls, want 2 (should run after window expires)", calls)
 		}
 		mu.Unlock()
 	})
@@ -236,7 +236,7 @@ func TestWithUniqueWindow(t *testing.T) {
 
 		mu.Lock()
 		if calls != 1 {
-			t.Errorf("WithUniqueWindow(): calls = %d, want 1 (all duplicates should be blocked)", calls)
+			t.Errorf("WithUniqueWindow(): got %d calls, want 1 (all duplicates should be blocked)", calls)
 		}
 		mu.Unlock()
 	})

@@ -25,9 +25,13 @@ func (lv LockValue[T]) IsExpired() bool {
 type Locker[T any] interface {
 	Exists(key string) bool
 	Get(key string) (LockValue[T], bool)
-	Aquire(key string, lock LockValue[T]) bool
+	Acquire(key string, lock LockValue[T]) bool
 	Release(key string) bool
 	ForceRelease(key string)
+
+	// Deprecated: Use Acquire instead. This method exists for backwards compatibility.
+	// It was a typo in the original implementation.
+	Aquire(key string, lock LockValue[T]) bool
 }
 
 // CleanableLocker extends Locker with cleanup capabilities for removing expired locks.
@@ -77,9 +81,9 @@ func (ml *MemoryLocker[T]) Exists(key string) (ok bool) {
 	return
 }
 
-// Aquire attempts to claim a lock for key.
+// Acquire attempts to claim a lock for key.
 // It fails if a non-expired lock already exists; otherwise it stores the new lock.
-func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
+func (ml *MemoryLocker[T]) Acquire(key string, lock LockValue[T]) bool {
 	for {
 		existing, ok := ml.locks.Load(key)
 		if !ok {
@@ -100,6 +104,13 @@ func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
 			return true // Successfully replaced expired lock.
 		}
 	}
+}
+
+// Aquire is deprecated. Use Acquire instead.
+// Deprecated: Use Acquire instead. This method exists for backwards compatibility.
+// It was a typo in the original implementation.
+func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
+	return ml.Acquire(key, lock)
 }
 
 // Release removes the lock for key.

@@ -21,7 +21,7 @@ func TestWithResultHandler(t *testing.T) {
 			},
 		)
 		if err := job(context.Background()); err != nil {
-			t.Errorf("WithResultHandler(): job should not have errored: %v", err)
+			t.Errorf("WithResultHandler(): got %v, want nil", err)
 		}
 		if !cran {
 			t.Error("WithResultHandler(): completed handler: should not have executed")

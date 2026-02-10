@@ -39,7 +39,19 @@ type Queue struct {
 // `wmin` is the minimum worker count, `wmax` is the maximum worker count,
 // and `cap` is the jobs channel capacity. Optional settings can be passed
 // via `opts`.
+//
+// Panics if wmin < 0, wmax < wmin, or cap < 0.
 func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
+	if wmin < 0 {
+		panic("cq: wmin must be >= 0")
+	}
+	if wmax < wmin {
+		panic("cq: wmax must be >= wmin")
+	}
+	if cap < 0 {
+		panic("cq: cap must be >= 0")
+	}
+
 	q := &Queue{
 		workersMin:     wmin,
 		workersMax:     wmax,

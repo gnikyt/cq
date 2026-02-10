@@ -36,7 +36,7 @@ func TestWithRelease(t *testing.T) {
 
 		// First call... should release.
 		if err := job(context.Background()); err != nil {
-			t.Errorf("WithRelease(): should return nil on release: %v", err)
+			t.Errorf("WithRelease(): got %v, want nil (on release)", err)
 		}
 
 		// Wait for re-enqueue.
@@ -75,7 +75,7 @@ func TestWithRelease(t *testing.T) {
 			err := job(context.Background())
 			if i < maxReleases {
 				if err != nil {
-					t.Errorf("WithRelease(): should return nil for release %d: %v", i, err)
+					t.Errorf("WithRelease(): release %d: got %v, want nil", i, err)
 				}
 			} else {
 				// Should return error after max releases.
@@ -175,7 +175,7 @@ func TestWithRecover(t *testing.T) {
 			t.Error("WithRecover(): should return error for panic")
 		}
 		if !strings.Contains(err.Error(), "job panic: string panic") {
-			t.Errorf("WithRecover(): got error %v, want panic message", err)
+			t.Errorf("WithRecover(): got %v, want panic message", err)
 		}
 	})
 
@@ -204,7 +204,7 @@ func TestWithRecover(t *testing.T) {
 			t.Error("WithRecover(): should return error for panic")
 		}
 		if !strings.Contains(err.Error(), "12345") {
-			t.Errorf("WithRecover(): got error %v, want panic value", err)
+			t.Errorf("WithRecover(): got %v, want panic value", err)
 		}
 	})
 
@@ -245,7 +245,7 @@ func TestWithRecover(t *testing.T) {
 			t.Error("WithRecover(): onFailed should receive error")
 		}
 		if !strings.Contains(failedError.Error(), "panic in job") {
-			t.Errorf("WithRecover(): onFailed got %v, want panic message", failedError)
+			t.Errorf("WithRecover(): onFailed: got %v, want panic message", failedError)
 		}
 	})
 }

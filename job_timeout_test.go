@@ -21,7 +21,7 @@ func TestWithTimeout(t *testing.T) {
 		done <- job(context.Background())
 	}()
 	if err := <-done; !errors.Is(err, want) {
-		t.Errorf("WithTimeout(): error was %v, want %v", err, want)
+		t.Errorf("WithTimeout(): got %v, want %v", err, want)
 	}
 }
 
@@ -39,6 +39,6 @@ func TestWithDeadline(t *testing.T) {
 		done <- job(context.Background())
 	}()
 	if err := <-done; !errors.Is(err, want) {
-		t.Errorf("WithDeadline(): error was %v, want %v", err, want)
+		t.Errorf("WithDeadline(): got %v, want %v", err, want)
 	}
 }

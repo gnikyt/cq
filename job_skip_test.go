@@ -18,7 +18,7 @@ func TestWithSkipIf(t *testing.T) {
 		)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithSkipIf(): expected nil, got: %v", err)
+			t.Fatalf("WithSkipIf(): got %v, want nil", err)
 		}
 		if called {
 			t.Fatal("WithSkipIf(): expected job to be skipped")
@@ -38,7 +38,7 @@ func TestWithSkipIf(t *testing.T) {
 
 		err := job(context.Background())
 		if !errors.Is(err, root) {
-			t.Fatalf("WithSkipIf(): got=%v, want=%v", err, root)
+			t.Fatalf("WithSkipIf(): got %v, want %v", err, root)
 		}
 		if !called {
 			t.Fatal("WithSkipIf(): expected job to run")
@@ -56,10 +56,10 @@ func TestWithSkipIf(t *testing.T) {
 		)
 
 		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithSkipIf(): expected nil, got: %v", err)
+			t.Fatalf("WithSkipIf(): got %v, want nil", err)
 		}
 		if !called {
-			t.Fatal("WithSkipIf(): expected passthrough job execution")
+			t.Fatal("WithSkipIf(): job did not execute (passthrough)")
 		}
 	})
 }
