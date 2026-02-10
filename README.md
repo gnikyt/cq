@@ -26,6 +26,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Backoff](#backoff)
     + [Result catch](#result-catch)
     + [Error classifier](#error-classifier)
+    + [Tracing](#tracing)
     + [Timeout](#timeout)
     + [Deadline](#deadline)
     + [Overlaps](#overlaps)
@@ -367,6 +368,36 @@ job := WithRetryIf(
   func(err error) bool {
     return IsClass(err, ErrorClassRetryable)
   },
+)
+
+queue.Enqueue(job)
+```
+
+#### Tracing
+
+Wrap jobs with tracing hooks for start/success/failure callbacks.
+This can be used for OpenTelemetry spans, metrics, structured logs, or custom observability pipelines.
+
+```go
+type myTraceHook struct{}
+
+func (h myTraceHook) Start(ctx context.Context, name string) context.Context {
+  log.Printf("start job=%s", name)
+  return ctx
+}
+
+func (h myTraceHook) Success(ctx context.Context, d time.Duration) {
+  log.Printf("success duration=%s", d)
+}
+
+func (h myTraceHook) Failure(ctx context.Context, err error, d time.Duration) {
+  log.Printf("failure err=%v duration=%s", err, d)
+}
+
+job := WithTracing(
+  WithRetryIf(actualJob, 3, func(err error) bool { return err != nil }),
+  "sync-products",
+  myTraceHook{},
 )
 
 queue.Enqueue(job)
