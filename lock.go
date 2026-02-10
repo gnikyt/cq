@@ -80,13 +80,26 @@ func (ml *MemoryLocker[T]) Exists(key string) (ok bool) {
 // Aquire attempts to claim a lock for key.
 // It fails if a non-expired lock already exists; otherwise it stores the new lock.
 func (ml *MemoryLocker[T]) Aquire(key string, lock LockValue[T]) bool {
-	if lock, ok := ml.Get(key); ok {
-		if !lock.IsExpired() {
-			return false
+	for {
+		existing, ok := ml.locks.Load(key)
+		if !ok {
+			_, loaded := ml.locks.LoadOrStore(key, lock)
+			if !loaded {
+				return true // First writer wins atomically.
+			}
+			continue // Lost a race to create... re-check current value.
+		}
+
+		current := existing.(LockValue[T])
+		if !current.IsExpired() {
+			return false // Lock is still valid, skip.
+		}
+
+		// Lock exists but is expired... replace it if still unchanged.
+		if ml.locks.CompareAndSwap(key, current, lock) {
+			return true // Successfully replaced expired lock.
 		}
 	}
-	ml.locks.Store(key, lock)
-	return true
 }
 
 // Release removes the lock for key.

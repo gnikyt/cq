@@ -27,6 +27,7 @@ This is inspired from great projects such as Bull, Pond, Ants, and more.
     + [Result catch](#result-catch)
     + [Error classifier](#error-classifier)
     + [Tracing](#tracing)
+    + [Skip if](#skip-if)
     + [Timeout](#timeout)
     + [Deadline](#deadline)
     + [Overlaps](#overlaps)
@@ -395,12 +396,39 @@ func (h myTraceHook) Failure(ctx context.Context, err error, d time.Duration) {
 }
 
 job := WithTracing(
-  WithRetryIf(actualJob, 3, func(err error) bool { return err != nil }),
+  WithRetry(actualJob, 3),
   "sync-products",
   myTraceHook{},
 )
 
 queue.Enqueue(job)
+```
+
+#### Skip if
+
+Skip job execution when a cheap precondition says the work is no longer needed.
+Skipped jobs return `nil` and are treated as handled.
+
+```go
+makeSyncOrderJob := func(orderID string) Job {
+  return WithSkipIf(
+    func(ctx context.Context) error {
+      return erpClient.SyncOrder(ctx, orderID)
+    },
+    func(ctx context.Context) bool {
+      // true => skip
+      if !mappingStore.HasCustomerMapping(orderID) {
+        return true
+      }
+      if !mappingStore.HasAllProductMappings(orderID) {
+        return true
+      }
+      return false
+    },
+  )
+}
+
+queue.Enqueue(makeSyncOrderJob("ord_123"))
 ```
 
 #### Timeout
