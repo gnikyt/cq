@@ -40,6 +40,7 @@ Inspired by Bull, Pond, Ants, and more.
   - [Jobs](#jobs)
   - [Priority Queue](#priority-queue)
   - [Scheduler](#scheduler)
+  - [Custom Locker](#custom-locker)
 * [Demo](#demo)
 
 ## Quick Start
@@ -49,26 +50,47 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gnikyt/cq"
 )
 
-func main() {
-	queue := cq.NewQueue(1, 10, 100)
-	queue.Start()
-	defer queue.Stop(true)
+func doWork(ctx context.Context) error {
+	meta := cq.MetaFromContext(ctx)
+	log.Printf("job %s started, queued %v ago", meta.ID, time.Since(meta.EnqueuedAt))
+	time.Sleep(2 * time.Second)
+	log.Printf("job %s completed", meta.ID)
+	return nil
+}
 
+func main() {
+	// Listen for interrupt signals.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Create queue with the signal context.
+	queue := cq.NewQueue(1, 10, 100, cq.WithContext(ctx))
+	queue.Start()
+
+	// Enqueue work...
 	queue.Enqueue(func(ctx context.Context) error {
-		fmt.Println("processing job")
-		return nil
+		return doWork(ctx)
 	})
+
+	// Wait for shutdown signal.
+	<-ctx.Done()
+
+	// Stop queue, wait for in-flight jobs to finish.
+	queue.Stop(true)
 }
 ```
 
 ## Wrapper Composition
 
-Wrappers are composed from **innermost to outermost**. The outermost wrapper runs first and controls the flow.
+Wrappers let you add behavior to jobs without modifying the job itself. Compose them from **innermost to outermost** - the outermost wrapper runs first and controls the flow. This keeps job logic clean while adding retries, timeouts, tracing, and error handling declaratively.
 
 ```go
 job := WithResultHandler(        // 4. Outermost: catches final result.
@@ -147,6 +169,13 @@ queue.IdleWorkers()              // Current idle workers.
 queue.Capacity()                 // Job channel capacity.
 queue.WorkerRange()              // (min, max) workers.
 queue.TallyOf(cq.JobStateFailed) // Count by state.
+
+// Available job states for TallyOf:
+// cq.JobStateCreated   - Total jobs accepted.
+// cq.JobStatePending   - Jobs waiting in the queue.
+// cq.JobStateActive    - Jobs currently executing.
+// cq.JobStateFailed    - Jobs completed with error.
+// cq.JobStateCompleted - Jobs completed successfully.
 ```
 
 #### Options
@@ -159,6 +188,12 @@ queue := cq.NewQueue(1, 10, 100,
 		log.Printf("panic: %v", err)
 	}),
 )
+
+// Available options:
+// cq.WithWorkerIdleTick(d)           - Interval for idle worker cleanup (default 5s).
+// cq.WithContext(ctx)                - Parent context for the queue.
+// cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
+// cq.WithPanicHandler(fn)            - Custom handler override for job panics.
 ```
 
 #### Stopping
@@ -177,7 +212,11 @@ Jobs are functions with signature `func(ctx context.Context) error`.
 
 ```go
 job := func(ctx context.Context) error {
-	return doWork()
+	// Check for cancellation before doing work.
+	if ctx.Err() != nil {
+		return ctx.Err() // Was cancelled.
+	}
+	return doWork(ctx)
 }
 queue.Enqueue(job)
 ```
@@ -193,7 +232,7 @@ job := func(ctx context.Context) error {
 		"job %s, attempt %d, queued %v ago",
 		meta.ID, meta.Attempt, time.Since(meta.EnqueuedAt),
 	)
-	return doWork()
+	return doWork(ctx)
 }
 queue.Enqueue(job)
 ```
@@ -208,8 +247,9 @@ The `JobMeta` struct contains:
 Automatically retry a job a specified number of times on failure. Useful for transient errors like network timeouts or temporary service unavailability.
 
 ```go
+// Retry 3 times.
 job := cq.WithRetry(func(ctx context.Context) error {
-	return fetchEndpoint()
+	return fetchEndpoint(ctx)
 }, 3)
 queue.Enqueue(job)
 ```
@@ -227,6 +267,7 @@ job := cq.WithRetryIf(actualJob, 5, func(err error) bool {
 Add delays between retry attempts to avoid overwhelming external services. Combine with `WithRetry` for exponential backoff, fibonacci sequences, or jittered delays.
 
 ```go
+// Retry 3 times with exponential backoff.
 job := cq.WithRetry(
 	cq.WithBackoff(actualJob, cq.ExponentialBackoff),
 	3,
@@ -243,9 +284,32 @@ Execute callbacks on job completion or failure. Useful for logging, metrics, not
 ```go
 job := cq.WithResultHandler(
 	actualJob,
-	func() { log.Println("success") },
-	func(err error) { log.Printf("failed: %v", err) },
+	func() {
+		log.Println("success")
+	},
+	func(err error) {
+		log.Printf("failed: %v", err)
+		// Example: send to SQS DLQ.
+	},
 )
+queue.Enqueue(job)
+```
+
+To access job metadata in handlers, capture it inside the job:
+
+```go
+job := func(ctx context.Context) error {
+	meta := cq.MetaFromContext(ctx)
+	return cq.WithResultHandler(
+		actualJob,
+		func() {
+			log.Printf("job %s completed", meta.ID)
+		},
+		func(err error) {
+			log.Printf("job %s failed: %v", meta.ID, err)
+		},
+	)(ctx)
+}
 queue.Enqueue(job)
 ```
 
@@ -255,21 +319,36 @@ Categorize errors as retryable, permanent, or ignored. Works with `WithRetryIf` 
 
 ```go
 classifier := func(err error) cq.ErrorClass {
-	if isRateLimit(err) {
-		return cq.ErrorClassRetryable
+	var httpErr *HTTPError // Your custom HTTP error type.
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == http.StatusTooManyRequests: // 429, rate limited.
+			return cq.ErrorClassRetryable
+		case httpErr.StatusCode >= http.StatusInternalServerError: // 5xx, server error.
+			return cq.ErrorClassRetryable
+		case httpErr.StatusCode >= http.StatusBadRequest: // 4xx, client error.
+			return cq.ErrorClassPermanent
+		}
 	}
 	return cq.ErrorClassPermanent
 }
 
+// Retry up to 5 times if error is determined to be retryable via classifer.
 job := cq.WithRetryIf(
-	cq.WithErrorClassifier(actualJob, classifier), // Job wrapped with classifier.
-	5,                                             // Max retry attempts.
+	cq.WithErrorClassifier(actualJob, classifier),
+	5,
 	func(err error) bool {
 		return cq.IsClass(err, cq.ErrorClassRetryable)
-	}, // Predicate: retry only retryable errors.
+	},
 )
 queue.Enqueue(job)
 ```
+
+Available error classes:
+
+- `cq.ErrorClassRetryable` - Transient errors that may succeed on retry (example: network timeouts, rate limits, 5xx server errors).
+- `cq.ErrorClassPermanent` - Errors that won't be fixed by retrying (example: validation errors, 4xx client errors, malformed input).
+- `cq.ErrorClassIgnored` - Errors that should be silently ignored (example: duplicate processing, already completed, context cancellation).
 
 #### Tracing
 
@@ -294,6 +373,22 @@ job := cq.WithTracing(actualJob, "sync-products", myHook{})
 queue.Enqueue(job)
 ```
 
+Place tracing as the outermost wrapper to capture total execution time including retries:
+
+```go
+// Traceable job with up to 3 retry attempts on a 5 second timeout deadline.
+job := cq.WithTracing(
+	cq.WithRetry(
+		cq.WithTimeout(actualJob, 5*time.Second),
+		3,
+	),
+	"sync-products",
+	myHook{},
+)
+```
+
+To trace each retry attempt individually, place tracing inside the retry instead.
+
 #### Skip If
 
 Conditionally skip job execution based on runtime state. Useful for feature flags, maintenance windows, or when preconditions aren't met.
@@ -307,7 +402,7 @@ queue.Enqueue(job)
 
 #### Timeout
 
-Cancel a job if it exceeds a duration. Prevents runaway jobs from blocking workers indefinitely.
+Cancel a job if it exceeds a duration. Prevents runaway jobs from blocking workers indefinitely. The timeout starts when the job executes, not when enqueued. *Note: this cancels the context, but the job will only stop at points where it checks `ctx.Done()` or uses context-aware operations (example: `http.NewRequestWithContext`).*
 
 ```go
 job := cq.WithTimeout(actualJob, 5*time.Minute)
@@ -316,7 +411,7 @@ queue.Enqueue(job)
 
 #### Deadline
 
-Cancel a job if it runs past a specific point in time. Useful for time-sensitive operations that become irrelevant after a certain moment.
+Cancel a job if it runs past a specific point in time. Useful for time-sensitive operations that become irrelevant after a certain moment. Unlike `WithTimeout`, the deadline is an absolute time, so queue wait time counts against it. *Note: this cancels the context, but the job will only stop at points where it checks `ctx.Done()` or uses context-aware operations (example: `http.NewRequestWithContext`).*
 
 ```go
 deadline := time.Date(2025, 12, 25, 16, 0, 0, 0, time.Local)
@@ -326,7 +421,7 @@ queue.Enqueue(job)
 
 #### Overlap Prevention
 
-Prevent concurrent execution of jobs with the same key. Ensures only one instance of a job runs at a time, useful for operations that shouldn't overlap like account syncs.
+Prevent concurrent execution of jobs with the same key. Ensures only one instance of a job runs at a time, useful for operations that shouldn't overlap such as account syncs, or debit/credit operations for an account. Other jobs with the same key will block and wait for the lock to be freed, which ties up workers. For high-volume scenarios where duplicates should be discarded instead of queued, use `WithUnique`.
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
@@ -336,11 +431,24 @@ queue.Enqueue(job)
 
 #### Unique Jobs
 
-Deduplicate jobs within a time window. Prevents the same job from being enqueued multiple times, useful for debouncing or ensuring idempotency.
+Deduplicate jobs within a time window. Duplicate jobs with the same key are silently discarded (they return `nil` without executing). The time window controls when the key becomes available again for new jobs... it does not cancel or timeout the running job. To also limit execution time, combine with `WithTimeout` or `WithDeadline`.
 
 ```go
 locker := cq.NewUniqueMemoryLocker()
 job := cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker)
+queue.Enqueue(job)
+```
+
+Combine with timeout to limit both uniqueness and execution time:
+
+```go
+locker := cq.NewUniqueMemoryLocker()
+job := cq.WithUnique(
+	cq.WithTimeout(actualJob, 1*time.Hour),
+	"index-products",
+	1*time.Hour,
+	locker,
+)
 queue.Enqueue(job)
 ```
 
@@ -355,17 +463,17 @@ queue.Enqueue(job)
 
 #### Pipeline
 
-Chain jobs that pass data between steps via channels. Useful for data processing workflows where each stage transforms or enriches the data.
+Like `WithChain`, but with the ability to pass data between steps via a shared channel. Both execute jobs sequentially and stop on error... the difference is `WithPipeline` provides a typed channel for inter-step communication. The channel type is automatically resolved by Go's generics.
 
 ```go
-step1 := func(ch chan<- int) cq.Job {
+step1 := func(ch chan int) cq.Job {
 	return func(ctx context.Context) error {
 		ch <- 42
 		return nil
 	}
 }
 
-step2 := func(ch <-chan int) cq.Job {
+step2 := func(ch chan int) cq.Job {
 	return func(ctx context.Context) error {
 		value := <-ch
 		return process(value)
@@ -378,21 +486,73 @@ queue.Enqueue(job)
 
 #### Batch
 
-Track a group of jobs as a single unit with progress reporting and completion callbacks. Useful for bulk operations where you need to know when all jobs finish.
+Track a group of jobs as a single unit with progress reporting and completion callbacks. Useful for bulk operations where you need to know when all jobs finish. Returns wrapped jobs and a `BatchState` struct pointer for monitoring progress (`CompletedJobs`, `FailedJobs`, `Errors`).
+
+The first callback (`onComplete`) fires once when all jobs finish, regardless of success or failure, receiving a slice of all errors (empty if none). The second callback (`onProgress`) fires after each job completes, receiving the current completed count and total.
 
 ```go
 jobs := []cq.Job{job1, job2, job3}
 batchJobs, state := cq.WithBatch(
 	jobs,
-	func(errs []error) { log.Printf("done: %d errors", len(errs)) },
-	func(done, total int) { log.Printf("%d/%d", done, total) },
+	func(errs []error) {
+		log.Printf("done: %d errors", len(errs))
+	}, // onComplete: fires once when all finish.
+	func(done int, total int) {
+		log.Printf(
+			"%d/%d (%.0f%%)",
+			done, total, float64(done)/float64(total)*100,
+		)
+	} // onProgress: fires after each job.
+)
+queue.EnqueueBatch(batchJobs)
+```
+
+To access job metadata in batch callbacks, use a sentinel error type to wrap errors with the job ID. The `onComplete` callback receives all errors from the batch, allowing you to extract IDs using `errors.As`:
+
+```go
+// Define a sentinel error type.
+type JobError struct {
+	JobID string
+	Err   error
+}
+
+func (e *JobError) Error() string {
+	return fmt.Sprintf("job %s: %v", e.JobID, e.Err)
+}
+
+func (e *JobError) Unwrap() error {
+	return e.Err
+}
+
+// Wrap errors with job metadata.
+jobs := make([]cq.Job, len(items))
+for i, item := range items {
+	jobs[i] = func(ctx context.Context) error {
+		meta := cq.MetaFromContext(ctx)
+		if err := process(item); err != nil {
+			return &JobError{JobID: meta.ID, Err: err}
+		}
+		return nil
+	}
+}
+batchJobs, _ := cq.WithBatch(
+	jobs,
+	func(errs []error) {
+		for _, err := range errs {
+			var jobErr *JobError
+			if errors.As(err, &jobErr) {
+				log.Printf("job %s failed: %v", jobErr.JobID, jobErr.Err)
+			}
+		}
+	},
+	nil,
 )
 queue.EnqueueBatch(batchJobs)
 ```
 
 #### Release
 
-Re-enqueue a job after a delay when specific errors occur. Useful for handling rate limits or temporary resource unavailability without blocking the worker.
+Re-enqueue a job after a delay when specific errors occur. Useful for handling rate limits or temporary resource unavailability. This wrapper is non-blocking: when a job is released, it's scheduled asynchronously via `DelayEnqueue` and the worker immediately returns to process other jobs. The delay happens in a background goroutine.
 
 ```go
 job := cq.WithRelease(
@@ -409,7 +569,7 @@ queue.Enqueue(job)
 
 #### Recover
 
-Convert panics into errors instead of crashing the worker. Ensures a misbehaving job doesn't bring down the entire queue.
+Convert panics into errors. The queue already has built-in panic recovery to prevent worker crashes, but this wrapper allows custom handling of panics within your job logic (example: logging, metrics, or transforming the panic into a specific error type).
 
 ```go
 job := cq.WithRecover(func(ctx context.Context) error {
@@ -428,6 +588,8 @@ job := cq.WithTagged(actualJob, registry, "user:123", "export")
 queue.Enqueue(job)
 
 registry.CancelForTag("user:123")
+// or...
+registry.CancelForTag("export")
 ```
 
 #### Rate Limit
@@ -442,7 +604,12 @@ queue.Enqueue(job)
 
 #### Circuit Breaker
 
-Stop calling a failing service after repeated failures. The circuit "opens" after a threshold of consecutive failures, rejecting jobs immediately for a cooldown period. After cooldown, the circuit "closes" and allows jobs through again. Useful for protecting against cascading failures when a dependency is down.
+Stop calling a failing service after repeated failures. The circuit has three states:
+- **Closed**: Normal operation, jobs execute. Opens after threshold consecutive failures.
+- **Open**: Jobs rejected immediately with `cq.ErrCircuitOpen`. Transitions to half-open after cooldown.
+- **Half-open**: Allows one job through to test recovery. Success closes the circuit; failure reopens it.
+
+Half-open is enabled by default. Use `cb.SetHalfOpen(false)` to disable it (circuit goes directly from open to closed after cooldown). Use `cb.State()` to check the current state.
 
 ```go
 // Shared circuit breaker across all jobs calling a payment API.
@@ -498,20 +665,32 @@ pq.Enqueue(cleanupJob, cq.PriorityLowest)
 
 Priority levels: `PriorityHighest`, `PriorityHigh`, `PriorityMedium`, `PriorityLow`, `PriorityLowest`
 
-Default weights (attempts per tick): `5:3:2:1:1`.
+Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle, the highest priority queue gets 5 job attempts, then the next gets 3, then 2, then 1, then 1 for the lowest.
 
 #### Custom Weights
 
-Configure how many jobs from each priority level are dispatched per tick:
+Configure how many jobs from each priority level are dispatched per tick. Weights can be specified as raw counts (`NumberWeight`) or percentages (`PercentWeight`). Percentages are converted to counts based on a fixed total of 12.
 
 ```go
+// Using raw counts.
 pq := cq.NewPriorityQueue(queue, 50,
 	cq.WithWeighting(
-		cq.NumberWeight(10),
-		cq.NumberWeight(5),
-		cq.NumberWeight(3),
-		cq.NumberWeight(2),
-		cq.NumberWeight(1),
+		cq.NumberWeight(10), // highest: 10 attempts per tick.
+		cq.NumberWeight(5),  // high: 5 attempts per tick.
+		cq.NumberWeight(3),  // medium: 3 attempts per tick.
+		cq.NumberWeight(2),  // low: 2 attempts per tick.
+		cq.NumberWeight(1),  // lowest: 1 attempt per tick.
+	),
+)
+
+// Using percentages (converted to counts from total of 12).
+pq := cq.NewPriorityQueue(queue, 50,
+	cq.WithWeighting(
+		cq.PercentWeight(50), // highest: 6 attempts (50% of 12).
+		cq.PercentWeight(25), // high: 3 attempts (25% of 12).
+		cq.PercentWeight(15), // medium: 1 attempt (15% of 12, min 1).
+		cq.PercentWeight(5),  // low: 1 attempt (min 1).
+		cq.PercentWeight(5),  // lowest: 1 attempt (min 1).
 	),
 )
 ```
@@ -550,27 +729,179 @@ scheduler.Count()
 For cron expressions, use an external parser with `Scheduler.At()`:
 
 ```go
+// ScheduleCron uses recursion to simulate cron behavior.
+// After each execution, the job re-schedules itself for the next cron tick.
 func ScheduleCron(s *cq.Scheduler, id, expr string, job cq.Job) error {
 	gron := gronx.New()
 	if !gron.IsValid(expr) {
 		return fmt.Errorf("SchedulerCron: invalid cron: %s", expr)
 	}
 
+	// Calculate the first run time.
 	nextRun, _ := gronx.NextTick(expr, true)
 
+	// Create a self-scheduling job wrapper.
 	var scheduled cq.Job
 	scheduled = func(ctx context.Context) error {
-		err := job(ctx)
+		err := job(ctx) // Execute the actual job.
+		// After completion, calculate and schedule the next run.
 		if next, e := gronx.NextTick(expr, false); e == nil {
-			s.At(id, next, scheduled)
+			s.At(id, next, scheduled) // Recursively re-schedule itself.
 		}
 		return err
 	}
 
+	// Schedule the first run.
 	return s.At(id, nextRun, scheduled)
 }
 
 ScheduleCron(scheduler, "daily", "0 2 * * *", dailyJob)
+```
+
+### Custom Locker
+
+The `WithUnique` and `WithoutOverlap` wrappers require a `Locker` implementation. The built-in `MemoryLocker` works for single-instance applications, but distributed systems need a shared lock store like Redis or a database.
+
+Implement the `Locker[T]` interface:
+
+```go
+type Locker[T any] interface {
+	Exists(key string) bool
+	Get(key string) (LockValue[T], bool)
+	Acquire(key string, lock LockValue[T]) bool
+	Release(key string) bool
+	ForceRelease(key string)
+}
+```
+
+Optionally implement `CleanableLocker[T]` if your store doesn't handle expiration automatically:
+
+```go
+type CleanableLocker[T any] interface {
+	Locker[T]
+	Cleanup() int // Remove expired locks, return count removed.
+}
+```
+
+#### Redis Example
+
+```go
+type RedisLocker struct {
+	client *redis.Client
+}
+
+func (r *RedisLocker) Exists(key string) bool {
+	return r.client.Exists(context.Background(), key).Val() > 0
+}
+
+func (r *RedisLocker) Get(key string) (cq.LockValue[struct{}], bool) {
+	_, err := r.client.Get(context.Background(), key).Result()
+	if err == redis.Nil {
+		return cq.LockValue[struct{}]{}, false
+	}
+	return cq.LockValue[struct{}]{}, err == nil
+}
+
+func (r *RedisLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
+	ttl := time.Until(lock.ExpiresAt)
+	if ttl <= 0 {
+		ttl = time.Minute // Default TTL if no expiration set.
+	}
+	// SET NX ensures atomic acquire.
+	ok, _ := r.client.SetNX(context.Background(), key, "1", ttl).Result()
+	return ok
+}
+
+func (r *RedisLocker) Release(key string) bool {
+	return r.client.Del(context.Background(), key).Val() > 0
+}
+
+func (r *RedisLocker) ForceRelease(key string) {
+	_ := r.Release(key)
+}
+
+// Usage with WithUnique.
+locker := &RedisLocker{client: redisClient}
+job := cq.WithUnique(actualJob, "order:123", 5*time.Minute, locker)
+```
+
+#### SQLite Example
+
+```go
+type SQLiteLocker struct {
+	db *sql.DB
+}
+
+func NewSQLiteLocker(db *sql.DB) *SQLiteLocker {
+	db.Exec(`CREATE TABLE IF NOT EXISTS locks (
+		key TEXT PRIMARY KEY,
+		expires_at DATETIME
+	)`)
+	return &SQLiteLocker{db: db}
+}
+
+func (s *SQLiteLocker) Exists(key string) bool {
+	var n int
+	err := s.db.QueryRow(
+		"SELECT 1 FROM locks WHERE key = ? AND expires_at > ?",
+		key,
+		time.Now(),
+	).Scan(&n)
+	return err == nil
+}
+
+func (s *SQLiteLocker) Get(key string) (cq.LockValue[struct{}], bool) {
+	var expiresAt time.Time
+	err := s.db.QueryRow(
+		"SELECT expires_at FROM locks WHERE key = ? AND expires_at > ?",
+		key,
+		time.Now(),
+	).Scan(&expiresAt)
+	if err != nil {
+		return cq.LockValue[struct{}]{}, false
+	}
+	return cq.LockValue[struct{}]{ExpiresAt: expiresAt}, true
+}
+
+func (s *SQLiteLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
+	// Use a transaction to ensure atomicity.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+
+	// Delete expired lock if exists.
+	tx.Exec("DELETE FROM locks WHERE key = ? AND expires_at <= ?", key, time.Now())
+
+	// Try to insert new lock (fails if non-expired lock exists).
+	_, err = tx.Exec("INSERT INTO locks (key, expires_at) VALUES (?, ?)", key, lock.ExpiresAt)
+	if err != nil {
+		return false // Lock exists and is not expired.
+	}
+
+	return tx.Commit() == nil
+}
+
+func (s *SQLiteLocker) Release(key string) bool {
+	res, _ := s.db.Exec("DELETE FROM locks WHERE key = ?", key)
+	affected, _ := res.RowsAffected()
+	return affected > 0
+}
+
+func (s *SQLiteLocker) ForceRelease(key string) {
+	_ := s.Release(key)
+}
+
+func (s *SQLiteLocker) Cleanup() int {
+	res, _ := s.db.Exec("DELETE FROM locks WHERE expires_at <= ?", time.Now())
+	affected, _ := res.RowsAffected()
+	return int(affected)
+}
+
+// Usage with WithUnique.
+locker := NewSQLiteLocker(db)
+job := cq.WithUnique(actualJob, "order:123", 5*time.Minute, locker)
 ```
 
 ## Demo

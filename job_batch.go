@@ -12,11 +12,11 @@ type BatchState struct {
 	CompletedJobs atomic.Int32 // Number of jobs that have finished (success or failure).
 	FailedJobs    atomic.Int32 // Number of jobs that have failed.
 
-	OnComplete func([]error)              // Callback when all jobs finish. Receives all errors (empty if none).
-	OnProgress func(completed, total int) // Optional callback executed after each job completes.
+	onComplete func([]error)              // Callback when all jobs finish.
+	onProgress func(completed, total int) // Optional callback after each job.
 
-	Errors    []error    // Slice of all errors from failed jobs.
 	errorsMut sync.Mutex // Mutex for protecting the Errors slice.
+	Errors    []error    // Slice of all errors from failed jobs.
 }
 
 // WithBatch wraps jobs so they can be tracked as one logical batch.
@@ -30,8 +30,8 @@ func WithBatch(jobs []Job, onComplete func([]error), onProgress func(completed, 
 	state := &BatchState{
 		TotalJobs:  int32(len(jobs)),
 		Errors:     make([]error, 0),
-		OnComplete: onComplete,
-		OnProgress: onProgress,
+		onComplete: onComplete,
+		onProgress: onProgress,
 	}
 
 	wrappedJobs := make([]Job, len(jobs))
@@ -49,15 +49,15 @@ func WithBatch(jobs []Job, onComplete func([]error), onProgress func(completed, 
 				// Increment completed jobs.
 				completed := state.CompletedJobs.Add(1)
 
-				if state.OnProgress != nil {
+				if state.onProgress != nil {
 					// Call onProgress callback, if provided.
-					state.OnProgress(int(completed), int(state.TotalJobs))
+					state.onProgress(int(completed), int(state.TotalJobs))
 				}
 
 				// Check if this is the last job.
-				if completed == state.TotalJobs && state.OnComplete != nil {
+				if completed == state.TotalJobs && state.onComplete != nil {
 					// Call onComplete callback with all errors (empty if none).
-					state.OnComplete(state.Errors)
+					state.onComplete(state.Errors)
 				}
 
 				return err
