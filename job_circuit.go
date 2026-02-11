@@ -77,35 +77,6 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	return cb.state == circuitOpen && time.Now().Before(cb.openUntil)
 }
 
-// tryAcquire attempts to acquire permission to execute.
-// Returns true if the job should run, false if circuit is open.
-func (cb *CircuitBreaker) tryAcquire() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	switch cb.state {
-	case circuitClosed:
-		return true // Allowed to run.
-	case circuitOpen:
-		if time.Now().After(cb.openUntil) {
-			if cb.halfOpen {
-				// Transition to half-open, allow one request.
-				cb.state = circuitHalfOpen
-				return true
-			}
-
-			// Half-open disabled, just close the circuit.
-			cb.state = circuitClosed
-			cb.failures = 0
-			return true
-		}
-		return false
-	case circuitHalfOpen:
-		return false // Already testing, reject others.
-	}
-	return false // Should never happen.
-}
-
 // RecordSuccess resets the failure count and closes the circuit.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
@@ -141,4 +112,33 @@ func WithCircuitBreaker(job Job, cb *CircuitBreaker) Job {
 		}
 		return err
 	}
+}
+
+// tryAcquire attempts to acquire permission to execute.
+// Returns true if the job should run, false if circuit is open.
+func (cb *CircuitBreaker) tryAcquire() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	switch cb.state {
+	case circuitClosed:
+		return true // Allowed to run.
+	case circuitOpen:
+		if time.Now().After(cb.openUntil) {
+			if cb.halfOpen {
+				// Transition to half-open, allow one request.
+				cb.state = circuitHalfOpen
+				return true
+			}
+
+			// Half-open disabled, just close the circuit.
+			cb.state = circuitClosed
+			cb.failures = 0
+			return true
+		}
+		return false
+	case circuitHalfOpen:
+		return false // Already testing, reject others.
+	}
+	return false // Should never happen.
 }
