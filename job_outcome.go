@@ -21,6 +21,9 @@ var (
 	ErrPermanent = errors.New("cq: permanent")
 )
 
+// Kept for future/internal predicate helpers.
+var _ = isRetryable
+
 // outcomeError wraps an error with an outcome marker.
 type outcomeError struct {
 	outcome error // ErrRetryable, ErrDiscard, or ErrPermanent.
