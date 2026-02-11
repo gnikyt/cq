@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,13 +78,13 @@ func TestPriorityQueue(t *testing.T) {
 		defer pq.Stop(false)
 
 		var order []int
-		var mu atomic.Value
-		mu.Store(&order)
+		var mut sync.Mutex
 
 		makeJob := func(id int) Job {
 			return func(ctx context.Context) error {
-				currentOrder := mu.Load().(*[]int)
-				*currentOrder = append(*currentOrder, id)
+				mut.Lock()
+				order = append(order, id)
+				mut.Unlock()
 				return nil
 			}
 		}
@@ -98,14 +99,15 @@ func TestPriorityQueue(t *testing.T) {
 		// Wait for all jobs to process.
 		time.Sleep(100 * time.Millisecond)
 
-		finalOrder := mu.Load().(*[]int)
-		if len(*finalOrder) != 5 {
-			t.Fatalf("PriorityQueue: got %d jobs, want 5", len(*finalOrder))
+		mut.Lock()
+		defer mut.Unlock()
+		if len(order) != 5 {
+			t.Fatalf("PriorityQueue: got %d jobs, want 5", len(order))
 		}
 
 		// Highest priority should execute first.
-		if (*finalOrder)[0] != 1 {
-			t.Errorf("PriorityQueue: first job: got %d, want 1 (highest)", (*finalOrder)[0])
+		if order[0] != 1 {
+			t.Errorf("PriorityQueue: first job: got %d, want 1 (highest)", order[0])
 		}
 	})
 

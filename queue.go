@@ -26,6 +26,7 @@ type Queue struct {
 	ctxCancel           context.CancelFunc // Cancels the queue context.
 	panicHandler        func(any)          // Optional panic handler for job panics.
 	mut                 sync.Mutex         // Guards worker scaling decisions.
+	enqueueMut          sync.RWMutex       // Synchronizes enqueue tracking with Stop/Terminate.
 	stopped             atomic.Bool        // Indicates queue shutdown has started.
 	workersRunningTally atomic.Int32       // Reserved/active worker slots used for scaling decisions.
 	workersIdleTally    atomic.Int32       // Reserved idle worker slots available for new jobs.
@@ -97,6 +98,9 @@ func (q *Queue) Start() {
 // when `jobWait` is true, waits for worker goroutines to exit, resets worker
 // tallies, and closes the jobs channel.
 func (q *Queue) Stop(jobWait bool) {
+	q.enqueueMut.Lock()
+	defer q.enqueueMut.Unlock()
+
 	q.stopped.Store(true)
 	if jobWait {
 		q.jobWg.Wait()
@@ -110,6 +114,9 @@ func (q *Queue) Stop(jobWait bool) {
 // Terminate forces an immediate shutdown.
 // Unlike Stop, it does not wait for jobs or worker goroutines to finish.
 func (q *Queue) Terminate() {
+	q.enqueueMut.Lock()
+	defer q.enqueueMut.Unlock()
+
 	q.stopped.Store(true)
 	q.ctxCancel()
 	q.resetWorkers()
@@ -291,7 +298,9 @@ func (q *Queue) nextJobID() string {
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
 func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
+	q.enqueueMut.RLock()
 	if q.IsStopped() {
+		q.enqueueMut.RUnlock()
 		return // Queue stopped.
 	}
 
@@ -308,6 +317,7 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 	// Track the job and record enqueue tallies.
 	q.jobWg.Add(1)
 	q.markJobEnqueued()
+	q.enqueueMut.RUnlock()
 
 	defer func() {
 		if r := recover(); r != nil {

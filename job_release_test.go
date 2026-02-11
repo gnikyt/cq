@@ -15,13 +15,12 @@ func TestWithRelease(t *testing.T) {
 		queue.Start()
 		defer queue.Stop(true)
 
-		var calls int
+		var calls atomic.Int32
 		releaseErr := errors.New("release me")
 
 		job := WithRelease(
 			func(ctx context.Context) error {
-				calls++
-				if calls < 2 {
+				if calls.Add(1) < 2 {
 					return releaseErr
 				}
 				return nil
@@ -43,8 +42,8 @@ func TestWithRelease(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 
 		// Should have been called twice (initial + 1 release).
-		if calls < 2 {
-			t.Errorf("WithRelease(): calls: got %d, want >= 2", calls)
+		if got := calls.Load(); got < 2 {
+			t.Errorf("WithRelease(): calls: got %d, want >= 2", got)
 		}
 	})
 
@@ -53,13 +52,13 @@ func TestWithRelease(t *testing.T) {
 		queue.Start()
 		defer queue.Stop(true)
 
-		var calls int
+		var calls atomic.Int32
 		releaseErr := errors.New("release me")
 		maxReleases := 2
 
 		job := WithRelease(
 			func(ctx context.Context) error {
-				calls++
+				calls.Add(1)
 				return releaseErr
 			},
 			queue,

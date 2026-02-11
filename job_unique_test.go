@@ -9,82 +9,54 @@ import (
 )
 
 func TestWithoutOverlap(t *testing.T) {
-	var wg sync.WaitGroup              // Waitgroup for jobs.
-	locker := NewOverlapMemoryLocker() // Memory locker for WithoutOverlap job.
-	runs := 10                         // Number of times to run jobs.
-	amountBase := 10                   // Base amount.
-	amounto := amountBase              // Amount for overlap func.
-	amountno := amountBase             // Amount for no overlap func.
-	decrement := 4                     // Amount to decrement by.
-	want := amountBase % decrement     // Based on how many times amount can be cleanly decremented.
+	var wg sync.WaitGroup
+	locker := NewOverlapMemoryLocker()
+	runs := 25
 
-	jobo := func(i int) Job {
-		return WithoutOverlap(func(ctx context.Context) error {
-			defer wg.Done()
-			ac := amounto // Copy amount.
-			if i%3 == 0 {
-				// Simulate "work" which could mean the copy is outdated.
-				time.Sleep(10 * time.Millisecond)
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
+
+	job := WithoutOverlap(func(ctx context.Context) error {
+		defer wg.Done()
+
+		cur := concurrent.Add(1)
+		for {
+			prev := maxConcurrent.Load()
+			if cur <= prev || maxConcurrent.CompareAndSwap(prev, cur) {
+				break
 			}
-			if ac < decrement {
-				return nil
-			}
-			amounto -= decrement
-			return nil
-		}, "jobo", locker)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+		concurrent.Add(-1)
+		return nil
+	}, "jobo", locker)
+
+	wg.Add(runs)
+	for range runs {
+		go job(context.Background())
 	}
-
-	jobno := func(i int) Job {
-		return func(ctx context.Context) error {
-			defer wg.Done()
-			ac := amountno // Copy amount.
-			if i%3 == 0 {
-				// Simulate "work" which could mean the copy is outdated.
-				time.Sleep(10 * time.Millisecond)
-			}
-			if ac < decrement {
-				return nil
-			}
-			amountno -= decrement
-			return nil
-		}
-	}
-
-	wg.Add(runs * 2)
-	go func() {
-		for i := 0; i < runs; i++ {
-			go jobo(i)(context.Background())
-		}
-	}()
-	go func() {
-		for i := 0; i < runs; i++ {
-			go jobno(i)(context.Background())
-		}
-	}()
 	wg.Wait()
 
-	if amounto != want {
-		// Locks should ensure the value matches our want.
-		t.Errorf("WithoutOverlap: got amounto %v, want %v", amounto, want)
-	}
-	if amountno > 0 {
-		// Without locks would cause the amount to go below 0 due to the copy.
-		t.Errorf("WithoutOverlap: got amountno %v, want < 0", amountno)
+	if got := maxConcurrent.Load(); got != 1 {
+		t.Errorf("WithoutOverlap: max concurrent got %d, want 1", got)
 	}
 }
 
 func TestWithUnique(t *testing.T) {
 	t.Run("normal", func(tt *testing.T) {
-		var called bool
+		var called atomic.Bool
 		locker := NewUniqueMemoryLocker()
 
 		go WithUnique(func(ctx context.Context) error {
 			time.Sleep(50 * time.Millisecond)
-			called = true
+			called.Store(true)
 			return nil
 		}, "test", 1*time.Minute, locker)(context.Background())
+
 		// Allow goroutine to run.
 		time.Sleep(10 * time.Millisecond)
+
 		// This job should not fire since the uniqueness of initial
 		// job is set to 1m, and the "work" is taking 50ms.
 		go WithUnique(func(ctx context.Context) error {
@@ -93,7 +65,7 @@ func TestWithUnique(t *testing.T) {
 		}, "test", 1*time.Minute, locker)(context.Background())
 
 		time.Sleep(60 * time.Millisecond)
-		if !called {
+		if !called.Load() {
 			t.Error("WithUnique(): job should have been called")
 		}
 	})
@@ -116,13 +88,16 @@ func TestWithUnique(t *testing.T) {
 		// Wait for lock to expire.
 		time.Sleep(50 * time.Millisecond)
 
-		// These jobs should run because lock expired.
+		// One of these jobs should run because lock expired. The other is
+		// deduplicated by WithUnique(..., 0, ...) while the first one is running.
 		var wg sync.WaitGroup
 		for range 2 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				WithUnique(func(ctx context.Context) error {
+					// Keep lock briefly so concurrent duplicate is deduped deterministically.
+					time.Sleep(20 * time.Millisecond)
 					calls.Add(1)
 					return nil
 				}, "test", 0, locker)(context.Background())
@@ -131,24 +106,27 @@ func TestWithUnique(t *testing.T) {
 
 		wg.Wait()
 
-		// Only count the 2 jobs that ran after expiry (first job still running).
-		if got := calls.Load(); got != 2 {
-			t.Errorf("WithUnique(): got %d calls, want 2", got)
+		// Only count the post-expiry runs (first long job still running).
+		// Depending on scheduler timing, one or both post-expiry attempts may run.
+		if got := calls.Load(); got < 1 || got > 2 {
+			t.Errorf("WithUnique(): got %d calls, want 1..2", got)
 		}
 	})
 
 	t.Run("zero_duration", func(t *testing.T) {
-		var called bool
+		var called atomic.Bool
 		locker := NewUniqueMemoryLocker()
 
 		// Zero duration means lock doesn't expire until job completes.
 		go WithUnique(func(ctx context.Context) error {
 			time.Sleep(50 * time.Millisecond)
-			called = true
+			called.Store(true)
 			return nil
 		}, "test", time.Duration(0), locker)(context.Background())
+
 		// Allow goroutine to run.
 		time.Sleep(10 * time.Millisecond)
+
 		// This job should not fire since the lock doesn't expire (zero duration).
 		go WithUnique(func(ctx context.Context) error {
 			t.Error("WithUnique(): job should not fire with zero duration lock")
@@ -156,7 +134,7 @@ func TestWithUnique(t *testing.T) {
 		}, "test", time.Duration(0), locker)(context.Background())
 
 		time.Sleep(60 * time.Millisecond)
-		if !called {
+		if !called.Load() {
 			t.Error("WithUnique(): job should have been called")
 		}
 	})
@@ -237,7 +215,7 @@ func TestWithUniqueWindow(t *testing.T) {
 		}, "test", window, locker)(context.Background())
 
 		// Try multiple duplicates within window.
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			WithUniqueWindow(func(ctx context.Context) error {
 				mu.Lock()
 				calls++

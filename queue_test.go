@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -142,17 +143,17 @@ func TestQueueGetters(t *testing.T) {
 }
 
 func TestQueueEnqueue(t *testing.T) {
-	var called bool // Was job called?
+	var called atomic.Bool // Was job called?
 	q := NewQueue(1, 1, 1)
 	q.Start()
 
 	q.Enqueue(func(ctx context.Context) error {
-		called = true
+		called.Store(true)
 		return nil
 	})
 	q.Stop(true)
 
-	if !called {
+	if !called.Load() {
 		t.Error("Enqueue(): expected job to enqueued and executed")
 	}
 }
@@ -185,21 +186,21 @@ func TestQueueEnqueueBatch(t *testing.T) {
 	q.Start()
 	defer q.Stop(true)
 
-	var called1 bool
-	var called2 bool
-	var called3 bool
+	var called1 atomic.Bool
+	var called2 atomic.Bool
+	var called3 atomic.Bool
 
 	jobs := []Job{
 		func(ctx context.Context) error {
-			called1 = true
+			called1.Store(true)
 			return nil
 		},
 		func(ctx context.Context) error {
-			called2 = true
+			called2.Store(true)
 			return nil
 		},
 		func(ctx context.Context) error {
-			called3 = true
+			called3.Store(true)
 			return nil
 		},
 	}
@@ -209,8 +210,11 @@ func TestQueueEnqueueBatch(t *testing.T) {
 	// Wait for all jobs to complete.
 	time.Sleep(100 * time.Millisecond)
 
-	if !called1 || !called2 || !called3 {
-		t.Errorf("EnqueueBatch(): jobs not all executed: called1=%v, called2=%v, called3=%v", called1, called2, called3)
+	if !called1.Load() || !called2.Load() || !called3.Load() {
+		t.Errorf(
+			"EnqueueBatch(): jobs not all executed: called1=%v, called2=%v, called3=%v",
+			called1.Load(), called2.Load(), called3.Load(),
+		)
 	}
 
 	// Check tallies.
@@ -319,10 +323,10 @@ func TestQueueTallies(t *testing.T) {
 }
 
 func TestQueuePanic(t *testing.T) {
-	var called bool
+	var called atomic.Bool
 
 	q := NewQueue(1, 1, 1, WithPanicHandler(func(err any) {
-		called = true
+		called.Store(true)
 	}))
 	q.Start()
 	q.Enqueue(func(ctx context.Context) error {
@@ -330,7 +334,7 @@ func TestQueuePanic(t *testing.T) {
 	})
 	q.Stop(true)
 
-	if !called {
+	if !called.Load() {
 		t.Error("WithPanicHandler(): should have executed")
 	}
 }
