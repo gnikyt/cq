@@ -472,6 +472,20 @@ job := cq.WithoutOverlap(actualJob, "account-123", locker)
 queue.Enqueue(job)
 ```
 
+To cap how long the overlap lock is held, compose `WithTimeout` inside `WithoutOverlap`:
+
+```go
+locker := cq.NewOverlapMemoryLocker()
+job := cq.WithoutOverlap(
+	cq.WithTimeout(actualJob, 5*time.Minute),
+	"account-123",
+	locker,
+)
+queue.Enqueue(job)
+```
+
+This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
+
 #### Unique Jobs
 
 Deduplicate jobs within a time window. Duplicate jobs with the same key are silently discarded (they return `nil` without executing). The time window controls when the key becomes available again for new jobs... it does not cancel or timeout the running job. To also limit execution time, combine with `WithTimeout` or `WithDeadline`.
@@ -610,6 +624,45 @@ job := cq.WithRelease(
 queue.Enqueue(job)
 ```
 
+#### Release Self
+
+Allow a job to request delayed re-enqueue of itself from inside job logic (without requiring an error predicate). Use `RequestRelease(ctx, delay)` inside a `WithReleaseSelf`-wrapped job.
+
+```go
+job := cq.WithReleaseSelf(func(ctx context.Context) error {
+	// If upstream is throttling, ask to try again later.
+	if isRateLimitedNow() {
+		cq.RequestRelease(ctx, 30*time.Second)
+		return nil
+	}
+
+	return doWork(ctx)
+}, queue, 3) // maxReleases (0 = unlimited).
+
+queue.Enqueue(job)
+```
+
+You can call `RequestRelease` multiple times in a single run to refine the delay. Only one release is scheduled for that run, and the last request wins:
+
+```go
+job := cq.WithReleaseSelf(func(ctx context.Context) error {
+	cq.RequestRelease(ctx, 30*time.Second) // Initial estimate.
+	if shouldRetrySooner() {
+		cq.RequestRelease(ctx, 5*time.Second) // Last write wins.
+	}
+	return nil
+}, queue, 3)
+
+queue.Enqueue(job)
+```
+
+Logic:
+
+- If a release request is made and release budget allows, the job is delayed and re-enqueued, and this run returns `nil`.
+- If both an error and release request occur, release wins while budget allows.
+- Multiple requests in one run use last-write-wins delay.
+- `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
+
 #### Recover
 
 Convert panics into errors. The queue already has built-in panic recovery to prevent worker crashes, but this wrapper allows custom handling of panics within your job logic (example: logging, metrics, or transforming the panic into a specific error type).
@@ -644,6 +697,16 @@ limiter := rate.NewLimiter(10, 5) // 10 per second, burst of 5.
 job := cq.WithRateLimit(actualJob, limiter)
 queue.Enqueue(job)
 ```
+
+Use `WithRateLimitRelease` when you want to free workers instead of blocking them while waiting for limiter tokens:
+
+```go
+limiter := rate.NewLimiter(10, 5)
+job := cq.WithRateLimitRelease(actualJob, limiter, queue, 3)
+queue.Enqueue(job)
+```
+
+`WithRateLimitRelease` re-enqueues the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. `maxReleases` controls how many times this defer/re-enqueue can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
 
 #### Circuit Breaker
 

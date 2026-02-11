@@ -124,3 +124,108 @@ func TestWithRateLimit(t *testing.T) {
 		}
 	})
 }
+
+func TestWithRateLimitRelease(t *testing.T) {
+	t.Run("releases_when_limited", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		// Slow limiter: 1 token every 200ms, burst 1.
+		limiter := rate.NewLimiter(rate.Every(200*time.Millisecond), 1)
+		_ = limiter.Allow() // consume burst
+
+		var count atomic.Int32
+		done := make(chan struct{}, 1)
+
+		job := WithRateLimitRelease(func(ctx context.Context) error {
+			count.Add(1)
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+			return nil
+		}, limiter, queue, 2)
+
+		start := time.Now()
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithRateLimitRelease(): got %v, want nil on release", err)
+		}
+		// Should return quickly because it releases instead of waiting.
+		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+			t.Fatalf("WithRateLimitRelease(): elapsed %v, want fast return", elapsed)
+		}
+
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+			t.Fatal("WithRateLimitRelease(): expected re-enqueued execution")
+		}
+		if got := count.Load(); got != 1 {
+			t.Fatalf("WithRateLimitRelease(): count=%d, want 1", got)
+		}
+	})
+
+	t.Run("max_releases_exhausted_falls_back_to_wait", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		limiter := rate.NewLimiter(rate.Every(120*time.Millisecond), 1)
+		_ = limiter.Allow() // consume burst
+
+		var count atomic.Int32
+		job := WithRateLimitRelease(func(ctx context.Context) error {
+			count.Add(1)
+			return nil
+		}, limiter, queue, 1)
+
+		// First call: released.
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithRateLimitRelease(): first call got %v, want nil", err)
+		}
+
+		// Immediate second call: release budget exhausted, so should block+run.
+		start := time.Now()
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithRateLimitRelease(): second call got %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed < 80*time.Millisecond {
+			t.Fatalf("WithRateLimitRelease(): expected blocking fallback, elapsed=%v", elapsed)
+		}
+
+		if got := count.Load(); got < 1 {
+			t.Fatalf("WithRateLimitRelease(): count=%d, want >=1", got)
+		}
+	})
+
+	t.Run("negative_max_releases_treated_as_unlimited", func(t *testing.T) {
+		queue := NewQueue(1, 2, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		limiter := rate.NewLimiter(rate.Every(80*time.Millisecond), 1)
+		_ = limiter.Allow() // consume burst
+
+		var count atomic.Int32
+		done := make(chan struct{}, 1)
+		job := WithRateLimitRelease(func(ctx context.Context) error {
+			if count.Add(1) >= 1 {
+				select {
+				case done <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		}, limiter, queue, -1)
+
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithRateLimitRelease(): got %v, want nil", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("WithRateLimitRelease(): expected release with negative maxReleases")
+		}
+	})
+}
