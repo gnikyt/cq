@@ -93,7 +93,7 @@ func main() {
 Wrappers let you add behavior to jobs without modifying the job itself. Compose them from **innermost to outermost** - the outermost wrapper runs first and controls the flow. This keeps job logic clean while adding retries, timeouts, tracing, and error handling declaratively.
 
 ```go
-job := WithResultHandler(        // 4. Outermost: catches final result.
+job := WithOutcome(              // 4. Outermost: catches final outcome.
 	WithRetry(                   // 3. Retries on error.
 		WithBackoff(             // 2. Adds delay between retries.
 			WithTimeout(         // 1. Innermost: runs with timeout.
@@ -106,16 +106,17 @@ job := WithResultHandler(        // 4. Outermost: catches final result.
 	),
 	onComplete,
 	onFail,
+	onDiscard,
 )
 ```
 
 **Execution flow:**
-1. `WithResultHandler` calls `WithRetry`
+1. `WithOutcome` calls `WithRetry`
 2. `WithRetry` calls `WithBackoff`
 3. `WithBackoff` waits (if retry > 0), then calls `WithTimeout`
 4. `WithTimeout` runs `actualJob` with a 5-minute timeout
 5. If `actualJob` fails, control returns up the chain for retry logic
-6. After all retries, `WithResultHandler` receives the final result
+6. After all retries, `WithOutcome` receives the final outcome
 
 ## Testing
 
@@ -257,8 +258,26 @@ queue.Enqueue(job)
 Conditional retries allow you to retry only on specific errors:
 
 ```go
-job := cq.WithRetryIf(actualJob, 5, func(err error) bool {
-	return cq.IsClass(err, cq.ErrorClassRetryable)
+job := cq.WithRetryIf(func(ctx context.Context) error {
+	err := callExternalAPI(ctx)
+	if err == nil {
+		return nil
+	}
+	if isValidationError(err) {
+		return cq.AsPermanent(err) // Don't retry validation failures.
+	}
+	if isNetworkTimeout(err) {
+		return cq.AsRetryable(err) // Explicitly marked retryable.
+	}
+	return err // Intentionally unwrapped (may still be retryable by predicate).
+}, 5, func(err error) bool {
+	if errors.Is(err, cq.ErrRetryable) {
+		return true // Already marked as retryable.
+	}
+
+	// Retry if HTTP status is "too many requests".
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests
 })
 ```
 
@@ -277,12 +296,12 @@ queue.Enqueue(job)
 
 Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBackoff`
 
-#### Result Handler
+#### Outcome Handler
 
-Execute callbacks on job completion or failure. Useful for logging, metrics, notifications, or triggering follow-up actions. Another useful case is sending to a DLQ on error.
+Execute callbacks on job completion, failure, or discard. Useful for logging, metrics, notifications, or triggering follow-up actions. Another useful case is sending to a DLQ on error. All three callbacks are optional; pass `nil` for any callback you do not need.
 
 ```go
-job := cq.WithResultHandler(
+job := cq.WithOutcome(
 	actualJob,
 	func() {
 		log.Println("success")
@@ -290,6 +309,26 @@ job := cq.WithResultHandler(
 	func(err error) {
 		log.Printf("failed: %v", err)
 		// Example: send to SQS DLQ.
+	},
+	nil, // onDiscarded.
+)
+queue.Enqueue(job)
+```
+
+To handle discarded jobs (for example, idempotent duplicates), pass `onDiscarded`:
+
+```go
+job := cq.WithOutcome(
+	func(ctx context.Context) error {
+		if isDuplicateWork(ctx) {
+			return cq.AsDiscard(errors.New("already processed"))
+		}
+		return actualJob(ctx)
+	},
+	nil, // onCompleted.
+	nil, // onFailed.
+	func(err error) {
+		log.Printf("discarded: %v", err)
 	},
 )
 queue.Enqueue(job)
@@ -300,7 +339,7 @@ To access job metadata in handlers, capture it inside the job:
 ```go
 job := func(ctx context.Context) error {
 	meta := cq.MetaFromContext(ctx)
-	return cq.WithResultHandler(
+	return cq.WithOutcome(
 		actualJob,
 		func() {
 			log.Printf("job %s completed", meta.ID)
@@ -308,47 +347,51 @@ job := func(ctx context.Context) error {
 		func(err error) {
 			log.Printf("job %s failed: %v", meta.ID, err)
 		},
+		nil, // onDiscarded.
 	)(ctx)
 }
 queue.Enqueue(job)
 ```
 
-#### Error Classifier
+#### Outcome Markers
 
-Categorize errors as retryable, permanent, or ignored. Works with `WithRetryIf` to implement smart retry logic based on error types.
+Mark errors directly with outcome wrappers to keep retry and result behavior explicit.
 
 ```go
-classifier := func(err error) cq.ErrorClass {
-	var httpErr *HTTPError // Your custom HTTP error type.
-	if errors.As(err, &httpErr) {
-		switch {
-		case httpErr.StatusCode == http.StatusTooManyRequests: // 429, rate limited.
-			return cq.ErrorClassRetryable
-		case httpErr.StatusCode >= http.StatusInternalServerError: // 5xx, server error.
-			return cq.ErrorClassRetryable
-		case httpErr.StatusCode >= http.StatusBadRequest: // 4xx, client error.
-			return cq.ErrorClassPermanent
-		}
-	}
-	return cq.ErrorClassPermanent
-}
-
-// Retry up to 5 times if error is determined to be retryable via classifer.
 job := cq.WithRetryIf(
-	cq.WithErrorClassifier(actualJob, classifier),
+	func(ctx context.Context) error {
+		err := callExternalAPI(ctx)
+		if err == nil {
+			return nil
+		}
+
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			switch {
+			case httpErr.StatusCode == http.StatusTooManyRequests:
+				return cq.AsRetryable(err)
+			case httpErr.StatusCode >= http.StatusInternalServerError:
+				return cq.AsRetryable(err)
+			case httpErr.StatusCode >= http.StatusBadRequest:
+				return cq.AsPermanent(err)
+			}
+		}
+
+		return cq.AsPermanent(err)
+	},
 	5,
 	func(err error) bool {
-		return cq.IsClass(err, cq.ErrorClassRetryable)
+		return errors.Is(err, cq.ErrRetryable)
 	},
 )
 queue.Enqueue(job)
 ```
 
-Available error classes:
+Available outcome markers:
 
-- `cq.ErrorClassRetryable` - Transient errors that may succeed on retry (example: network timeouts, rate limits, 5xx server errors).
-- `cq.ErrorClassPermanent` - Errors that won't be fixed by retrying (example: validation errors, 4xx client errors, malformed input).
-- `cq.ErrorClassIgnored` - Errors that should be silently ignored (example: duplicate processing, already completed, context cancellation).
+- `cq.ErrRetryable` / `cq.AsRetryable(err)` - Transient errors that may succeed on retry (example: network timeouts, rate limits, 5xx server errors).
+- `cq.ErrPermanent` / `cq.AsPermanent(err)` - Errors that won't be fixed by retrying (example: validation errors, 4xx client errors, malformed input).
+- `cq.ErrDiscard` / `cq.AsDiscard(err)` - Errors that should be discarded (example: duplicate processing, already completed, idempotent no-op).
 
 #### Tracing
 

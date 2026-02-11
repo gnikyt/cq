@@ -33,13 +33,16 @@ func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
 			attemptCtx := contextWithMeta(ctx, meta)
 
 			if err = job(attemptCtx); err == nil {
-				break
+				break // Success, no retry needed.
+			}
+			if isPermanent(err) || isDiscarded(err) {
+				break // Permanent or discarded, no retry.
 			}
 			if !shouldRetry(err) {
-				break
+				break // Not retryable due to predicate, no retry.
 			}
 		}
-		return err
+		return err // Retry limit reached or no retry needed.
 	}
 }
 

@@ -108,4 +108,34 @@ func TestWithRetryIf(t *testing.T) {
 			t.Fatalf("WithRetryIf(): got %d calls, want 3", calls)
 		}
 	})
+
+	t.Run("ErrPermanent_stops_retries", func(t *testing.T) {
+		var calls int
+		job := WithRetryIf(func(ctx context.Context) error {
+			calls++
+			return AsPermanent(errors.New("permanent"))
+		}, 5, nil) // predicate nil = retry any error, but sentinel overrides.
+		err := job(context.Background())
+		if !errors.Is(err, ErrPermanent) {
+			t.Fatalf("got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("ErrPermanent should stop retries: got %d calls", calls)
+		}
+	})
+
+	t.Run("ErrDiscard_stops_retries", func(t *testing.T) {
+		var calls int
+		job := WithRetryIf(func(ctx context.Context) error {
+			calls++
+			return AsDiscard(errors.New("discard"))
+		}, 5, nil)
+		err := job(context.Background())
+		if !errors.Is(err, ErrDiscard) {
+			t.Fatalf("got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("ErrDiscard should stop retries: got %d calls", calls)
+		}
+	})
 }
