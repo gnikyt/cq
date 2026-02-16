@@ -59,8 +59,8 @@ func (r *EnvelopeRegistry) Register(typ string, factory EnvelopeJobFactory) {
 	r.mut.Unlock()
 }
 
-// factoryFor returns the factory for a given envelope type.
-func (r *EnvelopeRegistry) factoryFor(typ string) (EnvelopeJobFactory, bool) {
+// FactoryFor returns the factory for a given envelope type.
+func (r *EnvelopeRegistry) FactoryFor(typ string) (EnvelopeJobFactory, bool) {
 	r.mut.RLock()
 	defer r.mut.RUnlock()
 	f, ok := r.factories[typ]
@@ -119,7 +119,7 @@ func RecoverEnvelopesWithOptions(
 	}
 
 	for _, env := range envs {
-		factory, ok := registry.factoryFor(env.Type)
+		factory, ok := registry.FactoryFor(env.Type)
 		if !ok {
 			report.SkippedUnknownType++
 			envelopeErr := handleEnvelopeErr(env, fmt.Errorf("recover: no factory registered for envelope (type=%s)", env.Type))

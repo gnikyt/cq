@@ -65,6 +65,30 @@ func TestRecoverEnvelopes_ReenqueuesRecoverableJobs(t *testing.T) {
 	}
 }
 
+func TestEnvelopeRegistry_FactoryFor(t *testing.T) {
+	registry := NewEnvelopeRegistry()
+	factory := func(env Envelope) (Job, error) {
+		return func(ctx context.Context) error { return nil }, nil
+	}
+	registry.Register("email", factory)
+
+	gotFactory, ok := registry.FactoryFor("email")
+	if !ok {
+		t.Fatal("expected factory to be found")
+	}
+	if gotFactory == nil {
+		t.Fatal("expected non-nil factory")
+	}
+
+	gotMissing, ok := registry.FactoryFor("missing")
+	if ok {
+		t.Fatal("expected missing factory lookup to return ok=false")
+	}
+	if gotMissing != nil {
+		t.Fatal("expected missing factory to be nil")
+	}
+}
+
 func TestRecoverEnvelopes_MissingFactory(t *testing.T) {
 	now := time.Now()
 	store := &recoverStore{
