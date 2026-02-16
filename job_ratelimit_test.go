@@ -162,7 +162,7 @@ func TestWithRateLimitRelease(t *testing.T) {
 			t.Fatal("WithRateLimitRelease(): expected re-enqueued execution")
 		}
 		if got := count.Load(); got != 1 {
-			t.Fatalf("WithRateLimitRelease(): count=%d, want 1", got)
+			t.Fatalf("WithRateLimitRelease(): got count=%d, want 1", got)
 		}
 	})
 
@@ -195,7 +195,7 @@ func TestWithRateLimitRelease(t *testing.T) {
 		}
 
 		if got := count.Load(); got < 1 {
-			t.Fatalf("WithRateLimitRelease(): count=%d, want >=1", got)
+			t.Fatalf("WithRateLimitRelease(): got count=%d, want >= 1", got)
 		}
 	})
 

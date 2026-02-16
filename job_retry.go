@@ -56,7 +56,14 @@ func WithBackoff(job Job, bf BackoffFunc) Job {
 	return func(ctx context.Context) error {
 		meta := MetaFromContext(ctx)
 		if meta.Attempt > 0 {
-			<-time.After(bf(meta.Attempt))
+			timer := time.NewTimer(bf(meta.Attempt))
+			defer timer.Stop()
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err() // Context cancelled while waiting for backoff.
+			case <-timer.C:
+			}
 		}
 		return job(ctx)
 	}

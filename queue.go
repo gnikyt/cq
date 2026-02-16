@@ -25,6 +25,7 @@ type Queue struct {
 	ctx                 context.Context    // Queue context for workers/jobs.
 	ctxCancel           context.CancelFunc // Cancels the queue context.
 	panicHandler        func(any)          // Optional panic handler for job panics.
+	envelopeStore       EnvelopeStore      // Optional persistence hook for enqueue/ack/nack.
 	mut                 sync.Mutex         // Guards worker scaling decisions.
 	enqueueMut          sync.RWMutex       // Synchronizes enqueue tracking with Stop/Terminate.
 	stopped             atomic.Bool        // Indicates queue shutdown has started.
@@ -293,6 +294,64 @@ func (q *Queue) nextJobID() string {
 	return strconv.FormatInt(q.jobIDCounter.Add(1), 10)
 }
 
+// reportEnvelopeEnqueue reports an accepted enqueue to persistence, if configured.
+func (q *Queue) reportEnvelopeEnqueue(meta JobMeta) {
+	if q.envelopeStore == nil {
+		return
+	}
+
+	if err := q.envelopeStore.Enqueue(q.ctx, Envelope{
+		ID:          meta.ID,
+		Attempt:     meta.Attempt,
+		Status:      EnvelopeStatusEnqueued,
+		EnqueuedAt:  meta.EnqueuedAt,
+		AvailableAt: time.Now(),
+	}); err != nil && q.panicHandler != nil {
+		q.panicHandler(fmt.Errorf("queue: envelope enqueue: %w", err))
+	}
+}
+
+// reportEnvelopeResult reports final result to persistence, if configured.
+func (q *Queue) reportEnvelopeResult(meta JobMeta, err error) {
+	if q.envelopeStore == nil {
+		return
+	}
+
+	var repErr error
+	if err != nil {
+		repErr = q.envelopeStore.Nack(q.ctx, meta.ID, err)
+	} else {
+		repErr = q.envelopeStore.Ack(q.ctx, meta.ID)
+	}
+
+	if repErr != nil && q.panicHandler != nil {
+		q.panicHandler(fmt.Errorf("queue: envelope result: %w", repErr))
+	}
+}
+
+// reportEnvelopeClaim reports "claimed/started" to persistence.
+func (q *Queue) reportEnvelopeClaim(meta JobMeta) {
+	if q.envelopeStore == nil {
+		return
+	}
+
+	if err := q.envelopeStore.Claim(q.ctx, meta.ID); err != nil && q.panicHandler != nil {
+		q.panicHandler(fmt.Errorf("queue: envelope claim: %w", err))
+	}
+}
+
+// reportEnvelopeReschedule reports deferred execution for an envelope.
+func (q *Queue) reportEnvelopeReschedule(meta JobMeta, delay time.Duration, reason string) {
+	if q.envelopeStore == nil || meta.ID == "" {
+		return
+	}
+
+	nextRunAt := time.Now().Add(delay)
+	if err := q.envelopeStore.Reschedule(q.ctx, meta.ID, nextRunAt, reason); err != nil && q.panicHandler != nil {
+		q.panicHandler(fmt.Errorf("queue: envelope reschedule: %w", err))
+	}
+}
+
 // doEnqueue submits a job to the queue internals.
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
@@ -311,7 +370,11 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 		Attempt:    0,
 	}
 	wrappedJob := func(ctx context.Context) error {
-		return job(contextWithMeta(ctx, meta))
+		attemptCtx := contextWithMeta(ctx, meta)
+		q.reportEnvelopeClaim(meta)
+		err := job(attemptCtx)
+		q.reportEnvelopeResult(meta, err)
+		return err
 	}
 
 	// Track the job and record enqueue tallies.
@@ -347,6 +410,9 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 			}
 		}
 	}
+	if ok {
+		q.reportEnvelopeEnqueue(meta)
+	}
 	return
 }
 
@@ -360,11 +426,11 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 			var err error
 			switch x := r.(type) {
 			case string:
-				err = fmt.Errorf("workJob: %s", x)
+				err = fmt.Errorf("queue: work job panic: %s", x)
 			case error:
-				err = fmt.Errorf("workJob: %w", x)
+				err = fmt.Errorf("queue: work job panic: %w", x)
 			default:
-				err = fmt.Errorf("workJob: unknown panic: %v", x)
+				err = fmt.Errorf("queue: work job panic: %v", x)
 			}
 
 			// Update job tallies and run panic handler if set.
@@ -490,5 +556,12 @@ func WithCancelableContext(ctx context.Context, ctxCancel context.CancelFunc) Qu
 func WithPanicHandler(handler func(any)) QueueOption {
 	return func(q *Queue) {
 		q.panicHandler = handler
+	}
+}
+
+// WithEnvelopeStore sets an optional persistence adapter for enqueue/ack/nack reporting.
+func WithEnvelopeStore(store EnvelopeStore) QueueOption {
+	return func(q *Queue) {
+		q.envelopeStore = store
 	}
 }

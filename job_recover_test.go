@@ -17,7 +17,7 @@ func TestWithRecover(t *testing.T) {
 		if err == nil {
 			t.Error("WithRecover(): should return error for panic")
 		}
-		if !strings.Contains(err.Error(), "job panic: string panic") {
+		if !strings.Contains(err.Error(), "job: panic: string panic") {
 			t.Errorf("WithRecover(): got %v, want panic message", err)
 		}
 	})

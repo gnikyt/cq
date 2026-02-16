@@ -13,9 +13,9 @@ func WithRecover(job Job) Job {
 		defer func() {
 			if r := recover(); r != nil {
 				meta := MetaFromContext(ctx)
-				prefix := "job panic"
+				prefix := "job: panic"
 				if meta.ID != "" {
-					prefix = fmt.Sprintf("job panic (id=%s)", meta.ID)
+					prefix = fmt.Sprintf("job: panic (id=%s)", meta.ID)
 				}
 
 				switch x := r.(type) {

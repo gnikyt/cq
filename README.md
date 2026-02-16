@@ -195,6 +195,7 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithContext(ctx)                - Parent context for the queue.
 // cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
+// cq.WithEnvelopeStore(store)        - Persist envelope lifecycle and recovery metadata.
 ```
 
 #### Stopping
@@ -203,6 +204,200 @@ queue := cq.NewQueue(1, 10, 100,
 queue.Stop(true)   // Wait for jobs to finish.
 queue.Stop(false)  // Don't wait for queued jobs.
 queue.Terminate()  // Immediate shutdown.
+```
+
+### Envelope Persistence and Recovery
+
+Use an `EnvelopeStore` to observe queue lifecycle transitions and optionally persist/replay recoverable jobs after restart/outage. It does not have to be durable storage only... you can also use it for event-driven side effects such as DLQ routing, failure notifications, or metrics hooks. Persistence remains useful when you need durability and observability beyond in-memory queue state (process crashes, deploy restarts, audit trails, delayed/released job tracking). Implementations can use Redis, SQL/NoSQL databases, files, object storage, or non-persistent adapters that forward events.
+
+```go
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+```
+
+`EnvelopeStore` receives lifecycle callbacks:
+
+- `Enqueue` when accepted by queue.
+- `Claim` when a worker starts execution.
+- `Ack` on success.
+- `Nack` on failure.
+- `Reschedule` when execution is intentionally deferred.
+- `Recoverable` when loading jobs to replay.
+
+Built-in deferred wrappers automatically call `Reschedule`:
+
+- `WithRelease` -> `cq.EnvelopeRescheduleReasonRelease`
+- `WithReleaseSelf` -> `cq.EnvelopeRescheduleReasonReleaseSelf`
+- `WithRateLimitRelease` -> `cq.EnvelopeRescheduleReasonRateLimit`
+
+Use `RecoverEnvelopes` to rebuild jobs and enqueue them from persisted envelopes:
+
+```go
+registry := cq.NewEnvelopeRegistry()
+registry.Register("send_invitation", func(env cq.Envelope) (cq.Job, error) {
+	var payload SendInvitationPayload
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		return nil, err
+	}
+
+	baseJob := func(ctx context.Context) error {
+		return sendEmail(ctx, payload)
+	}
+	return cq.WithRetry(
+		cq.WithBackoff(baseJob, cq.ExponentialBackoff),
+		3,
+	), nil
+})
+
+scheduled, err := cq.RecoverEnvelopes(context.Background(), queue, store, registry, time.Now())
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("scheduled %d recovered jobs", scheduled)
+```
+
+For larger systems, use `RecoverEnvelopesWithOptions` for batched/lenient recovery and `StartRecoveryLoop` to poll recoverable jobs continuously:
+
+```go
+cancelLoop, err := cq.StartRecoveryLoop(
+	context.Background(),
+	5*time.Second, // Poll interval.
+	queue,
+	store,
+	registry,
+	cq.RecoverOptions{
+		MaxEnvelopes:    100,
+		ContinueOnError: true,
+		OnError: func(env cq.Envelope, err error) {
+			log.Printf("recover skipped (id=%s type=%s): %v", env.ID, env.Type, err)
+		},
+	},
+	func(err error) {
+		log.Printf("recover loop error: %v", err)
+	},
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer cancelLoop()
+```
+
+Recovery timing behavior:
+
+- If `Envelope.NextRunAt` is zero or in the past, recovery enqueues immediately.
+- If `Envelope.NextRunAt` is in the future, recovery uses `DelayEnqueue` for that remaining duration.
+
+#### Examples
+
+DLQ-only `EnvelopeStore` example:
+
+```go
+type deadLetterStore struct {
+	db *sql.DB
+}
+
+func (s *deadLetterStore) Enqueue(ctx context.Context, env cq.Envelope) error {
+	return nil // Not needed for DLQ-only usage.
+}
+
+func (s *deadLetterStore) Claim(ctx context.Context, id string) error {
+	return nil // Not needed for DLQ-only usage.
+}
+
+func (s *deadLetterStore) Ack(ctx context.Context, id string) error {
+	return nil // Not needed for DLQ-only usage.
+}
+
+func (s *deadLetterStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
+	return nil // Not needed for DLQ-only usage.
+}
+
+func (s *deadLetterStore) Recoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	return nil, nil // No replay in this implementation.
+}
+
+func (s *deadLetterStore) Nack(ctx context.Context, id string, reason error) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO dead_letter_jobs (job_id, failed_at, error_text) VALUES (?, ?, ?)`,
+		id,
+		time.Now().UTC(),
+		reason.Error(),
+	)
+	return err
+}
+
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(&deadLetterStore{db: db}))
+```
+
+Minimal file-backed `EnvelopeStore` example (JSON file):
+
+```go
+type fileEnvelopeStore struct {
+	mu   sync.Mutex
+	path string
+}
+
+func (s *fileEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
+	return s.update(env.ID, func(e *cq.Envelope) {
+		*e = env
+		e.Status = cq.EnvelopeStatusEnqueued
+	})
+}
+
+func (s *fileEnvelopeStore) Claim(ctx context.Context, id string) error {
+	return s.update(id, func(e *cq.Envelope) {
+		e.Status = cq.EnvelopeStatusClaimed
+		e.ClaimedAt = time.Now()
+	})
+}
+
+func (s *fileEnvelopeStore) Ack(ctx context.Context, id string) error {
+	return s.update(id, func(e *cq.Envelope) {
+		e.Status = cq.EnvelopeStatusAcked
+	})
+}
+
+func (s *fileEnvelopeStore) Nack(ctx context.Context, id string, reason error) error {
+	return s.update(id, func(e *cq.Envelope) {
+		e.Status = cq.EnvelopeStatusNacked
+		e.LastError = reason.Error()
+	})
+}
+
+func (s *fileEnvelopeStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
+	return s.update(id, func(e *cq.Envelope) {
+		e.Status = cq.EnvelopeStatusEnqueued
+		e.NextRunAt = nextRunAt
+		e.LastError = reason
+	})
+}
+
+func (s *fileEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	records, err := s.readAll()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]cq.Envelope, 0, len(records))
+	for _, env := range records {
+		if env.Status == cq.EnvelopeStatusAcked {
+			continue
+		}
+		if !env.NextRunAt.IsZero() && env.NextRunAt.After(now) {
+			continue
+		}
+		out = append(out, env)
+	}
+	return out, nil
+}
+
+// Helpers to implement:
+// - readAll(): loads map[string]cq.Envelope from s.path (json.Unmarshal).
+// - writeAll(): persists map[string]cq.Envelope to s.path (json.MarshalIndent).
+// - update(id, fn): loads map, applies fn on map[id], then writes map back.
 ```
 
 ### Jobs

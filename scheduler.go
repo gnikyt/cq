@@ -62,14 +62,14 @@ func (s *Scheduler) Stop() {
 // Returns an error if a job with the same ID already exists.
 func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
 	if interval <= 0 {
-		return fmt.Errorf("Every: %w", ErrInvalidInterval)
+		return fmt.Errorf("scheduler: every: %w", ErrInvalidInterval)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("Every (id=%s): %w", id, ErrJobExists)
+		return fmt.Errorf("scheduler: every (id=%s): %w", id, ErrJobExists)
 	}
 
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -93,14 +93,14 @@ func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
 // Returns an error if a job with the same ID already exists or if the time is in the past.
 func (s *Scheduler) At(id string, t time.Time, job Job) error {
 	if time.Now().After(t) {
-		return fmt.Errorf("At: %w", ErrScheduleInPast)
+		return fmt.Errorf("scheduler: at: %w", ErrScheduleInPast)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("At (id=%s): %w", id, ErrJobExists)
+		return fmt.Errorf("scheduler: at (id=%s): %w", id, ErrJobExists)
 	}
 
 	ctx, cancel := context.WithCancel(s.ctx)

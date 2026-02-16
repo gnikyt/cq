@@ -266,7 +266,7 @@ func TestQueueEnqueueIfStopped(t *testing.T) {
 
 	job := func(ctx context.Context) error { return nil }
 	if ok := q.TryEnqueue(job); ok {
-		t.Error("TryEnqueue() = true, want false")
+		t.Error("TryEnqueue(): got true, want false")
 	}
 }
 

@@ -48,7 +48,7 @@ func (c *CustomLocker) ForceRelease(key string) {
 func TestMemoryLockerExists(t *testing.T) {
 	ml := NewMemoryLocker[string]()
 	if ok := ml.Exists("non-existant"); ok {
-		t.Error("Exists() = true, want false")
+		t.Error("Exists(): got true, want false")
 	}
 }
 
@@ -59,7 +59,7 @@ func TestMemoryLockerGet(t *testing.T) {
 		// Should be not found, thus no real expire time.
 		lock, ok := ml.Get("non-existant")
 		if !lock.ExpiresAt.IsZero() || ok {
-			t.Errorf("Get() = (%v, true), want %v, false", lock.ExpiresAt, time.Time{})
+			t.Errorf("Get(): got (%v, true), want (%v, false)", lock.ExpiresAt, time.Time{})
 		}
 	})
 	t.Run("exists", func(t *testing.T) {
@@ -70,12 +70,12 @@ func TestMemoryLockerGet(t *testing.T) {
 			Value:     "",
 		}
 		if ok := ml.Acquire("exists", lock); !ok {
-			t.Error("Acquire() = false, want true")
+			t.Error("Acquire(): got false, want true")
 		}
 		// Should be found.
 		lv, ok := ml.Get("exists")
 		if lv.ExpiresAt != lock.ExpiresAt || !ok {
-			t.Errorf("Get() = (%v, false), want (%v, true)", lv, lock)
+			t.Errorf("Get(): got (%v, false), want (%v, true)", lv, lock)
 		}
 	})
 }
@@ -89,11 +89,11 @@ func TestMemoryLockerAcquire(t *testing.T) {
 
 	// Should allow since none exist yet.
 	if ok := ml.Acquire("test", lock); !ok {
-		t.Error("Acquire() = false, want true")
+		t.Error("Acquire(): got false, want true")
 	}
 	// Should not allow since lock now exists.
 	if ok := ml.Acquire("test", lock); ok {
-		t.Error("Acquire() = true, want false")
+		t.Error("Acquire(): got true, want false")
 	}
 }
 
@@ -110,11 +110,11 @@ func TestMemoryLockerAcquireExpired(t *testing.T) {
 
 	// Should allow since none exist yet.
 	if ok := ml.Acquire("test", lexpp); !ok {
-		t.Error("Acquire() = false, want true")
+		t.Error("Acquire(): got false, want true")
 	}
 	// Should allow since lock should be expired.
 	if ok := ml.Acquire("test", lexpf); !ok {
-		t.Error("Acquire() = false, want true")
+		t.Error("Acquire(): got false, want true")
 	}
 }
 
@@ -127,11 +127,11 @@ func TestMemoryLockerRelease(t *testing.T) {
 
 	// Should allow since none exist yet.
 	if ok := ml.Acquire("test", lock); !ok {
-		t.Error("Acquire() = false, want true")
+		t.Error("Acquire(): got false, want true")
 	}
 	// Should allow.
 	if ok := ml.Release("test"); !ok {
-		t.Error("Release() = false, want true")
+		t.Error("Release(): got false, want true")
 	}
 }
 
@@ -272,12 +272,12 @@ func TestDeprecatedAquireBackwardCompatibility(t *testing.T) {
 
 	// Deprecated Aquire should still work.
 	if ok := ml.Aquire("test", lock); !ok {
-		t.Error("Aquire() (deprecated) = false, want true")
+		t.Error("Aquire() (deprecated): got false, want true")
 	}
 
 	// Should not allow since lock now exists.
 	if ok := ml.Aquire("test", lock); ok {
-		t.Error("Aquire() (deprecated) = true, want false")
+		t.Error("Aquire() (deprecated): got true, want false")
 	}
 }
 

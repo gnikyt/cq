@@ -346,7 +346,7 @@ func TestWithReleaseSelf(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 		if got := calls.Load(); got != 2 {
-			t.Fatalf("WithReleaseSelf(): stale request leaked after panic, calls=%d want 2", got)
+			t.Fatalf("WithReleaseSelf(): stale request leaked after panic: got calls=%d, want 2", got)
 		}
 	})
 
@@ -391,7 +391,7 @@ func TestWithReleaseSelf(t *testing.T) {
 		}
 		time.Sleep(40 * time.Millisecond)
 		if got := calls.Load(); got != 2 {
-			t.Fatalf("WithReleaseSelf(): stale async request affected later run, calls=%d want 2", got)
+			t.Fatalf("WithReleaseSelf(): stale async request affected later run: got calls=%d, want 2", got)
 		}
 	})
 }

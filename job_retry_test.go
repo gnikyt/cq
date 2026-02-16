@@ -45,6 +45,36 @@ func TestWithBackoff(t *testing.T) {
 	}
 }
 
+func TestWithBackoff_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	called := false
+	job := WithBackoff(func(ctx context.Context) error {
+		called = true
+		return nil
+	}, func(retries int) time.Duration {
+		return 200 * time.Millisecond
+	})
+
+	// Simulate retry attempt > 0 so backoff wait path is exercised.
+	ctx = contextWithMeta(ctx, JobMeta{Attempt: 1})
+
+	start := time.Now()
+	err := job(ctx)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WithBackoff(): got %v, want context deadline exceeded", err)
+	}
+	if called {
+		t.Fatal("WithBackoff(): job should not execute after context cancellation")
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("WithBackoff(): cancellation took too long: %v", elapsed)
+	}
+}
+
 func TestWithRetryIf(t *testing.T) {
 	t.Run("nil_predicate_retries_on_any_error", func(t *testing.T) {
 		var calls int
