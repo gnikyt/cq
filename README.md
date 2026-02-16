@@ -5,7 +5,7 @@
 [![GoDoc](https://godoc.org/github.com/gnikyt/cq?status.svg)](https://godoc.org/github.com/gnikyt/cq)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-An auto-scaling queue that processes functions as jobs. Jobs can be simple functions or composed with job wrappers.
+A lightweight, auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then compose behavior with wrappers for retries, timeouts, tracing, and more.
 
 Inspired by Bull, Pond, Ants, and more.
 
@@ -22,26 +22,50 @@ Inspired by Bull, Pond, Ants, and more.
 - Tracing hooks for observability
 - Zero external dependencies for core functionality
 
+## Feature Matrix
+
+Use this as a quick guide before diving into detailed sections.
+
+| Capability | Primary APIs | What it solves |
+| --- | --- | --- |
+| Queueing and workers | `NewQueue`, `Enqueue`, `Stop` | Run background jobs with auto-scaling workers |
+| Reliability | `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
+| Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
+| Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch` | Build multi-step and grouped workflows |
+| Concurrency safety | `WithoutOverlap`, `WithUnique` | Prevent overlap and deduplicate work |
+| Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
+| Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
+| Observability and outcomes | `WithTracing`, `WithOutcome`, `MetaFromContext` | Track attempts, durations, and final job outcomes |
+| Recovery and durability hooks | `WithEnvelopeStore`, `RecoverEnvelopes`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
+| Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
+
 ## When to Use
 
-**Standalone**: Process jobs in-memory without external infrastructure. Ideal for CLI tools, small services, or when Redis/SQS overhead isn't justified.
+- **Standalone**: Process jobs in-memory without external infrastructure. Great for CLI tools, internal services, or cases where Redis/SQS is unnecessary.
+- **With external queues**: Use cq as the execution engine behind SQS, Redis, RabbitMQ, or any broker that feeds jobs.
+- **Embedded**: Add background processing to an existing app without introducing new operational infrastructure.
 
-**With external queues**: Combine with SQS, Redis, RabbitMQ, or other message brokers. Use cq as the worker pool that processes messages from your broker.
-
-**Embedded**: Add background processing to existing applications without introducing new infrastructure dependencies.
+---
 
 ## Table of Contents
 
-* [Quick Start](#quick-start)
-* [Wrapper Composition](#wrapper-composition)
-* [Testing](#testing)
-* [Examples](#examples)
+- [Features](#features)
+- [Feature Matrix](#feature-matrix)
+- [When to Use](#when-to-use)
+- [Quick Start](#quick-start)
+- [Wrapper Composition](#wrapper-composition)
+- [Testing](#testing)
+- [Usage Guide](#usage-guide)
+  - [Common Recipes](#common-recipes)
   - [Queue](#queue)
+  - [Envelope Persistence and Recovery](#envelope-persistence-and-recovery)
   - [Jobs](#jobs)
   - [Priority Queue](#priority-queue)
   - [Scheduler](#scheduler)
   - [Custom Locker](#custom-locker)
-* [Demo](#demo)
+- [Demo](#demo)
+
+---
 
 ## Quick Start
 
@@ -118,6 +142,8 @@ job := WithOutcome(              // 4. Outermost: catches final outcome.
 5. If `actualJob` fails, control returns up the chain for retry logic
 6. After all retries, `WithOutcome` receives the final outcome
 
+---
+
 ## Testing
 
 `make test`
@@ -138,11 +164,72 @@ BenchmarkScenarios/10kReq--100Jobs-10                             7    352322048
 BenchmarkSingleSteadyState-10                               3063700        393.4 ns/op
 ```
 
-## Examples
+---
+
+## Usage Guide
+
+### Common Recipes
+
+Use these first when you want practical defaults quickly.
+
+#### Reliable API Call (timeout + retry + backoff)
+
+**What it does:** Wraps a job with timeout, backoff, and retry to improve reliability.
+**When to use:** Calling external APIs that can fail transiently.
+**Example:** See snippet below.
+**Caveat:** Operationally, timeout only cancels context, so job code must honor `ctx.Done()`.
+
+```go
+job := cq.WithRetry(
+	cq.WithBackoff(
+		cq.WithTimeout(fetchFromAPI, 10*time.Second), // Timeout after 10s.
+		cq.ExponentialBackoff, // Back off exponentially.
+	),
+	3, // Number of retries.
+)
+queue.Enqueue(job)
+```
+
+#### Idempotent Work (unique + timeout)
+
+**What it does:** Prevents duplicate execution for a key while bounding run time.
+**When to use:** Idempotent operations like order processing or resource indexing.
+**Example:** See snippet below.
+**Caveat:** Operationally, duplicate jobs are discarded during the uniqueness window.
+
+```go
+locker := cq.NewUniqueMemoryLocker()
+job := cq.WithUnique(
+	cq.WithTimeout(processOrder, 30*time.Second), // Timeout after 30s.
+	"order:123", // Unique string to compare against.
+	5*time.Minute, // Unique window duration.
+	locker,
+)
+queue.Enqueue(job)
+```
+
+#### Recurring Job (scheduler)
+
+**What it does:** Runs the same job repeatedly at a fixed interval.
+**When to use:** Periodic tasks such as syncing, cleanup, or report generation.
+**Example:** See snippet below.
+**Caveat:** Operationally, stop the scheduler on shutdown to avoid orphaned schedules.
+
+```go
+scheduler := cq.NewScheduler(context.Background(), queue)
+defer scheduler.Stop()
+
+_ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
+```
 
 ### Queue
 
 #### Creating a Queue
+
+**What it does:** Initializes a queue with worker bounds and capacity.
+**When to use:** Any workload that needs in-process background execution.
+**Example:** See snippet below.
+**Caveat:** Operationally, the queue accepts and runs work only after `Start()`.
 
 ```go
 queue := cq.NewQueue(1, 100, 1000)
@@ -154,6 +241,11 @@ Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`
 
 #### Enqueue Methods
 
+**What it does:** Provides blocking, non-blocking, delayed, and batch enqueue APIs.
+**When to use:** Different producer behaviors and delivery timing needs.
+**Example:** See snippet below.
+**Caveat:** Operationally, blocking enqueue applies backpressure when capacity is full.
+
 ```go
 queue.Enqueue(job)                            // Blocking.
 queue.TryEnqueue(job)                         // Non-blocking, returns bool.
@@ -163,6 +255,11 @@ queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
 ```
 
 #### Metrics
+
+**What it does:** Exposes worker and job-state counters for runtime visibility.
+**When to use:** Monitoring queue throughput, backlog, and failure trends.
+**Example:** See snippet below.
+**Caveat:** Operationally, metrics are point-in-time snapshots and should be sampled over intervals.
 
 ```go
 queue.RunningWorkers()           // Current running workers.
@@ -180,6 +277,11 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 ```
 
 #### Options
+
+**What it does:** Customizes queue behavior through optional configuration hooks.
+**When to use:** You need non-default lifecycle, panic, or envelope behavior.
+**Example:** See snippet below.
+**Caveat:** Operationally, custom context/cancel wiring defines how cancellation propagates and how shutdown behaves.
 
 ```go
 queue := cq.NewQueue(1, 10, 100,
@@ -199,6 +301,11 @@ queue := cq.NewQueue(1, 10, 100,
 ```
 
 #### Stopping
+
+**What it does:** Shuts down queue processing with graceful or immediate behavior.
+**When to use:** Service shutdown, deploy restart, or controlled termination.
+**Example:** See snippet below.
+**Caveat:** Operationally, `Terminate()` is abrupt and can interrupt in-flight work.
 
 ```go
 queue.Stop(true)   // Wait for jobs to finish.
@@ -286,7 +393,12 @@ Recovery timing behavior:
 - If `Envelope.NextRunAt` is zero or in the past, recovery enqueues immediately.
 - If `Envelope.NextRunAt` is in the future, recovery uses `DelayEnqueue` for that remaining duration.
 
-#### Examples
+#### Store Implementations
+
+**What it does:** Shows concrete `EnvelopeStore` implementations for different persistence goals.
+**When to use:** You need recovery, auditability, DLQ routing, or custom side effects.
+**Example:** See the DLQ, file-backed, and DynamoDB snippets below.
+**Caveat:** Operationally, use durable storage when restart recovery guarantees are required.
 
 DLQ-only `EnvelopeStore` example:
 
@@ -400,11 +512,115 @@ func (s *fileEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]c
 // - update(id, fn): loads map, applies fn on map[id], then writes map back.
 ```
 
+DynamoDB-backed `EnvelopeStore` example:
+
+```go
+type dynamoEnvelopeStore struct {
+	client *dynamodb.Client
+	table  string
+}
+
+func (s *dynamoEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
+	env.Status = cq.EnvelopeStatusEnqueued
+	return s.putEnvelope(ctx, env)
+}
+
+func (s *dynamoEnvelopeStore) Claim(ctx context.Context, id string) error {
+	return s.updateStatus(ctx, id, cq.EnvelopeStatusClaimed, time.Now(), nil, "")
+}
+
+func (s *dynamoEnvelopeStore) Ack(ctx context.Context, id string) error {
+	return s.updateStatus(ctx, id, cq.EnvelopeStatusAcked, time.Time{}, nil, "")
+}
+
+func (s *dynamoEnvelopeStore) Nack(ctx context.Context, id string, reason error) error {
+	return s.updateStatus(ctx, id, cq.EnvelopeStatusNacked, time.Time{}, nil, reason.Error())
+}
+
+func (s *dynamoEnvelopeStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
+	return s.updateStatus(ctx, id, cq.EnvelopeStatusEnqueued, time.Time{}, &nextRunAt, reason)
+}
+
+func (s *dynamoEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	// Query by status/time using a GSI such as:
+	// GSI1PK = status, GSI1SK = next_run_at (unix timestamp).
+	//
+	// Recoverable rule:
+	// - exclude acked
+	// - include next_run_at <= now (or missing/zero)
+	return s.queryRecoverable(ctx, now)
+}
+
+func (s *dynamoEnvelopeStore) putEnvelope(ctx context.Context, env cq.Envelope) error {
+	item, err := attributevalue.MarshalMap(env)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item:      item,
+	})
+	return err
+}
+
+func (s *dynamoEnvelopeStore) updateStatus(
+	ctx context.Context,
+	id string,
+	status string,
+	claimedAt time.Time,
+	nextRunAt *time.Time,
+	lastError string,
+) error {
+	// Use UpdateItem to set status and optional fields atomically.
+	// Example updates:
+	// - status
+	// - claimed_at (on claim)
+	// - next_run_at + last_error (on reschedule/nack)
+	// Keep this single-write to avoid partial state transitions.
+	return nil
+}
+
+func (s *dynamoEnvelopeStore) queryRecoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	// Use Query (preferred with GSI) or Scan (small datasets).
+	// Unmarshal each item back into cq.Envelope.
+	return nil, nil
+}
+
+store := &dynamoEnvelopeStore{
+	client: dynamoClient,
+	table:  "cq_envelopes",
+}
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+```
+
+Suggested table configuration:
+
+- Partition key: `id` (string)
+- Attributes: `type`, `status`, `payload`, `enqueued_at`, `claimed_at`, `next_run_at`, `last_error`
+- Optional GSI for recovery polling: (`status`, `next_run_at`)
+
 ### Jobs
 
 Jobs are functions with signature `func(ctx context.Context) error`.
 
+Use this quick wrapper index to choose the right building block:
+
+| Goal | Wrappers |
+| --- | --- |
+| Retry transient failures | `WithRetry`, `WithRetryIf`, `WithBackoff` |
+| Bound runtime | `WithTimeout`, `WithDeadline` |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap` |
+| Observe outcomes | `WithOutcome`, `WithTracing` |
+| Build workflows | `WithChain`, `WithPipeline`, `WithBatch` |
+| Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
+| Protect dependencies | `WithRateLimit`, `WithCircuitBreaker` |
+
 #### Basic Function
+
+**What it does:** Defines the base `Job` shape and a cancellation-aware implementation.
+**When to use:** Any job implementation.
+**Example:** See snippet below.
+**Caveat:** Operationally, jobs stop promptly only if they check `ctx.Err()` or use context-aware operations.
 
 ```go
 job := func(ctx context.Context) error {
@@ -419,7 +635,10 @@ queue.Enqueue(job)
 
 #### Job Metadata
 
-Every job receives metadata through its context, including a unique ID, enqueue timestamp, and current retry attempt. Access this information for logging, debugging, or conditional logic.
+**What it does:** Exposes per-job metadata through context (ID, enqueue time, attempt).
+**When to use:** Structured logging, tracing correlation, retry-aware logic.
+**Example:** See snippet below.
+**Caveat:** Operationally, `Attempt` starts at 0 and increments only with retry wrappers.
 
 ```go
 job := func(ctx context.Context) error {
@@ -440,7 +659,10 @@ The `JobMeta` struct contains:
 
 #### Retries
 
-Automatically retry a job a specified number of times on failure. Useful for transient errors like network timeouts or temporary service unavailability.
+**What it does:** Re-runs failed jobs for a bounded number of attempts.
+**When to use:** Transient failures such as timeout, throttling, or temporary outages.
+**Example:** See snippets below (`WithRetry` and `WithRetryIf`).
+**Caveat:** Operationally, retries can duplicate side effects unless work is idempotent.
 
 ```go
 // Retry 3 times.
@@ -478,7 +700,10 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 
 #### Backoff
 
-Add delays between retry attempts to avoid overwhelming external services. Combine with `WithRetry` for exponential backoff, fibonacci sequences, or jittered delays.
+**What it does:** Adds delay strategy between retries to reduce pressure on dependencies.
+**When to use:** Any retry loop that should avoid immediate hammering.
+**Example:** See snippet below.
+**Caveat:** Operationally, backoff has no effect unless composed with retries.
 
 ```go
 // Retry 3 times with exponential backoff.
@@ -493,7 +718,10 @@ Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBac
 
 #### Outcome Handler
 
-Execute callbacks on job completion, failure, or discard. Useful for logging, metrics, notifications, or triggering follow-up actions. Another useful case is sending to a DLQ on error. All three callbacks are optional; pass `nil` for any callback you do not need.
+**What it does:** Runs callbacks for completion, failure, or discard outcomes.
+**When to use:** Metrics, DLQ forwarding, notifications, and audit hooks.
+**Example:** See snippets below.
+**Caveat:** Operationally, callbacks run inline with job completion... throughput impact depends on callback implementation.
 
 ```go
 job := cq.WithOutcome(
@@ -550,7 +778,10 @@ queue.Enqueue(job)
 
 #### Outcome Markers
 
-Mark errors directly with outcome wrappers to keep retry and result behavior explicit.
+**What it does:** Marks errors as retryable, permanent, or discardable explicitly.
+**When to use:** You need deterministic behavior with `WithRetry`/`WithRetryIf`, and explicit discard semantics with `WithOutcome`.
+**Example:** See snippet below.
+**Caveat:** Operationally, markers are consumed by retry wrappers (`WithRetry`, `WithRetryIf`) and by `WithOutcome` for discard handling.
 
 ```go
 job := cq.WithRetryIf(
@@ -590,7 +821,10 @@ Available outcome markers:
 
 #### Tracing
 
-Hook into job lifecycle for observability. Integrate with OpenTelemetry, Datadog, or custom metrics systems to track job execution times and failures.
+**What it does:** Emits lifecycle signals for timing and success/failure instrumentation.
+**When to use:** Integrating observability platforms or custom telemetry.
+**Example:** See snippets below.
+**Caveat:** Operationally, wrapper placement changes measured duration scope (single attempt vs total retries).
 
 ```go
 type myHook struct{}
@@ -629,7 +863,10 @@ To trace each retry attempt individually, place tracing inside the retry instead
 
 #### Skip If
 
-Conditionally skip job execution based on runtime state. Useful for feature flags, maintenance windows, or when preconditions aren't met.
+**What it does:** Conditionally bypasses execution when a predicate returns true.
+**When to use:** Feature flags, maintenance mode, or unmet preconditions.
+**Example:** See snippet below.
+**Caveat:** Operationally, skipped jobs return `nil` and count as intentional no-ops.
 
 ```go
 job := cq.WithSkipIf(actualJob, func(ctx context.Context) bool {
@@ -640,7 +877,10 @@ queue.Enqueue(job)
 
 #### Timeout
 
-Cancel a job if it exceeds a duration. Prevents runaway jobs from blocking workers indefinitely. The timeout starts when the job executes, not when enqueued. *Note: this cancels the context, but the job will only stop at points where it checks `ctx.Done()` or uses context-aware operations (example: `http.NewRequestWithContext`).*
+**What it does:** Cancels a job context if execution exceeds a duration.
+**When to use:** Preventing runaway jobs from occupying workers indefinitely.
+**Example:** See snippet below.
+**Caveat:** Operationally, timeout/deadline signals cancel the context, but job code stops only where it checks the context.
 
 ```go
 job := cq.WithTimeout(actualJob, 5*time.Minute)
@@ -649,7 +889,10 @@ queue.Enqueue(job)
 
 #### Deadline
 
-Cancel a job if it runs past a specific point in time. Useful for time-sensitive operations that become irrelevant after a certain moment. Unlike `WithTimeout`, the deadline is an absolute time, so queue wait time counts against it. *Note: this cancels the context, but the job will only stop at points where it checks `ctx.Done()` or uses context-aware operations (example: `http.NewRequestWithContext`).*
+**What it does:** Cancels a job context at a fixed absolute time.
+**When to use:** Time-sensitive work with a hard business cutoff.
+**Example:** See snippet below.
+**Caveat:** Operationally, queue wait time consumes deadline budget, but that is expected given its a deadline.
 
 ```go
 deadline := time.Date(2025, 12, 25, 16, 0, 0, 0, time.Local)
@@ -659,7 +902,10 @@ queue.Enqueue(job)
 
 #### Overlap Prevention
 
-Prevent concurrent execution of jobs with the same key. Ensures only one instance of a job runs at a time, useful for operations that shouldn't overlap such as account syncs, or debit/credit operations for an account. Other jobs with the same key will block and wait for the lock to be freed, which ties up workers. For high-volume scenarios where duplicates should be discarded instead of queued, use `WithUnique`.
+**What it does:** Ensures only one job with the same key runs at a time.
+**When to use:** Non-overlapping work such as account sync or balance mutation.
+**Example:** See snippets below.
+**Caveat:** Operationally, lock contention blocks workers... use `WithUnique` when drop-on-duplicate is preferred.
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
@@ -683,7 +929,10 @@ This releases the overlap lock when the timeout wrapper returns, but note the un
 
 #### Unique Jobs
 
-Deduplicate jobs within a time window. Duplicate jobs with the same key are silently discarded (they return `nil` without executing). The time window controls when the key becomes available again for new jobs... it does not cancel or timeout the running job. To also limit execution time, combine with `WithTimeout` or `WithDeadline`.
+**What it does:** Deduplicates jobs by key within a configured time window.
+**When to use:** Idempotent workloads where repeated work should be skipped.
+**Example:** See snippets below.
+**Caveat:** Operationally, uniqueness controls deduplication only, not run duration.
 
 ```go
 locker := cq.NewUniqueMemoryLocker()
@@ -706,7 +955,10 @@ queue.Enqueue(job)
 
 #### Chains
 
-Execute multiple jobs sequentially, stopping on the first error. Useful for multi-step workflows where each step depends on the previous one succeeding.
+**What it does:** Executes a fixed sequence of jobs and stops on first error.
+**When to use:** Ordered workflows with step dependencies.
+**Example:** See snippet below.
+**Caveat:** Operationally, chains provide no data handoff... use `WithPipeline` when sharing values.
 
 ```go
 job := cq.WithChain(step1, step2, step3)
@@ -715,7 +967,10 @@ queue.Enqueue(job)
 
 #### Pipeline
 
-Like `WithChain`, but with the ability to pass data between steps via a shared channel. Both execute jobs sequentially and stop on error... the difference is `WithPipeline` provides a typed channel for inter-step communication. The channel type is automatically resolved by Go's generics.
+**What it does:** Executes sequential steps with typed channel-based data passing.
+**When to use:** Multi-step flows where output from one step feeds the next.
+**Example:** See snippet below.
+**Caveat:** Operationally, pipeline steps must coordinate channel sends/receives... unmatched operations can block execution.
 
 ```go
 step1 := func(ch chan int) cq.Job {
@@ -738,9 +993,10 @@ queue.Enqueue(job)
 
 #### Batch
 
-Track a group of jobs as a single unit with progress reporting and completion callbacks. Useful for bulk operations where you need to know when all jobs finish. Returns wrapped jobs and a `BatchState` struct pointer for monitoring progress (`CompletedJobs`, `FailedJobs`, `Errors`).
-
-The first callback (`onComplete`) fires once when all jobs finish, regardless of success or failure, receiving a slice of all errors (empty if none). The second callback (`onProgress`) fires after each job completes, receiving the current completed count and total.
+**What it does:** Wraps a job set with group-level progress and completion callbacks.
+**When to use:** Bulk operations where aggregate completion and error tracking matter.
+**Example:** See snippets below.
+**Caveat:** Operationally, expensive batch callbacks can throttle completion throughput.
 
 ```go
 jobs := []cq.Job{job1, job2, job3}
@@ -804,7 +1060,10 @@ queue.EnqueueBatch(batchJobs)
 
 #### Release
 
-Re-enqueue a job after a delay when specific errors occur. Useful for handling rate limits or temporary resource unavailability. This wrapper is non-blocking: when a job is released, it's scheduled asynchronously via `DelayEnqueue` and the worker immediately returns to process other jobs. The delay happens in a background goroutine.
+**What it does:** Re-enqueues jobs after delay when a predicate-matched error occurs.
+**When to use:** Retry-later semantics such as rate limits or temporary upstream failures.
+**Example:** See snippet below.
+**Caveat:** Operationally, releases can run indefinitely without `maxReleases` bounds.
 
 ```go
 job := cq.WithRelease(
@@ -821,7 +1080,10 @@ queue.Enqueue(job)
 
 #### Release Self
 
-Allow a job to request delayed re-enqueue of itself from inside job logic (without requiring an error predicate). Use `RequestRelease(ctx, delay)` inside a `WithReleaseSelf`-wrapped job.
+**What it does:** Lets job code request its own delayed re-enqueue.
+**When to use:** Jobs that decide at runtime to defer themselves.
+**Example:** See snippets below.
+**Caveat:** Operationally, multiple release requests in one run use last-write-wins delay.
 
 ```go
 job := cq.WithReleaseSelf(func(ctx context.Context) error {
@@ -860,7 +1122,10 @@ Logic:
 
 #### Recover
 
-Convert panics into errors. The queue already has built-in panic recovery to prevent worker crashes, but this wrapper allows custom handling of panics within your job logic (example: logging, metrics, or transforming the panic into a specific error type).
+**What it does:** Converts panics in job code into returned errors.
+**When to use:** You need custom panic handling per job path.
+**Example:** See snippet below.
+**Caveat:** Operationally, wrapper-level recovery plus queue recovery can duplicate error reporting.
 
 ```go
 job := cq.WithRecover(func(ctx context.Context) error {
@@ -871,7 +1136,10 @@ queue.Enqueue(job)
 
 #### Tagged
 
-Associate jobs with tags for tracking and bulk cancellation. Useful for cancelling all jobs for a specific user, tenant, or operation type.
+**What it does:** Attaches tags so related jobs can be tracked or canceled together.
+**When to use:** Multi-tenant workflows or operation-wide cancellation.
+**Example:** See snippet below.
+**Caveat:** Operationally, cancellation scope includes all jobs matching the tag.
 
 ```go
 registry := cq.NewJobRegistry()
@@ -879,13 +1147,16 @@ job := cq.WithTagged(actualJob, registry, "user:123", "export")
 queue.Enqueue(job)
 
 registry.CancelForTag("user:123")
-// or...
+// or:
 registry.CancelForTag("export")
 ```
 
 #### Rate Limit
 
-Limit job execution rate using a token bucket algorithm. Jobs wait for a token before executing... if the limit is exceeded, they block until a token becomes available or the context is cancelled. Useful for respecting external API rate limits or preventing resource exhaustion.
+**What it does:** Applies token-bucket throttling before job execution using Go builtins.
+**When to use:** Respecting external quotas and protecting shared dependencies.
+**Example:** See snippets below.
+**Caveat:** Operationally, `WithRateLimit` blocks workers unless release mode is used.
 
 ```go
 limiter := rate.NewLimiter(10, 5) // 10 per second, burst of 5.
@@ -905,7 +1176,12 @@ queue.Enqueue(job)
 
 #### Circuit Breaker
 
-Stop calling a failing service after repeated failures. The circuit has three states:
+**What it does:** Short-circuits calls after consecutive failures to protect dependencies.
+**When to use:** Isolating unstable upstreams and reducing cascading failures.
+**Example:** See snippet below.
+**Caveat:** Operationally, poor breaker thresholds can cause false opens or delayed protection.
+
+The circuit has three states:
 - **Closed**: Normal operation, jobs execute. Opens after threshold consecutive failures.
 - **Open**: Jobs rejected immediately with `cq.ErrCircuitOpen`. Transitions to half-open after cooldown.
 - **Half-open**: Allows one job through to test recovery. Success closes the circuit; failure reopens it.
@@ -932,7 +1208,10 @@ for _, orderID := range orderIDs {
 
 #### Custom Wrapper
 
-Create your own wrappers by following the decorator pattern. Any function that takes a `Job` and returns a `Job` can be composed with the built-in wrappers.
+**What it does:** Shows how to build composable custom wrappers with the decorator pattern.
+**When to use:** You need behavior not covered by built-in wrappers.
+**Example:** See snippet below.
+**Caveat:** Operationally, custom wrappers must preserve context propagation and error semantics.
 
 ```go
 func withLogging(job cq.Job) cq.Job {
@@ -970,7 +1249,10 @@ Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle,
 
 #### Custom Weights
 
-Configure how many jobs from each priority level are dispatched per tick. Weights can be specified as raw counts (`NumberWeight`) or percentages (`PercentWeight`). Percentages are converted to counts based on a fixed total of 12.
+**What it does:** Customizes dispatch share across priority levels.
+**When to use:** You need workload-specific fairness or latency tuning.
+**Example:** See snippet below.
+**Caveat:** Operationally, aggressive high-priority weights can starve lower priorities.
 
 ```go
 // Using raw counts.
@@ -998,7 +1280,10 @@ pq := cq.NewPriorityQueue(queue, 50,
 
 #### Drain Before Stop
 
-Move all buffered jobs to the underlying queue before stopping. Ensures no jobs are dropped during shutdown:
+**What it does:** Flushes buffered priority jobs into the base queue before shutdown.
+**When to use:** Graceful shutdown where queued work must be preserved.
+**Example:** See snippet below.
+**Caveat:** Operationally, draining trades job safety for longer shutdown time.
 
 ```go
 drained := pq.Drain()
@@ -1027,7 +1312,10 @@ scheduler.Count()
 
 #### Cron-like Scheduling
 
-For cron expressions, use an external parser with `Scheduler.At()`:
+**What it does:** Implements cron behavior by recursively scheduling next run times.
+**When to use:** You need cron expressions without built-in cron parser support.
+**Example:** See snippet below.
+**Caveat:** Operationally, unhandled cron parse/reschedule errors can stop future runs silently.
 
 ```go
 // ScheduleCron uses recursion to simulate cron behavior.
