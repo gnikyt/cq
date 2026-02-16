@@ -230,11 +230,11 @@ queue.Terminate()  // Immediate shutdown.
 
 For detailed usage and advanced features, see the following guides:
 
-- **[Job Wrappers](docs/jobs.md)** - Complete reference for all job wrappers including retries, timeouts, tracing, rate limiting, circuit breakers, and custom wrappers
-- **[Envelope Persistence](docs/envelope-persistence.md)** - Persist and recover jobs using envelope stores with examples for DLQ, file-based, and DynamoDB implementations
-- **[Priority Queue](docs/priority-queue.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
-- **[Scheduler](docs/scheduler.md)** - Recurring and one-time job scheduling with cron-like behavior
-- **[Custom Locker](docs/custom-locker.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
+- **[Job Wrappers](docs/JOB_WRAPPERS.md)** - Complete reference for all job wrappers including retries, timeouts, tracing, rate limiting, circuit breakers, and custom wrappers
+- **[Envelope Persistence](docs/ENVELOPE_PERSISTENCE.md)** - Persist and recover jobs using envelope stores with examples for DLQ, file-based, and DynamoDB implementations
+- **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
+- **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
+- **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
 
 ## Testing
 
