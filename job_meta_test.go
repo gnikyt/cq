@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -168,6 +169,70 @@ func TestJobMetaWithRetry(t *testing.T) {
 
 		if lastAttempt.Load() != 2 {
 			t.Errorf("WithRetry(): got final Attempt %d, want 2", lastAttempt.Load())
+		}
+	})
+}
+
+func TestSetEnvelopePayload(t *testing.T) {
+	t.Run("returns_false_without_setter", func(t *testing.T) {
+		ok := SetEnvelopePayload(context.Background(), "email", []byte("payload"))
+		if ok {
+			t.Fatal("SetEnvelopePayload(): got true, want false")
+		}
+	})
+
+	t.Run("writes_payload_with_setter", func(t *testing.T) {
+		var (
+			gotType    string
+			gotPayload []byte
+			calls      int
+		)
+		ctx := contextWithEnvelopePayloadSetter(context.Background(), func(typ string, payload []byte) bool {
+			calls++
+			gotType = typ
+			gotPayload = append([]byte(nil), payload...)
+			return true
+		})
+
+		ok := SetEnvelopePayload(ctx, "email", []byte("alpha"))
+		if !ok {
+			t.Fatal("SetEnvelopePayload(): got false, want true")
+		}
+		if calls != 1 {
+			t.Fatalf("SetEnvelopePayload(): got calls=%d, want 1", calls)
+		}
+		if gotType != "email" {
+			t.Fatalf("SetEnvelopePayload(): got type=%q, want %q", gotType, "email")
+		}
+		if !bytes.Equal(gotPayload, []byte("alpha")) {
+			t.Fatalf("SetEnvelopePayload(): got payload=%q, want %q", string(gotPayload), "alpha")
+		}
+	})
+
+	t.Run("last_write_wins", func(t *testing.T) {
+		var (
+			gotType    string
+			gotPayload []byte
+			calls      int
+		)
+		ctx := contextWithEnvelopePayloadSetter(context.Background(), func(typ string, payload []byte) bool {
+			calls++
+			gotType = typ
+			gotPayload = append([]byte(nil), payload...)
+			return true
+		})
+
+		_ = SetEnvelopePayload(ctx, "email", []byte("alpha"))
+		_ = SetEnvelopePayload(ctx, "email.v2", []byte("beta"))
+
+		if calls != 2 {
+			t.Fatalf("SetEnvelopePayload(): got calls=%d, want 2", calls)
+		}
+		if gotType != "email.v2" {
+			t.Fatalf("SetEnvelopePayload(): got type=%q, want %q", gotType, "email.v2")
+		}
+		if !bytes.Equal(gotPayload, []byte("beta")) {
+			t.Fatalf("SetEnvelopePayload(): got payload=%q, want %q", string(gotPayload), "beta")
 		}
 	})
 }

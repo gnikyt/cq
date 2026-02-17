@@ -2,10 +2,14 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
+
+// ErrEnvelopeNotFound is returned when a targeted recovery lookup misses.
+var ErrEnvelopeNotFound = errors.New("recover: envelope not found")
 
 // EnvelopeJobFactory builds a runnable Job from a persisted envelope.
 type EnvelopeJobFactory func(env Envelope) (Job, error)
@@ -73,6 +77,52 @@ func (r *EnvelopeRegistry) FactoryFor(typ string) (EnvelopeJobFactory, bool) {
 func RecoverEnvelopes(ctx context.Context, queue *Queue, store EnvelopeStore, registry *EnvelopeRegistry, now time.Time) (int, error) {
 	report, err := RecoverEnvelopesWithOptions(ctx, queue, store, registry, now, RecoverOptions{})
 	return report.ScheduledNow + report.ScheduledDelayed, err
+}
+
+// RecoverEnvelopeByID loads and re-enqueues a single envelope by ID.
+// Returns true when the envelope was scheduled for replay.
+func RecoverEnvelopeByID(
+	ctx context.Context,
+	queue *Queue,
+	store EnvelopeStore,
+	registry *EnvelopeRegistry,
+	id string,
+	now time.Time,
+) (bool, error) {
+	if queue == nil {
+		return false, fmt.Errorf("recover: queue is required")
+	}
+	if store == nil {
+		return false, fmt.Errorf("recover: envelope store is required")
+	}
+	if registry == nil {
+		return false, fmt.Errorf("recover: envelope registry is required")
+	}
+	if id == "" {
+		return false, fmt.Errorf("recover: envelope id is required")
+	}
+
+	env, err := store.RecoverByID(ctx, id)
+	if err != nil {
+		return false, err
+	}
+
+	factory, ok := registry.FactoryFor(env.Type)
+	if !ok {
+		return false, fmt.Errorf("recover: no factory registered for envelope (type=%s)", env.Type)
+	}
+
+	job, buildErr := factory(env)
+	if buildErr != nil {
+		return false, fmt.Errorf("recover: build envelope (id=%s, type=%s): %w", env.ID, env.Type, buildErr)
+	}
+
+	if !env.NextRunAt.IsZero() && env.NextRunAt.After(now) {
+		queue.DelayEnqueue(job, env.NextRunAt.Sub(now))
+	} else {
+		queue.Enqueue(job)
+	}
+	return true, nil
 }
 
 // RecoverEnvelopesWithOptions loads recoverable envelopes from store and

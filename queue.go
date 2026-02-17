@@ -352,6 +352,21 @@ func (q *Queue) reportEnvelopeReschedule(meta JobMeta, delay time.Duration, reas
 	}
 }
 
+// reportEnvelopePayload stores replay payload metadata for an envelope, if supported.
+func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) bool {
+	if q.envelopeStore == nil || meta.ID == "" || typ == "" {
+		return false
+	}
+
+	if err := q.envelopeStore.SetPayload(q.ctx, meta.ID, typ, payload); err != nil {
+		if q.panicHandler != nil {
+			q.panicHandler(fmt.Errorf("queue: envelope payload: %w", err))
+		}
+		return false
+	}
+	return true
+}
+
 // doEnqueue submits a job to the queue internals.
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
@@ -371,6 +386,10 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 	}
 	wrappedJob := func(ctx context.Context) error {
 		attemptCtx := contextWithMeta(ctx, meta)
+		attemptCtx = contextWithEnvelopePayloadSetter(attemptCtx, func(typ string, payload []byte) bool {
+			return q.reportEnvelopePayload(meta, typ, payload)
+		})
+
 		q.reportEnvelopeClaim(meta)
 		err := job(attemptCtx)
 		q.reportEnvelopeResult(meta, err)

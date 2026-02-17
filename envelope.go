@@ -55,7 +55,11 @@ type EnvelopeStore interface {
 	// Recoverable returns envelopes that should be replayed now.
 	// Implementations decide recovery policy (for example enqueued + stale claimed).
 	Recoverable(ctx context.Context, now time.Time) ([]Envelope, error)
+	// RecoverByID returns one envelope by its stable ID for targeted replay.
+	RecoverByID(ctx context.Context, id string) (Envelope, error)
 	// Reschedule records deferred execution for the envelope.
 	// This is called when execution is intentionally delayed (for example release/rate-limit).
 	Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error
+	// SetPayload records replay metadata (logical type and payload bytes) for the envelope.
+	SetPayload(ctx context.Context, id string, typ string, payload []byte) error
 }

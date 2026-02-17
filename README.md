@@ -37,7 +37,7 @@ Use this as a quick guide before diving into detailed sections.
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `MetaFromContext` | Track attempts, durations, and final job outcomes |
-| Recovery and durability hooks | `WithEnvelopeStore`, `RecoverEnvelopes`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
+| Recovery and durability hooks | `WithEnvelopeStore`, `SetEnvelopePayload`, `WithEnvelopePayload`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
 
 ## When to Use
@@ -158,6 +158,32 @@ scheduler := cq.NewScheduler(context.Background(), queue)
 defer scheduler.Stop()
 
 _ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
+```
+
+### Replay-Ready Envelope Payloads
+
+```go
+job := cq.WithEnvelopePayload(
+	processOrder,
+	"process_order",
+	func(ctx context.Context) ([]byte, error) {
+		return json.Marshal(OrderPayload{OrderID: "123"})
+	},
+)
+queue.Enqueue(job)
+```
+
+```go
+job := func(ctx context.Context) error {
+	payload, err := json.Marshal(OrderPayload{OrderID: "123"})
+	if err != nil {
+		return err
+	}
+
+	cq.SetEnvelopePayload(ctx, "process_order", payload)
+	return processOrder(ctx)
+}
+queue.Enqueue(job)
 ```
 
 ## Queue

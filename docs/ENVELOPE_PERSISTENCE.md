@@ -23,6 +23,56 @@ Built-in deferred wrappers automatically call `Reschedule`:
 - `WithReleaseSelf` -> `cq.EnvelopeRescheduleReasonReleaseSelf`
 - `WithRateLimitRelease` -> `cq.EnvelopeRescheduleReasonRateLimit`
 
+## Runtime Payload Metadata
+
+To make replay useful, jobs can set envelope `Type` + `Payload` at runtime:
+
+```go
+job := func(ctx context.Context) error {
+	payload, err := json.Marshal(SendInvitationPayload{
+		Email: "demo@example.com",
+	})
+	if err != nil {
+		return err
+	}
+
+	// Returns false when no payload sink is configured.
+	cq.SetEnvelopePayload(ctx, "send_invitation", payload)
+
+	return sendEmail(ctx)
+}
+queue.Enqueue(job)
+```
+
+Or use the wrapper form:
+
+```go
+job := cq.WithEnvelopePayload(
+	sendEmailJob,
+	"send_invitation",
+	func(ctx context.Context) ([]byte, error) {
+		return json.Marshal(SendInvitationPayload{
+			Email: "demo@example.com",
+		})
+	},
+)
+queue.Enqueue(job)
+```
+
+`EnvelopeStore` includes `SetPayload`, so queue can persist these updates by default:
+
+```go
+type myStore struct{}
+
+func (s *myStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	// Upsert by id.
+	return nil
+}
+```
+
+When `SetEnvelopePayload` is called multiple times in one run, the last call wins.
+When no envelope store is configured, it returns `false` and processing continues.
+
 ## Recovery
 
 Use `RecoverEnvelopes` to rebuild jobs and enqueue them from persisted envelopes:
@@ -49,6 +99,23 @@ if err != nil {
 	log.Fatal(err)
 }
 log.Printf("scheduled %d recovered jobs", scheduled)
+```
+
+Recover a single envelope by ID (for example from an admin HTTP replay endpoint):
+
+```go
+scheduled, err := cq.RecoverEnvelopeByID(
+	context.Background(),
+	queue,
+	store,
+	registry,
+	"job-id-123",
+	time.Now(),
+)
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("scheduled single envelope: %v", scheduled)
 ```
 
 For larger systems, use `RecoverEnvelopesWithOptions` for batched/lenient recovery and `StartRecoveryLoop` to poll recoverable jobs continuously:
@@ -116,6 +183,10 @@ func (s *deadLetterStore) Recoverable(ctx context.Context, now time.Time) ([]cq.
 	return nil, nil // No replay in this implementation.
 }
 
+func (s *deadLetterStore) RecoverByID(ctx context.Context, id string) (cq.Envelope, error) {
+	return cq.Envelope{}, cq.ErrEnvelopeNotFound // No replay in this implementation.
+}
+
 func (s *deadLetterStore) Nack(ctx context.Context, id string, reason error) error {
 	_, err := s.db.ExecContext(
 		ctx,
@@ -125,6 +196,10 @@ func (s *deadLetterStore) Nack(ctx context.Context, id string, reason error) err
 		reason.Error(),
 	)
 	return err
+}
+
+func (s *deadLetterStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	return nil // Optional for DLQ-only usage.
 }
 
 queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(&deadLetterStore{db: db}))
@@ -197,6 +272,28 @@ func (s *fileEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]c
 	return out, nil
 }
 
+func (s *fileEnvelopeStore) RecoverByID(ctx context.Context, id string) (cq.Envelope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	records, err := s.readAll()
+	if err != nil {
+		return cq.Envelope{}, err
+	}
+	env, ok := records[id]
+	if !ok {
+		return cq.Envelope{}, cq.ErrEnvelopeNotFound
+	}
+	return env, nil
+}
+
+func (s *fileEnvelopeStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	return s.update(id, func(e *cq.Envelope) {
+		e.Type = typ
+		e.Payload = append([]byte(nil), payload...)
+	})
+}
+
 // Helpers to implement:
 // - readAll(): loads map[string]cq.Envelope from s.path (json.Unmarshal).
 // - writeAll(): persists map[string]cq.Envelope to s.path (json.MarshalIndent).
@@ -242,6 +339,19 @@ func (s *dynamoEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([
 	return s.queryRecoverable(ctx, now)
 }
 
+func (s *dynamoEnvelopeStore) RecoverByID(ctx context.Context, id string) (cq.Envelope, error) {
+	// Use GetItem by partition key (id) and unmarshal into cq.Envelope.
+	return cq.Envelope{}, nil
+}
+
+func (s *dynamoEnvelopeStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	// Use UpdateItem to atomically set replay metadata.
+	// Example updates:
+	// - type
+	// - payload
+	return nil
+}
+
 func (s *dynamoEnvelopeStore) putEnvelope(ctx context.Context, env cq.Envelope) error {
 	item, err := attributevalue.MarshalMap(env)
 	if err != nil {
@@ -267,6 +377,7 @@ func (s *dynamoEnvelopeStore) updateStatus(
 	// - status
 	// - claimed_at (on claim)
 	// - next_run_at + last_error (on reschedule/nack)
+	// Replay metadata (type/payload) can be updated via SetPayload.
 	// Keep this single-write to avoid partial state transitions.
 	return nil
 }

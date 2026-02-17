@@ -22,11 +22,25 @@ func (s *recoverStore) Nack(ctx context.Context, id string, reason error) error 
 func (s *recoverStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
 	return nil
 }
+func (s *recoverStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	return nil
+}
 func (s *recoverStore) Recoverable(ctx context.Context, now time.Time) ([]Envelope, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.envs, nil
+}
+func (s *recoverStore) RecoverByID(ctx context.Context, id string) (Envelope, error) {
+	if s.err != nil {
+		return Envelope{}, s.err
+	}
+	for _, env := range s.envs {
+		if env.ID == id {
+			return env, nil
+		}
+	}
+	return Envelope{}, ErrEnvelopeNotFound
 }
 
 func TestRecoverEnvelopes_ReenqueuesRecoverableJobs(t *testing.T) {
@@ -241,5 +255,50 @@ func TestStartRecoveryLoop_InvalidInterval(t *testing.T) {
 	}
 	if cancel != nil {
 		t.Fatal("got non-nil cancel on invalid interval")
+	}
+}
+
+func TestRecoverEnvelopeByID_ReenqueuesSingleJob(t *testing.T) {
+	now := time.Now()
+	store := &recoverStore{
+		envs: []Envelope{{ID: "1", Type: "email", Payload: []byte("alpha")}},
+	}
+	registry := NewEnvelopeRegistry()
+	var executed atomic.Int32
+	registry.Register("email", func(env Envelope) (Job, error) {
+		return func(ctx context.Context) error {
+			executed.Add(1)
+			return nil
+		}, nil
+	})
+
+	q := NewQueue(1, 1, 10)
+	q.Start()
+	defer q.Stop(true)
+
+	scheduled, err := RecoverEnvelopeByID(context.Background(), q, store, registry, "1", now)
+	if err != nil {
+		t.Fatalf("recover by id error: %v", err)
+	}
+	if !scheduled {
+		t.Fatal("expected scheduled=true")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	if got := executed.Load(); got != 1 {
+		t.Fatalf("got executed=%d, want 1", got)
+	}
+}
+
+func TestRecoverEnvelopeByID_NotFound(t *testing.T) {
+	store := &recoverStore{
+		envs: []Envelope{{ID: "1", Type: "email"}},
+	}
+	registry := NewEnvelopeRegistry()
+	q := NewQueue(1, 1, 10)
+
+	_, err := RecoverEnvelopeByID(context.Background(), q, store, registry, "missing", time.Now())
+	if !errors.Is(err, ErrEnvelopeNotFound) {
+		t.Fatalf("got err=%v, want %v", err, ErrEnvelopeNotFound)
 	}
 }
