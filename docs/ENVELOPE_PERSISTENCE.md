@@ -39,24 +39,42 @@ job := func(ctx context.Context) error {
 	// Returns false when no payload sink is configured.
 	cq.SetEnvelopePayload(ctx, "send_invitation", payload)
 
-	return sendEmail(ctx)
+	log.Printf("sending invitation (to=%s)", "demo@example.com")
+	return nil
 }
 queue.Enqueue(job)
 ```
 
-Or use the wrapper form:
+Or use the typed wrapper form:
 
 ```go
-job := cq.WithEnvelopePayload(
-	sendEmailJob,
+codec := cq.EnvelopeJSONCodec[SendInvitationPayload]()
+
+sendInvitation := func(ctx context.Context, payload SendInvitationPayload) error {
+	log.Printf("sending invitation to=%s", payload.Email)
+	return nil
+}
+
+job := cq.WithEnvelope(
 	"send_invitation",
-	func(ctx context.Context) ([]byte, error) {
-		return json.Marshal(SendInvitationPayload{
-			Email: "demo@example.com",
-		})
-	},
+	SendInvitationPayload{Email: "demo@example.com"},
+	codec,
+	sendInvitation,
 )
 queue.Enqueue(job)
+```
+
+Or, build your own codec:
+
+```go
+codec := cq.EnvelopeCodec[SendInvitationPayload]{
+	Marshal: func(v SendInvitationPayload) ([]byte, error) {
+		return XMLMarshal(v)
+	},
+	Unmarshal: func(payload []byte, out *SendInvitationPayload) error {
+		return XMLUnmarshal(payload, out)
+	},
+}
 ```
 
 `EnvelopeStore` includes `SetPayload`, so queue can persist these updates by default:
@@ -75,30 +93,50 @@ When no envelope store is configured, it returns `false` and processing continue
 
 ## Recovery
 
-Use `RecoverEnvelopes` to rebuild jobs and enqueue them from persisted envelopes:
+Use `RegisterEnvelopeHandler` + `RecoverEnvelopes` to rebuild jobs and enqueue them from persisted envelopes:
 
 ```go
 registry := cq.NewEnvelopeRegistry()
-registry.Register("send_invitation", func(env cq.Envelope) (cq.Job, error) {
-	var payload SendInvitationPayload
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return nil, err
-	}
-
-	baseJob := func(ctx context.Context) error {
-		return sendEmail(ctx, payload)
-	}
+sendInvitation := func(ctx context.Context, payload SendInvitationPayload) error {
 	return cq.WithRetry(
-		cq.WithBackoff(baseJob, cq.ExponentialBackoff),
+		cq.WithBackoff(
+			func(ctx context.Context) error {
+				log.Printf("sending invitation (to=%s)", payload.Email)
+				return nil
+			},
+			cq.ExponentialBackoff,
+		),
 		3,
-	), nil
-})
+	)(ctx)
+}
+
+cq.RegisterEnvelopeHandler(
+	registry,
+	"send_invitation",
+	cq.EnvelopeJSONCodec[SendInvitationPayload](),
+	sendInvitation,
+)
 
 scheduled, err := cq.RecoverEnvelopes(context.Background(), queue, store, registry, time.Now())
 if err != nil {
 	log.Fatal(err)
 }
 log.Printf("scheduled %d recovered jobs", scheduled)
+```
+
+Manual registry wiring is still available when you need full control:
+
+```go
+registry.Register("send_invitation", func(env cq.Envelope) (cq.Job, error) {
+	var payload SendInvitationPayload
+	if err := json.Unmarshal(env.Payload, &payload); err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context) error {
+		log.Printf("sending invitation (to=%s)", payload.Email)
+		return nil
+	}, nil
+})
 ```
 
 Recover a single envelope by ID (for example from an admin HTTP replay endpoint):

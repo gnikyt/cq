@@ -21,7 +21,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Overlap prevention and uniqueness constraints
 - Tracing hooks for observability
 - Zero external dependencies for core functionality
-- Extenable envolope system for optional persistance
+- Extensible envelope system for optional persistence
 
 ## Feature Matrix
 
@@ -37,7 +37,7 @@ Use this as a quick guide before diving into detailed sections.
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `MetaFromContext` | Track attempts, durations, and final job outcomes |
-| Recovery and durability hooks | `WithEnvelopeStore`, `SetEnvelopePayload`, `WithEnvelopePayload`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
+| Recovery and durability hooks | `WithEnvelopeStore`, `SetEnvelopePayload`, `WithEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
 
 ## When to Use
@@ -162,16 +162,29 @@ _ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
 
 ### Replay-Ready Envelope Payloads
 
+Use the typed helper APIs for the common path:
+
 ```go
-job := cq.WithEnvelopePayload(
-	processOrder,
-	"process_order",
-	func(ctx context.Context) ([]byte, error) {
-		return json.Marshal(OrderPayload{OrderID: "123"})
-	},
-)
+// Codec for marshalling/unmarshalling the typed payload.
+codec := cq.EnvelopeJSONCodec[OrderPayload]()
+
+// Job function.
+processOrder := func(ctx context.Context, payload OrderPayload) error {
+	log.Printf("processing from %s (order_id=%s)", payload.Source, payload.OrderID)
+	return nil
+}
+
+// Create the typed payload.
+payload := OrderPayload{OrderID: "123", Source: "web"}
+// Enqueue the job with type of "process_order", the payload, the codec, and job function.
+job := cq.WithEnvelope("process_order", payload, codec, processOrder)
 queue.Enqueue(job)
+
+// Handle recovery from persistent storage.
+cq.RegisterEnvelopeHandler(registry, "process_order", codec, processOrder)
 ```
+
+Or use the lower-level APIs manually:
 
 ```go
 job := func(ctx context.Context) error {
@@ -181,7 +194,8 @@ job := func(ctx context.Context) error {
 	}
 
 	cq.SetEnvelopePayload(ctx, "process_order", payload)
-	return processOrder(ctx)
+	log.Printf("processing order (order_id=%s)", "123")
+	return nil
 }
 queue.Enqueue(job)
 ```
@@ -267,7 +281,7 @@ For detailed usage and advanced features, see the following guides:
 `make test`
 
 ```
-ok      github.com/gnikyt/cq    17.586s coverage: 91.2% of statements
+ok      github.com/gnikyt/cq            18.804s coverage: 90.6% of statements
 ```
 
 ### Benchmarks
