@@ -325,20 +325,49 @@ for _, msg := range messages {
 	// Initial receipt-handle mapping happens here.
 	store.RememberReceipt(env.ID, aws.ToString(msg.ReceiptHandle))
 
-	// Build a job from env (registry) and enqueue to cq worker queue.
-	// On success/failure/release, cq calls store.Ack/Nack/Reschedule.
+	factory, ok := registry.FactoryFor(env.Type)
+	if !ok {
+		continue // Unknown type... move to observability/DLQ path.
+	}
+
+	job, err := factory(env)
+	if err != nil {
+		continue // Bad payload decode or factory error.
+	}
+
+	queue.Enqueue(job)
+	// During execution, cq invokes store.Claim/Ack/Nack/Reschedule as needed.
 }
 ```
 
 ### DLQ-only Example
 
 ```go
+type emailPayload struct {
+	Email string `json:"email"`
+}
+
 type deadLetterStore struct {
 	db *sql.DB
+
+	mu sync.Mutex
+	envelopes map[string]cq.Envelope // Keeps latest type/payload by job ID so Nack records useful context.
 }
 
 func (s *deadLetterStore) Enqueue(ctx context.Context, env cq.Envelope) error {
-	return nil // Not needed for DLQ-only usage.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.envelopes == nil {
+		s.envelopes = make(map[string]cq.Envelope)
+	}
+	s.envelopes[env.ID] = cq.Envelope{
+		ID:      env.ID,
+		Type:    env.Type,
+		Payload: env.Payload,
+	}
+
+	return nil 
 }
 
 func (s *deadLetterStore) Claim(ctx context.Context, id string) error {
@@ -346,7 +375,11 @@ func (s *deadLetterStore) Claim(ctx context.Context, id string) error {
 }
 
 func (s *deadLetterStore) Ack(ctx context.Context, id string) error {
-	return nil // Not needed for DLQ-only usage.
+	s.mu.Lock()
+	delete(s.envelopes, id) // Terminal state in this process to avoid map growth.
+	s.mu.Unlock()
+
+	return nil
 }
 
 func (s *deadLetterStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
@@ -362,21 +395,65 @@ func (s *deadLetterStore) RecoverByID(ctx context.Context, id string) (cq.Envelo
 }
 
 func (s *deadLetterStore) Nack(ctx context.Context, id string, reason error) error {
+	s.mu.Lock()
+	env := s.envelopes[id]
+	s.mu.Unlock()
+
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO dead_letter_jobs (job_id, failed_at, error_text) VALUES (?, ?, ?)`,
+		`INSERT INTO dead_letter_jobs (job_id, job_type, payload_json, failed_at, error_text) VALUES (?, ?, ?, ?, ?)`,
 		id,
+		env.Type,
+		string(env.Payload),
 		time.Now().UTC(),
 		reason.Error(),
 	)
+	if err == nil {
+		s.mu.Lock()
+		delete(s.envelopes, id) // Terminal state after DLQ write.
+		s.mu.Unlock()
+	}
 	return err
 }
 
 func (s *deadLetterStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
-	return nil // Optional for DLQ-only usage.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.envelopes == nil {
+		s.envelopes = make(map[string]cq.Envelope)
+	}
+
+	env := s.envelopes[id]
+	env.ID = id
+	env.Type = typ
+	env.Payload = payload
+	s.envelopes[id] = env
+
+	return nil
 }
 
-queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(&deadLetterStore{db: db}))
+store := &deadLetterStore{db: db}
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+
+sendEmail := cq.EnvelopeHandler[emailPayload]{
+	Type:  "send_email",
+	Codec: cq.EnvelopeJSONCodec[emailPayload](),
+	Handler: func(ctx context.Context, payload emailPayload) error {
+		return cq.WithRetry(
+			cq.WithBackoff(
+				func(ctx context.Context) error {
+					return errors.New("smtp down")
+				},
+				cq.ExponentialBackoff,
+			),
+			3,
+		)(ctx) // Retries first, then triggers Nack -> DLQ insert with payload context.
+	},
+}
+
+if err := cq.EnqueueEnvelope(queue, sendEmail, emailPayload{Email: "demo@example.com"}); err != nil {
+	log.Fatal(err)
+}
 ```
 
 ### File-backed Example
@@ -392,6 +469,7 @@ type fileEnvelopeStore struct {
 func (s *fileEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
 	return s.update(env.ID, func(e *cq.Envelope) {
 		*e = env
+		e.Payload = env.Payload
 		e.Status = cq.EnvelopeStatusEnqueued
 	})
 }
@@ -464,7 +542,7 @@ func (s *fileEnvelopeStore) RecoverByID(ctx context.Context, id string) (cq.Enve
 func (s *fileEnvelopeStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
 	return s.update(id, func(e *cq.Envelope) {
 		e.Type = typ
-		e.Payload = append([]byte(nil), payload...)
+		e.Payload = payload
 	})
 }
 
@@ -472,6 +550,30 @@ func (s *fileEnvelopeStore) SetPayload(ctx context.Context, id string, typ strin
 // - readAll(): loads map[string]cq.Envelope from s.path (json.Unmarshal).
 // - writeAll(): persists map[string]cq.Envelope to s.path (json.MarshalIndent).
 // - update(id, fn): loads map, applies fn on map[id], then writes map back.
+
+type invoicePayload struct {
+	InvoiceID string `json:"invoice_id"`
+	Region    string `json:"region"`
+}
+
+store := &fileEnvelopeStore{path: "/var/lib/cq/envelopes.json"}
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+
+processInvoice := cq.EnvelopeHandler[invoicePayload]{
+	Type:  "process_invoice",
+	Codec: cq.EnvelopeJSONCodec[invoicePayload](),
+	Handler: func(ctx context.Context, payload invoicePayload) error {
+		log.Printf("processing invoice %s (region=%s)", payload.InvoiceID, payload.Region)
+		return nil
+	},
+}
+
+if err := cq.EnqueueEnvelope(queue, processInvoice, invoicePayload{
+	InvoiceID: "inv_123",
+	Region:    "us-east-1",
+}); err != nil {
+	log.Fatal(err)
+}
 ```
 
 ### DynamoDB Example
@@ -484,6 +586,7 @@ type dynamoEnvelopeStore struct {
 
 func (s *dynamoEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
 	env.Status = cq.EnvelopeStatusEnqueued
+	env.Payload = append([]byte(nil), env.Payload...) // Keep payload bytes owned by this write path.
 	return s.putEnvelope(ctx, env)
 }
 
@@ -567,6 +670,27 @@ store := &dynamoEnvelopeStore{
 	table:  "cq_envelopes",
 }
 queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+
+type shipmentPayload struct {
+	ShipmentID string `json:"shipment_id"`
+	Carrier    string `json:"carrier"`
+}
+
+shipOrder := cq.EnvelopeHandler[shipmentPayload]{
+	Type:  "ship_order",
+	Codec: cq.EnvelopeJSONCodec[shipmentPayload](),
+	Handler: func(ctx context.Context, payload shipmentPayload) error {
+		log.Printf("ship shipment_id=%s via=%s", payload.ShipmentID, payload.Carrier)
+		return nil
+	},
+}
+
+if err := cq.EnqueueEnvelope(queue, shipOrder, shipmentPayload{
+	ShipmentID: "shp_123",
+	Carrier:    "ups",
+}); err != nil {
+	log.Fatal(err)
+}
 ```
 
 Suggested table configuration:
