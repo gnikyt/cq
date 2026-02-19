@@ -586,7 +586,7 @@ type dynamoEnvelopeStore struct {
 
 func (s *dynamoEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
 	env.Status = cq.EnvelopeStatusEnqueued
-	env.Payload = append([]byte(nil), env.Payload...) // Keep payload bytes owned by this write path.
+	env.Payload = env.Payload
 	return s.putEnvelope(ctx, env)
 }
 
@@ -680,7 +680,7 @@ shipOrder := cq.EnvelopeHandler[shipmentPayload]{
 	Type:  "ship_order",
 	Codec: cq.EnvelopeJSONCodec[shipmentPayload](),
 	Handler: func(ctx context.Context, payload shipmentPayload) error {
-		log.Printf("ship shipment_id=%s via=%s", payload.ShipmentID, payload.Carrier)
+		log.Printf("shipping %s (carrier=%s)", payload.ShipmentID, payload.Carrier)
 		return nil
 	},
 }
