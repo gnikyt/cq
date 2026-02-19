@@ -23,48 +23,50 @@ Built-in deferred wrappers automatically call `Reschedule`:
 - `WithReleaseSelf` -> `cq.EnvelopeRescheduleReasonReleaseSelf`
 - `WithRateLimitRelease` -> `cq.EnvelopeRescheduleReasonRateLimit`
 
-## Runtime Payload Metadata
+## Handler-First Payload Metadata (Recommended)
 
-To make replay useful, jobs can set envelope `Type` + `Payload` at runtime:
-
-```go
-job := func(ctx context.Context) error {
-	payload, err := json.Marshal(SendInvitationPayload{
-		Email: "demo@example.com",
-	})
-	if err != nil {
-		return err
-	}
-
-	// Returns false when no payload sink is configured.
-	cq.SetEnvelopePayload(ctx, "send_invitation", payload)
-
-	log.Printf("sending invitation (to=%s)", "demo@example.com")
-	return nil
-}
-queue.Enqueue(job)
-```
-
-Or use the typed wrapper form:
+Use a first-class typed envelope handler so type/payload are persisted at enqueue time:
 
 ```go
-codec := cq.EnvelopeJSONCodec[SendInvitationPayload]()
-
-sendInvitation := func(ctx context.Context, payload SendInvitationPayload) error {
-	log.Printf("sending invitation to=%s", payload.Email)
-	return nil
+sendInvitation := cq.EnvelopeHandler[SendInvitationPayload]{
+	Type:  "send_invitation", // Job type identifier.
+	Codec: cq.EnvelopeJSONCodec[SendInvitationPayload](), // Codec used to encode and decode the payload.
+	Handler: func(ctx context.Context, payload SendInvitationPayload) error {
+		log.Printf("sending invitation to=%s", payload.Email)
+		return nil
+	}, // Handler which is job-compatible and accepts the payload.
 }
 
-job := cq.WithEnvelope(
-	"send_invitation",
-	SendInvitationPayload{Email: "demo@example.com"},
-	codec,
-	sendInvitation,
-)
-queue.Enqueue(job)
+err := cq.EnqueueEnvelope(queue, sendInvitation, SendInvitationPayload{Email: "demo@example.com"})
+if err != nil {
+	log.Fatal(err)
+}
+
+// or...
+
+// Batch enqueue for the same handler.
+err = cq.EnqueueEnvelopeBatch(queue, sendInvitation, []SendInvitationPayload{
+	{Email: "a@example.com"},
+	{Email: "b@example.com"},
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+// or...
+
+// Non-blocking batch enqueue returns the number accepted.
+accepted, err := cq.TryEnqueueEnvelopeBatch(queue, sendInvitation, []SendInvitationPayload{
+	{Email: "c@example.com"},
+	{Email: "d@example.com"},
+})
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("accepted %d", accepted)
 ```
 
-Or, build your own codec:
+Build your own codec when JSON is not the desired format:
 
 ```go
 codec := cq.EnvelopeCodec[SendInvitationPayload]{
@@ -77,19 +79,42 @@ codec := cq.EnvelopeCodec[SendInvitationPayload]{
 }
 ```
 
-`EnvelopeStore` includes `SetPayload`, so queue can persist these updates by default:
+## Advanced Runtime Overrides
+
+The handler-first path is the default. If needed, you can still override envelope payload during a job runtime:
 
 ```go
-type myStore struct{}
+codec := cq.EnvelopeJSONCodec[OrderProcessPayload]()
 
-func (s *myStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
-	// Upsert by id.
-	return nil
+processOrder := cq.EnvelopeHandler[OrderProcessPayload]{
+	Type:  "process_order",
+	Codec: codec,
+	Handler: func(ctx context.Context, payload OrderProcessPayload) error {
+		// Step 1: reserve inventory (already completed in this example).
+		if payload.Step == "reserve_inventory" {
+			payload.Step = "charge_payment"
+
+			// Persist progress so retry/recovery restarts at charge step.
+			updated, err := codec.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			cq.SetEnvelopePayload(ctx, "process_order", updated)
+		}
+		return nil
+	},
+}
+
+err := cq.EnqueueEnvelope(queue, processOrder, OrderProcessPayload{
+	OrderID:  "ord_123",
+	Step:     "reserve_inventory",
+})
+if err != nil {
+	log.Fatal(err)
 }
 ```
 
-When `SetEnvelopePayload` is called multiple times in one run, the last call wins.
-When no envelope store is configured, it returns `false` and processing continues.
+`SetEnvelopePayload` is last-write-wins per run.
 
 ## Recovery
 
@@ -97,25 +122,24 @@ Use `RegisterEnvelopeHandler` + `RecoverEnvelopes` to rebuild jobs and enqueue t
 
 ```go
 registry := cq.NewEnvelopeRegistry()
-sendInvitation := func(ctx context.Context, payload SendInvitationPayload) error {
-	return cq.WithRetry(
-		cq.WithBackoff(
-			func(ctx context.Context) error {
-				log.Printf("sending invitation (to=%s)", payload.Email)
-				return nil
-			},
-			cq.ExponentialBackoff,
-		),
-		3,
-	)(ctx)
+sendInvitation := cq.EnvelopeHandler[SendInvitationPayload]{
+	Type:  "send_invitation",
+	Codec: cq.EnvelopeJSONCodec[SendInvitationPayload](),
+	Handler: func(ctx context.Context, payload SendInvitationPayload) error {
+		return cq.WithRetry(
+			cq.WithBackoff(
+				func(ctx context.Context) error {
+					log.Printf("sending invitation (to=%s)", payload.Email)
+					return nil
+				},
+				cq.ExponentialBackoff,
+			),
+			3,
+		)(ctx)
+	},
 }
 
-cq.RegisterEnvelopeHandler(
-	registry,
-	"send_invitation",
-	cq.EnvelopeJSONCodec[SendInvitationPayload](),
-	sendInvitation,
-)
+cq.RegisterEnvelopeHandler(registry, sendInvitation)
 
 scheduled, err := cq.RecoverEnvelopes(context.Background(), queue, store, registry, time.Now())
 if err != nil {
@@ -191,8 +215,120 @@ Recovery timing behavior:
 
 **What it does:** Shows concrete `EnvelopeStore` implementations for different persistence goals.
 **When to use:** You need recovery, auditability, DLQ routing, or custom side effects.
-**Example:** See the DLQ, file-backed, and DynamoDB snippets below.
+**Example:** See the SQS poller bridge, DLQ, file-backed, and DynamoDB snippets below.
 **Caveat:** Operationally, use durable storage when restart recovery guarantees are required.
+
+### SQS-backed Example
+
+If you want SQS to be the store itself, map envelope lifecycle callbacks directly to SQS operations:
+
+- `Enqueue` -> `SendMessage` (store envelope snapshot in message body)
+- `Ack` -> `DeleteMessage` (remove from SQS when work succeeds)
+- `Nack` -> no-op (or rely on visibility timeout / queue redrive policy)
+- `Reschedule` -> `ChangeMessageVisibility` or re-send with delay
+
+```go
+type sqsEnvelopeStore struct {
+	client *sqs.Client
+	url    string
+
+	// Runtime receipt handles by envelope ID.
+	// Filled by your poller (ReceiveMessage) before cq execution starts.
+	receipts sync.Map // map[string]string
+}
+
+func (s *sqsEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
+	body, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:    &s.url,
+		MessageBody: aws.String(string(body)),
+		MessageAttributes: map[string]types.MessageAttributeValue{
+			"envelope_id": {DataType: aws.String("String"), StringValue: aws.String(env.ID)},
+			"type":        {DataType: aws.String("String"), StringValue: aws.String(env.Type)},
+		},
+	})
+	return err
+}
+
+func (s *sqsEnvelopeStore) Claim(ctx context.Context, id string) error { return nil }
+
+func (s *sqsEnvelopeStore) RememberReceipt(id string, receiptHandle string) {
+	s.receipts.Store(id, receiptHandle)
+}
+
+func (s *sqsEnvelopeStore) Ack(ctx context.Context, id string) error {
+	raw, ok := s.receipts.Load(id)
+	if !ok {
+		return nil // Already deleted or not tracked in this process.
+	}
+
+	receipt := raw.(string)
+	_, err := s.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+		QueueUrl:      &s.url,
+		ReceiptHandle: &receipt,
+	})
+	if err == nil {
+		s.receipts.Delete(id)
+	}
+	return err
+}
+
+func (s *sqsEnvelopeStore) Nack(ctx context.Context, id string, reason error) error {
+	return nil // Let visibility timeout expire for retry, or rely on SQS redrive policy.
+}
+
+func (s *sqsEnvelopeStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
+	raw, ok := s.receipts.Load(id)
+	if !ok {
+		return nil
+	}
+
+	receipt := raw.(string)
+	delay := int32(time.Until(nextRunAt).Seconds())
+	if delay < 0 {
+		delay = 0
+	}
+	_, err := s.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          &s.url,
+		ReceiptHandle:     &receipt,
+		VisibilityTimeout: delay,
+	})
+	return err
+}
+
+func (s *sqsEnvelopeStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	return nil // SQS messages are immutable... use Reschedule and new SendMessage pattern if needed.
+}
+
+func (s *sqsEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	return nil, nil // Recovery is delegated to SQS receive/redrive behavior.
+}
+
+func (s *sqsEnvelopeStore) RecoverByID(ctx context.Context, id string) (cq.Envelope, error) {
+	return cq.Envelope{}, cq.ErrEnvelopeNotFound
+}
+```
+
+Poller outline (where receipt handles are wired for `Ack`/`Reschedule`):
+
+```go
+for _, msg := range messages {
+	var env cq.Envelope
+	if err := json.Unmarshal([]byte(aws.ToString(msg.Body)), &env); err != nil {
+		continue
+	}
+
+	// Initial receipt-handle mapping happens here.
+	store.RememberReceipt(env.ID, aws.ToString(msg.ReceiptHandle))
+
+	// Build a job from env (registry) and enqueue to cq worker queue.
+	// On success/failure/release, cq calls store.Ack/Nack/Reschedule.
+}
+```
 
 ### DLQ-only Example
 

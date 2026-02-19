@@ -160,28 +160,34 @@ func (q *Queue) IdleWorkers() int {
 // Enqueue submits a job to the queue.
 // It blocks if no worker can be started and the jobs channel is full.
 func (q *Queue) Enqueue(job Job) {
-	q.doEnqueue(job, true)
+	q.doEnqueue(job, true, nil)
 }
 
 // TryEnqueue attempts to submit a job without blocking.
 // It returns true if accepted, or false if no worker can be started and the
 // jobs channel is full.
 func (q *Queue) TryEnqueue(job Job) bool {
-	return q.doEnqueue(job, false)
+	return q.doEnqueue(job, false, nil)
 }
 
 // DelayEnqueue submits a job after the given delay.
 // The delay runs in its own goroutine so the caller is not blocked.
 func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
+	q.doDelayEnqueue(job, delay, nil)
+}
+
+// doDelayEnqueue submits a job after the given delay.
+// The delay runs in its own goroutine so the caller is not blocked.
+func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, envelope *Envelope) {
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
 
 		select {
 		case <-q.ctx.Done():
-			return // Context cancelled, stop delay.
+			return // Context is done, stop the timer.
 		case <-timer.C:
-			q.doEnqueue(job, true) // Job can be submitted now.
+			q.doEnqueue(job, true, envelope) // Job can be submitted now.
 		}
 	}()
 }
@@ -189,7 +195,7 @@ func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
 // EnqueueBatch accepts a slice of jobs and enqueues each one.
 func (q *Queue) EnqueueBatch(jobs []Job) {
 	for _, job := range jobs {
-		q.doEnqueue(job, true)
+		q.doEnqueue(job, true, nil)
 	}
 }
 
@@ -201,10 +207,10 @@ func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
 
 		select {
 		case <-q.ctx.Done():
-			return // Context cancelled, stop delay.
+			return // Context is done, stop the timer.
 		case <-timer.C:
 			for _, job := range jobs {
-				q.doEnqueue(job, true) // Jobs can be submitted now.
+				q.doEnqueue(job, true, nil) // Jobs can be submitted now.
 			}
 		}
 	}()
@@ -295,18 +301,30 @@ func (q *Queue) nextJobID() string {
 }
 
 // reportEnvelopeEnqueue reports an accepted enqueue to persistence, if configured.
-func (q *Queue) reportEnvelopeEnqueue(meta JobMeta) {
+// It merges runtime JobMeta fields (ID/attempt/enqueued time) with optional
+// envelope fields (type/payload), then stamps enqueue status and timestamps.
+func (q *Queue) reportEnvelopeEnqueue(meta JobMeta, envelope *Envelope) {
 	if q.envelopeStore == nil {
 		return
 	}
 
+	var typ string
+	var payload []byte
+	if envelope != nil {
+		typ = envelope.Type
+		payload = envelope.Payload
+	}
+
 	if err := q.envelopeStore.Enqueue(q.ctx, Envelope{
 		ID:          meta.ID,
+		Type:        typ,
+		Payload:     payload,
 		Attempt:     meta.Attempt,
 		Status:      EnvelopeStatusEnqueued,
 		EnqueuedAt:  meta.EnqueuedAt,
 		AvailableAt: time.Now(),
 	}); err != nil && q.panicHandler != nil {
+		// Issue with persistence, report the error to the panic handler.
 		q.panicHandler(fmt.Errorf("queue: envelope enqueue: %w", err))
 	}
 }
@@ -319,12 +337,15 @@ func (q *Queue) reportEnvelopeResult(meta JobMeta, err error) {
 
 	var repErr error
 	if err != nil {
+		// Report the failure to persistence.
 		repErr = q.envelopeStore.Nack(q.ctx, meta.ID, err)
 	} else {
+		// Report the success to persistence.
 		repErr = q.envelopeStore.Ack(q.ctx, meta.ID)
 	}
 
 	if repErr != nil && q.panicHandler != nil {
+		// Issue with persistence, report the error to the panic handler.
 		q.panicHandler(fmt.Errorf("queue: envelope result: %w", repErr))
 	}
 }
@@ -336,6 +357,7 @@ func (q *Queue) reportEnvelopeClaim(meta JobMeta) {
 	}
 
 	if err := q.envelopeStore.Claim(q.ctx, meta.ID); err != nil && q.panicHandler != nil {
+		// Issue with persistence, report the error to the panic handler.
 		q.panicHandler(fmt.Errorf("queue: envelope claim: %w", err))
 	}
 }
@@ -348,6 +370,7 @@ func (q *Queue) reportEnvelopeReschedule(meta JobMeta, delay time.Duration, reas
 
 	nextRunAt := time.Now().Add(delay)
 	if err := q.envelopeStore.Reschedule(q.ctx, meta.ID, nextRunAt, reason); err != nil && q.panicHandler != nil {
+		// Issue with persistence, report the error to the panic handler.
 		q.panicHandler(fmt.Errorf("queue: envelope reschedule: %w", err))
 	}
 }
@@ -360,6 +383,7 @@ func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) 
 
 	if err := q.envelopeStore.SetPayload(q.ctx, meta.ID, typ, payload); err != nil {
 		if q.panicHandler != nil {
+			// Issue with persistence, report the error to the panic handler.
 			q.panicHandler(fmt.Errorf("queue: envelope payload: %w", err))
 		}
 		return false
@@ -371,7 +395,7 @@ func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) 
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
-func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
+func (q *Queue) doEnqueue(job Job, blocking bool, envelope *Envelope) (ok bool) {
 	q.enqueueMut.RLock()
 	if q.IsStopped() {
 		q.enqueueMut.RUnlock()
@@ -385,13 +409,17 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 		Attempt:    0,
 	}
 	wrappedJob := func(ctx context.Context) error {
-		attemptCtx := contextWithMeta(ctx, meta)
-		attemptCtx = contextWithEnvelopePayloadSetter(attemptCtx, func(typ string, payload []byte) bool {
+		// Create a new context with the job metadata and the optional envelope payload setter.
+		jobCtx := contextWithMeta(ctx, meta)
+		jobCtx = contextWithEnvelopePayloadSetter(jobCtx, func(typ string, payload []byte) bool {
 			return q.reportEnvelopePayload(meta, typ, payload)
 		})
 
+		// Report the envelope claim to persistence.
 		q.reportEnvelopeClaim(meta)
-		err := job(attemptCtx)
+
+		// Run the job and report the result to persistence.
+		err := job(jobCtx)
 		q.reportEnvelopeResult(meta, err)
 		return err
 	}
@@ -430,7 +458,7 @@ func (q *Queue) doEnqueue(job Job, blocking bool) (ok bool) {
 		}
 	}
 	if ok {
-		q.reportEnvelopeEnqueue(meta)
+		q.reportEnvelopeEnqueue(meta, envelope)
 	}
 	return
 }

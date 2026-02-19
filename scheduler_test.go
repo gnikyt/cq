@@ -24,7 +24,7 @@ func TestSchedulerEvery(t *testing.T) {
 	// Schedule job to run every 50ms.
 	err := scheduler.Every("test-job", 50*time.Millisecond, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Wait for multiple executions.
@@ -54,7 +54,7 @@ func TestSchedulerAt(t *testing.T) {
 	runAt := time.Now().Add(100 * time.Millisecond)
 	err := scheduler.At("one-time-job", runAt, job)
 	if err != nil {
-		t.Fatalf("At(): unexpected error: %v", err)
+		t.Fatalf("At(): unexpected err: %v", err)
 	}
 
 	// Job should exist before execution.
@@ -93,7 +93,7 @@ func TestSchedulerDuplicateID(t *testing.T) {
 	// Add first job.
 	err := scheduler.Every("duplicate", 1*time.Second, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Try to add job with same ID.
@@ -105,7 +105,7 @@ func TestSchedulerDuplicateID(t *testing.T) {
 	// Same for At().
 	err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
 	if err != nil {
-		t.Fatalf("At(): unexpected error: %v", err)
+		t.Fatalf("At(): unexpected err: %v", err)
 	}
 
 	err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
@@ -131,7 +131,7 @@ func TestSchedulerRemove(t *testing.T) {
 	// Schedule job.
 	err := scheduler.Every("removable", 50*time.Millisecond, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Let it run a few times.
@@ -175,12 +175,12 @@ func TestSchedulerStop(t *testing.T) {
 	// Schedule multiple jobs.
 	err := scheduler.Every("job1", 50*time.Millisecond, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	err = scheduler.Every("job2", 50*time.Millisecond, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Let them run.
@@ -219,7 +219,7 @@ func TestSchedulerHas(t *testing.T) {
 	// Add job and check.
 	err := scheduler.Every("exists", 1*time.Second, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	if !scheduler.Has("exists") {
@@ -345,7 +345,7 @@ func TestSchedulerErrorChecking(t *testing.T) {
 	// Test ErrJobExists.
 	err := scheduler.Every("duplicate", 1*time.Second, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error on first call: %v", err)
+		t.Fatalf("Every(): unexpected err on first call: %v", err)
 	}
 
 	err = scheduler.Every("duplicate", 1*time.Second, job)
@@ -375,7 +375,7 @@ func TestSchedulerErrorChecking(t *testing.T) {
 	futureTime := time.Now().Add(1 * time.Hour)
 	err = scheduler.At("duplicate-at", futureTime, job)
 	if err != nil {
-		t.Fatalf("At(): unexpected error on first call: %v", err)
+		t.Fatalf("At(): unexpected err on first call: %v", err)
 	}
 
 	err = scheduler.At("duplicate-at", futureTime, job)
@@ -402,7 +402,7 @@ func TestSchedulerContextCancellation(t *testing.T) {
 	// Schedule recurring job.
 	err := scheduler.Every("auto-cancel", 50*time.Millisecond, job)
 	if err != nil {
-		t.Fatalf("Every(): unexpected error: %v", err)
+		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Let it run a few times.

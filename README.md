@@ -37,7 +37,7 @@ Use this as a quick guide before diving into detailed sections.
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `MetaFromContext` | Track attempts, durations, and final job outcomes |
-| Recovery and durability hooks | `WithEnvelopeStore`, `SetEnvelopePayload`, `WithEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
+| Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
 
 ## When to Use
@@ -162,42 +162,52 @@ _ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
 
 ### Replay-Ready Envelope Payloads
 
-Use the typed helper APIs for the common path:
+Use envelope handlers when you want durability and replay. With `WithEnvelopeStore(...)` configured,
+`cq` persists envelope lifecycle snapshots (type, payload, and status transitions) so jobs can be recovered and replayed after process restarts or failures.
+
+Use a first-class `EnvelopeHandler` for enqueue and recovery:
 
 ```go
-// Codec for marshalling/unmarshalling the typed payload.
-codec := cq.EnvelopeJSONCodec[OrderPayload]()
-
-// Job function.
-processOrder := func(ctx context.Context, payload OrderPayload) error {
-	log.Printf("processing from %s (order_id=%s)", payload.Source, payload.OrderID)
-	return nil
+orderCreate := cq.EnvelopeHandler[OrderPayload]{
+	Type:  "process_order", // Job type identifier.
+	Codec: cq.EnvelopeJSONCodec[OrderPayload](), // Codec for encoding and decoding the payload.
+	Handler: func(ctx context.Context, payload OrderPayload) error {
+		log.Printf("processing from %s (order_id=%s)", payload.Source, payload.OrderID)
+		return nil
+	}, // Handler which is job-compatible, accepting the payload.
 }
 
-// Create the typed payload.
 payload := OrderPayload{OrderID: "123", Source: "web"}
-// Enqueue the job with type of "process_order", the payload, the codec, and job function.
-job := cq.WithEnvelope("process_order", payload, codec, processOrder)
-queue.Enqueue(job)
 
-// Handle recovery from persistent storage.
-cq.RegisterEnvelopeHandler(registry, "process_order", codec, processOrder)
-```
-
-Or use the lower-level APIs manually:
-
-```go
-job := func(ctx context.Context) error {
-	payload, err := json.Marshal(OrderPayload{OrderID: "123"})
-	if err != nil {
-		return err
-	}
-
-	cq.SetEnvelopePayload(ctx, "process_order", payload)
-	log.Printf("processing order (order_id=%s)", "123")
-	return nil
+// Enqueue with envelope persisted at enqueue-time.
+if err := cq.EnqueueEnvelope(queue, orderCreate, payload); err != nil {
+	log.Fatal(err)
 }
-queue.Enqueue(job)
+
+// or ...
+
+// Batch enqueue with one handler and multiple payloads.
+if err := cq.EnqueueEnvelopeBatch(queue, orderCreate, []OrderPayload{
+	{OrderID: "124", Source: "web"},
+	{OrderID: "125", Source: "mobile"},
+}); err != nil {
+	log.Fatal(err)
+}
+
+// or ...
+
+// Non-blocking batch enqueue returns accepted count.
+accepted, err := cq.TryEnqueueEnvelopeBatch(queue, orderCreate, []OrderPayload{
+	{OrderID: "126", Source: "web"},
+	{OrderID: "127", Source: "mobile"},
+})
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("accepted %d", accepted)
+
+// Register the same handler for recovery/replay.
+cq.RegisterEnvelopeHandler(registry, orderCreate)
 ```
 
 ## Queue
@@ -215,11 +225,20 @@ Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`.
 ### Enqueue Methods
 
 ```go
+// For normal jobs.
 queue.Enqueue(job)                            // Blocking.
 queue.TryEnqueue(job)                         // Non-blocking, returns bool.
 queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
 queue.EnqueueBatch(jobs)                      // Multiple jobs.
 queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
+
+// For envelopes.
+cq.EnqueueEnvelope(queue, handler, payload)                          // Blocking.
+cq.TryEnqueueEnvelope(queue, handler, payload)                       // Non-blocking, returns (bool, error).
+cq.DelayEnqueueEnvelope(queue, handler, payload, 2*time.Minute)      // Delayed.
+cq.EnqueueEnvelopeBatch(queue, handler, payloads)                    // Multiple payloads, one handler.
+cq.TryEnqueueEnvelopeBatch(queue, handler, payloads)                 // Non-blocking batch, returns (accepted, error).
+cq.DelayEnqueueEnvelopeBatch(queue, handler, payloads, 30*time.Second) // Delayed, multiple payloads.
 ```
 
 ### Metrics
@@ -281,7 +300,7 @@ For detailed usage and advanced features, see the following guides:
 `make test`
 
 ```
-ok      github.com/gnikyt/cq            18.804s coverage: 90.6% of statements
+ok      github.com/gnikyt/cq            19.013s coverage: 89.5% of statements
 ```
 
 ### Benchmarks
