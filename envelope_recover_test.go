@@ -3,19 +3,27 @@ package cq
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 type recoverStore struct {
-	envs []Envelope
-	err  error
+	mut      sync.Mutex
+	envs     []Envelope
+	enqueued []Envelope
+	err      error
 }
 
-func (s *recoverStore) Enqueue(ctx context.Context, env Envelope) error { return nil }
-func (s *recoverStore) Claim(ctx context.Context, id string) error      { return nil }
-func (s *recoverStore) Ack(ctx context.Context, id string) error        { return nil }
+func (s *recoverStore) Enqueue(ctx context.Context, env Envelope) error {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+	s.enqueued = append(s.enqueued, env)
+	return nil
+}
+func (s *recoverStore) Claim(ctx context.Context, id string) error { return nil }
+func (s *recoverStore) Ack(ctx context.Context, id string) error   { return nil }
 func (s *recoverStore) Nack(ctx context.Context, id string, reason error) error {
 	return nil
 }
@@ -29,18 +37,68 @@ func (s *recoverStore) Recoverable(ctx context.Context, now time.Time) ([]Envelo
 	if s.err != nil {
 		return nil, s.err
 	}
-	return s.envs, nil
+	s.mut.Lock()
+	defer s.mut.Unlock()
+	out := make([]Envelope, len(s.envs))
+	copy(out, s.envs)
+	return out, nil
 }
 func (s *recoverStore) RecoverByID(ctx context.Context, id string) (Envelope, error) {
 	if s.err != nil {
 		return Envelope{}, s.err
 	}
+	s.mut.Lock()
+	defer s.mut.Unlock()
 	for _, env := range s.envs {
 		if env.ID == id {
 			return env, nil
 		}
 	}
 	return Envelope{}, ErrEnvelopeNotFound
+}
+
+func TestRecoverEnvelopeByID_PreservesEnvelopeID(t *testing.T) {
+	now := time.Now()
+	store := &recoverStore{
+		envs: []Envelope{
+			{ID: "recover-id-1", Type: "email", Payload: []byte("alpha")},
+		},
+	}
+	registry := NewEnvelopeRegistry()
+	registry.Register("email", func(env Envelope) (Job, error) {
+		return func(ctx context.Context) error { return nil }, nil
+	})
+
+	q := NewQueue(1, 1, 10, WithEnvelopeStore(store))
+	q.Start()
+	defer q.Stop(true)
+
+	scheduled, err := RecoverEnvelopeByID(context.Background(), q, store, registry, "recover-id-1", now)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !scheduled {
+		t.Fatal("expected scheduled=true")
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for {
+		store.mut.Lock()
+		if len(store.enqueued) > 0 {
+			gotID := store.enqueued[0].ID
+			store.mut.Unlock()
+			if gotID != "recover-id-1" {
+				t.Fatalf("got enqueued id=%q, want %q", gotID, "recover-id-1")
+			}
+			return
+		}
+		store.mut.Unlock()
+
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for recovered enqueue")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestRecoverEnvelopes_ReenqueuesRecoverableJobs(t *testing.T) {

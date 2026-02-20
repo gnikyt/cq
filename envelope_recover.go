@@ -118,13 +118,20 @@ func RecoverEnvelopeByID(
 	}
 
 	envelope := &Envelope{
+		ID:      env.ID,
 		Type:    env.Type,
 		Payload: append([]byte(nil), env.Payload...),
 	}
 	if !env.NextRunAt.IsZero() && env.NextRunAt.After(now) {
-		queue.doDelayEnqueue(job, env.NextRunAt.Sub(now), envelope)
+		queue.doDelayEnqueue(job, env.NextRunAt.Sub(now), enqueueOptions{
+			blocking: true,
+			envelope: envelope,
+		})
 	} else {
-		queue.doEnqueue(job, true, envelope)
+		queue.doEnqueue(job, enqueueOptions{
+			blocking: true,
+			envelope: envelope,
+		})
 	}
 	return true, nil
 }
@@ -194,14 +201,21 @@ func RecoverEnvelopesWithOptions(
 		}
 
 		envelope := &Envelope{
+			ID:      env.ID,
 			Type:    env.Type,
 			Payload: append([]byte(nil), env.Payload...),
 		}
 		if !env.NextRunAt.IsZero() && env.NextRunAt.After(now) {
-			queue.doDelayEnqueue(job, env.NextRunAt.Sub(now), envelope)
+			queue.doDelayEnqueue(job, env.NextRunAt.Sub(now), enqueueOptions{
+				blocking: true,
+				envelope: envelope,
+			})
 			report.ScheduledDelayed++
 		} else {
-			queue.doEnqueue(job, true, envelope)
+			queue.doEnqueue(job, enqueueOptions{
+				blocking: true,
+				envelope: envelope,
+			})
 			report.ScheduledNow++
 		}
 	}

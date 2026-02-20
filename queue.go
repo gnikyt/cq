@@ -12,6 +12,16 @@ import (
 
 const defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
 
+// IDGenerator creates a job ID for accepted enqueue operations.
+type IDGenerator func() string
+
+// enqueueOptions configures internal enqueue behavior.
+type enqueueOptions struct {
+	blocking bool      // Whether to block if no worker can be started and the jobs channel is full.
+	envelope *Envelope // Optional envelope to be persisted.
+	id       string    // Optional job ID to be used.
+}
+
 // Queue dispatches jobs to workers.
 // It dynamically scales workers between configured minimum and maximum limits,
 // and tracks runtime job and worker metrics.
@@ -37,6 +47,7 @@ type Queue struct {
 	failedJobsTally     atomic.Int64       // Jobs completed with error.
 	completedJobsTally  atomic.Int64       // Jobs completed successfully.
 	jobIDCounter        atomic.Int64       // Counter for generating unique job IDs.
+	idGenerator         IDGenerator        // Optional override for generating job IDs.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -160,25 +171,25 @@ func (q *Queue) IdleWorkers() int {
 // Enqueue submits a job to the queue.
 // It blocks if no worker can be started and the jobs channel is full.
 func (q *Queue) Enqueue(job Job) {
-	q.doEnqueue(job, true, nil)
+	q.doEnqueue(job, enqueueOptions{blocking: true})
 }
 
 // TryEnqueue attempts to submit a job without blocking.
 // It returns true if accepted, or false if no worker can be started and the
 // jobs channel is full.
 func (q *Queue) TryEnqueue(job Job) bool {
-	return q.doEnqueue(job, false, nil)
+	return q.doEnqueue(job, enqueueOptions{blocking: false})
 }
 
 // DelayEnqueue submits a job after the given delay.
 // The delay runs in its own goroutine so the caller is not blocked.
 func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
-	q.doDelayEnqueue(job, delay, nil)
+	q.doDelayEnqueue(job, delay, enqueueOptions{blocking: true})
 }
 
 // doDelayEnqueue submits a job after the given delay.
 // The delay runs in its own goroutine so the caller is not blocked.
-func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, envelope *Envelope) {
+func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, opts enqueueOptions) {
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
@@ -187,7 +198,7 @@ func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, envelope *Envelope)
 		case <-q.ctx.Done():
 			return // Context is done, stop the timer.
 		case <-timer.C:
-			q.doEnqueue(job, true, envelope) // Job can be submitted now.
+			q.doEnqueue(job, opts) // Job can be submitted now.
 		}
 	}()
 }
@@ -195,7 +206,7 @@ func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, envelope *Envelope)
 // EnqueueBatch accepts a slice of jobs and enqueues each one.
 func (q *Queue) EnqueueBatch(jobs []Job) {
 	for _, job := range jobs {
-		q.doEnqueue(job, true, nil)
+		q.doEnqueue(job, enqueueOptions{blocking: true})
 	}
 }
 
@@ -210,7 +221,7 @@ func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
 			return // Context is done, stop the timer.
 		case <-timer.C:
 			for _, job := range jobs {
-				q.doEnqueue(job, true, nil) // Jobs can be submitted now.
+				q.doEnqueue(job, enqueueOptions{blocking: true}) // Jobs can be submitted now.
 			}
 		}
 	}()
@@ -296,7 +307,14 @@ func (q *Queue) unmarkWorkerIdle() {
 }
 
 // nextJobID generates a unique job ID.
+// If an ID generator is configured, it is used to generate a unique ID.
+// Otherwise, a counter is used to generate a unique ID.
 func (q *Queue) nextJobID() string {
+	if q.idGenerator != nil {
+		if id := q.idGenerator(); id != "" {
+			return id
+		}
+	}
 	return strconv.FormatInt(q.jobIDCounter.Add(1), 10)
 }
 
@@ -395,7 +413,7 @@ func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) 
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
-func (q *Queue) doEnqueue(job Job, blocking bool, envelope *Envelope) (ok bool) {
+func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 	q.enqueueMut.RLock()
 	if q.IsStopped() {
 		q.enqueueMut.RUnlock()
@@ -403,8 +421,16 @@ func (q *Queue) doEnqueue(job Job, blocking bool, envelope *Envelope) (ok bool) 
 	}
 
 	// Create job metadata.
+	if opts.id == "" && opts.envelope != nil && opts.envelope.ID != "" {
+		// Use the envelope ID.
+		opts.id = opts.envelope.ID
+	}
+	if opts.id == "" {
+		// Generate a new job ID.
+		opts.id = q.nextJobID()
+	}
 	meta := JobMeta{
-		ID:         q.nextJobID(),
+		ID:         opts.id,
 		EnqueuedAt: time.Now(),
 		Attempt:    0,
 	}
@@ -445,7 +471,7 @@ func (q *Queue) doEnqueue(job Job, blocking bool, envelope *Envelope) (ok bool) 
 
 	// Attempt to create a dedicated worker for this job.
 	if ok = q.newWorker(wrappedJob); !ok {
-		if blocking {
+		if opts.blocking {
 			q.jobs <- wrappedJob
 			ok = true
 		} else {
@@ -458,7 +484,7 @@ func (q *Queue) doEnqueue(job Job, blocking bool, envelope *Envelope) (ok bool) 
 		}
 	}
 	if ok {
-		q.reportEnvelopeEnqueue(meta, envelope)
+		q.reportEnvelopeEnqueue(meta, opts.envelope)
 	}
 	return
 }
@@ -610,5 +636,13 @@ func WithPanicHandler(handler func(any)) QueueOption {
 func WithEnvelopeStore(store EnvelopeStore) QueueOption {
 	return func(q *Queue) {
 		q.envelopeStore = store
+	}
+}
+
+// WithIDGenerator sets a custom generator for enqueue job IDs.
+// Returning an empty ID falls back to the default atomic counter.
+func WithIDGenerator(gen IDGenerator) QueueOption {
+	return func(q *Queue) {
+		q.idGenerator = gen
 	}
 }

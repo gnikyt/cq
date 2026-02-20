@@ -108,6 +108,28 @@ func TestJobMetaInQueue(t *testing.T) {
 			seen[id] = true
 		}
 	})
+
+	t.Run("uses_custom_id_generator", func(t *testing.T) {
+		queue := NewQueue(1, 5, 10, WithIDGenerator(func() string { return "custom-1" }))
+		queue.Start()
+		defer queue.Stop(true)
+
+		done := make(chan JobMeta, 1)
+		queue.Enqueue(func(ctx context.Context) error {
+			done <- MetaFromContext(ctx)
+			return nil
+		})
+
+		select {
+		case meta := <-done:
+			if meta.ID != "custom-1" {
+				t.Fatalf("JobMeta: got ID=%q, want %q", meta.ID, "custom-1")
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("job did not complete in time")
+		}
+	})
+
 }
 
 func TestJobMetaWithRetry(t *testing.T) {

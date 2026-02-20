@@ -44,3 +44,11 @@ Distributed lock implementations for `WithUnique` and `WithoutOverlap`:
 - Locker interface specification
 - Redis implementation example
 - SQLite implementation example
+
+### [Queue Options](QUEUE_OPTIONS.md)
+Queue construction and runtime options:
+- Worker idle cleanup tuning
+- Context and cancellation strategies
+- Panic handling
+- Envelope store integration
+- Custom job ID generation

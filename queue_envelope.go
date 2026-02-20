@@ -37,7 +37,7 @@ func EnqueueEnvelope[T any](q *Queue, handler EnvelopeHandler[T], payload T) err
 	if err != nil {
 		return err
 	}
-	q.doEnqueue(job, true, envelope)
+	q.doEnqueue(job, enqueueOptions{blocking: true, envelope: envelope})
 	return nil
 }
 
@@ -48,7 +48,7 @@ func TryEnqueueEnvelope[T any](q *Queue, handler EnvelopeHandler[T], payload T) 
 	if err != nil {
 		return false, err
 	}
-	return q.doEnqueue(job, false, envelope), nil
+	return q.doEnqueue(job, enqueueOptions{blocking: false, envelope: envelope}), nil
 }
 
 // DelayEnqueueEnvelope submits a typed envelope handler and payload after the given delay.
@@ -57,7 +57,7 @@ func DelayEnqueueEnvelope[T any](q *Queue, handler EnvelopeHandler[T], payload T
 	if err != nil {
 		return err
 	}
-	q.doDelayEnqueue(job, delay, envelope)
+	q.doDelayEnqueue(job, delay, enqueueOptions{blocking: true, envelope: envelope})
 	return nil
 }
 
@@ -69,7 +69,7 @@ func EnqueueEnvelopeBatch[T any](q *Queue, handler EnvelopeHandler[T], payloads 
 		return err
 	}
 	for _, item := range prepared {
-		q.doEnqueue(item.job, true, item.envelope)
+		q.doEnqueue(item.job, enqueueOptions{blocking: true, envelope: item.envelope})
 	}
 	return nil
 }
@@ -91,7 +91,7 @@ func DelayEnqueueEnvelopeBatch[T any](q *Queue, handler EnvelopeHandler[T], payl
 			return // Context is done, stop the timer.
 		case <-timer.C:
 			for _, item := range prepared {
-				q.doEnqueue(item.job, true, item.envelope)
+				q.doEnqueue(item.job, enqueueOptions{blocking: true, envelope: item.envelope})
 			}
 		}
 	}()
@@ -108,7 +108,7 @@ func TryEnqueueEnvelopeBatch[T any](q *Queue, handler EnvelopeHandler[T], payloa
 
 	accepted := 0
 	for _, item := range prepared {
-		if ok := q.doEnqueue(item.job, false, item.envelope); !ok {
+		if ok := q.doEnqueue(item.job, enqueueOptions{blocking: false, envelope: item.envelope}); !ok {
 			break
 		}
 		accepted++

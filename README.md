@@ -275,6 +275,7 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
 // cq.WithEnvelopeStore(store)        - Persist envelope lifecycle and recovery metadata.
+// cq.WithIDGenerator(fn)             - Override fallback job ID generation.
 ```
 
 ### Stopping
