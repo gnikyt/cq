@@ -17,8 +17,9 @@ Use this quick wrapper index to choose the right building block:
 #### Basic Function
 
 **What it does:** Defines the base `Job` shape and a cancellation-aware implementation.
+
 **When to use:** Any job implementation.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, jobs stop promptly only if they check `ctx.Err()` or use context-aware operations.
 
 ```go
@@ -35,8 +36,9 @@ queue.Enqueue(job)
 #### Job Metadata
 
 **What it does:** Exposes per-job metadata through context (ID, enqueue time, attempt).
+
 **When to use:** Structured logging, tracing correlation, retry-aware logic.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, `Attempt` starts at 0 and increments only with retry wrappers.
 
 ```go
@@ -100,8 +102,9 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 #### Backoff
 
 **What it does:** Adds delay strategy between retries to reduce pressure on dependencies.
+
 **When to use:** Any retry loop that should avoid immediate hammering.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, backoff has no effect unless composed with retries.
 
 ```go
@@ -178,8 +181,9 @@ queue.Enqueue(job)
 #### Outcome Markers
 
 **What it does:** Marks errors as retryable, permanent, or discardable explicitly.
+
 **When to use:** You need deterministic behavior with `WithRetry`/`WithRetryIf`, and explicit discard semantics with `WithOutcome`.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, markers are consumed by retry wrappers (`WithRetry`, `WithRetryIf`) and by `WithOutcome` for discard handling.
 
 ```go
@@ -263,8 +267,9 @@ To trace each retry attempt individually, place tracing inside the retry instead
 #### Skip If
 
 **What it does:** Conditionally bypasses execution when a predicate returns true.
+
 **When to use:** Feature flags, maintenance mode, or unmet preconditions.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, skipped jobs return `nil` and count as intentional no-ops.
 
 ```go
@@ -277,8 +282,9 @@ queue.Enqueue(job)
 #### Timeout
 
 **What it does:** Cancels a job context if execution exceeds a duration.
+
 **When to use:** Preventing runaway jobs from occupying workers indefinitely.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, timeout/deadline signals cancel the context, but job code stops only where it checks the context.
 
 ```go
@@ -289,8 +295,9 @@ queue.Enqueue(job)
 #### Deadline
 
 **What it does:** Cancels a job context at a fixed absolute time.
+
 **When to use:** Time-sensitive work with a hard business cutoff.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, queue wait time consumes deadline budget, but that is expected given its a deadline.
 
 ```go
@@ -355,8 +362,9 @@ queue.Enqueue(job)
 #### Chains
 
 **What it does:** Executes a fixed sequence of jobs and stops on first error.
+
 **When to use:** Ordered workflows with step dependencies.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, chains provide no data handoff... use `WithPipeline` when sharing values.
 
 ```go
@@ -367,8 +375,9 @@ queue.Enqueue(job)
 #### Pipeline
 
 **What it does:** Executes sequential steps with typed channel-based data passing.
+
 **When to use:** Multi-step flows where output from one step feeds the next.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, pipeline steps must coordinate channel sends/receives... unmatched operations can block execution.
 
 ```go
@@ -460,8 +469,9 @@ queue.EnqueueBatch(batchJobs)
 #### Release
 
 **What it does:** Re-enqueues jobs after delay when a predicate-matched error occurs.
+
 **When to use:** Retry-later semantics such as rate limits or temporary upstream failures.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, releases can run indefinitely without `maxReleases` bounds.
 
 ```go
@@ -522,8 +532,9 @@ Logic:
 #### Recover
 
 **What it does:** Converts panics in job code into returned errors.
+
 **When to use:** You need custom panic handling per job path.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, wrapper-level recovery plus queue recovery can duplicate error reporting.
 
 ```go
@@ -536,8 +547,9 @@ queue.Enqueue(job)
 #### Tagged
 
 **What it does:** Attaches tags so related jobs can be tracked or canceled together.
+
 **When to use:** Multi-tenant workflows or operation-wide cancellation.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, cancellation scope includes all jobs matching the tag.
 
 ```go
@@ -576,8 +588,9 @@ queue.Enqueue(job)
 #### Circuit Breaker
 
 **What it does:** Short-circuits calls after consecutive failures to protect dependencies.
+
 **When to use:** Isolating unstable upstreams and reducing cascading failures.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, poor breaker thresholds can cause false opens or delayed protection.
 
 The circuit has three states:
@@ -605,11 +618,44 @@ for _, orderID := range orderIDs {
 // If it fails, circuit opens again for another 30s cooldown.
 ```
 
+Circuit-aware routing (optional):
+
+```go
+// Main queue for healthy dependencies.
+q := cq.NewQueue(4, 32, 1000)
+q.Start()
+defer q.Stop(true)
+
+// Degraded queue for unhealthy dependencies (lower concurrency/capacity).
+dq := cq.NewQueue(1, 4, 200)
+dq.Start()
+defer dq.Stop(true)
+
+paymentCB := cq.NewCircuitBreaker(5, 30*time.Second)
+
+route := func() *cq.Queue {
+	if paymentCB.IsOpen() {
+		return dq
+	}
+	return q
+}
+
+for _, orderID := range orderIDs {
+	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
+		return processPayment(orderID)
+	}, paymentCB)
+	route().Enqueue(job)
+}
+```
+
+This pattern isolates failing dependency traffic from the main queue. Use with your normal replay/DLQ strategy for long-term failed work handling.
+
 #### Custom Wrapper
 
 **What it does:** Shows how to build composable custom wrappers with the decorator pattern.
+
 **When to use:** You need behavior not covered by built-in wrappers.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, custom wrappers must preserve context propagation and error semantics.
 
 ```go

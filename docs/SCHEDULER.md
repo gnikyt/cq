@@ -9,8 +9,8 @@ queue.Start()
 scheduler := cq.NewScheduler(context.Background(), queue)
 defer scheduler.Stop()
 
-scheduler.Every("cleanup", 10*time.Minute, cleanupJob)
-scheduler.At("reminder", time.Now().Add(1*time.Hour), reminderJob)
+scheduler.Every("cleanup", 10*time.Minute, cleanupJob) // Every 10 minutes.
+scheduler.At("reminder", time.Now().Add(1*time.Hour), reminderJob) // 1 hour from now.
 
 scheduler.Has("cleanup")
 scheduler.Remove("cleanup")
@@ -21,8 +21,9 @@ scheduler.Count()
 #### Cron-like Scheduling
 
 **What it does:** Implements cron behavior by recursively scheduling next run times.
+
 **When to use:** You need cron expressions without built-in cron parser support.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, unhandled cron parse/reschedule errors can stop future runs silently.
 
 ```go
@@ -53,4 +54,5 @@ func ScheduleCron(s *cq.Scheduler, id, expr string, job cq.Job) error {
 }
 
 ScheduleCron(scheduler, "daily", "0 2 * * *", dailyJob)
+// ScheduleCron(scheduler, "daily", "@daily", dailyJob)
 ```

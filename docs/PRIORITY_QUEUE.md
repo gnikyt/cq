@@ -21,8 +21,9 @@ Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle,
 #### Custom Weights
 
 **What it does:** Customizes dispatch share across priority levels.
+
 **When to use:** You need workload-specific fairness or latency tuning.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, aggressive high-priority weights can starve lower priorities.
 
 ```go
@@ -52,8 +53,9 @@ pq := cq.NewPriorityQueue(queue, 50,
 #### Drain Before Stop
 
 **What it does:** Flushes buffered priority jobs into the base queue before shutdown.
+
 **When to use:** Graceful shutdown where queued work must be preserved.
-**Example:** See snippet below.
+
 **Caveat:** Operationally, draining trades job safety for longer shutdown time.
 
 ```go
