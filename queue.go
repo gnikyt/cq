@@ -48,6 +48,7 @@ type Queue struct {
 	completedJobsTally  atomic.Int64       // Jobs completed successfully.
 	jobIDCounter        atomic.Int64       // Counter for generating unique job IDs.
 	idGenerator         IDGenerator        // Optional override for generating job IDs.
+	hooks               []Hooks            // Optional lifecycle hooks for queue transitions.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -75,13 +76,20 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 		workerWg:       sync.WaitGroup{},
 		workerIdleTick: defaultWorkerIdleTick,
 	}
+
+	// Register built-in queue hooks first.
+	q.hooks = append(q.hooks, q.defaultHooks())
+
+	// Apply functional options.
 	for _, opt := range opts {
 		opt(q)
 	}
+
 	if q.ctx == nil {
 		// Default to use a background context.
 		WithContext(context.Background())(q)
 	}
+
 	return q
 }
 
@@ -441,12 +449,11 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 			return q.reportEnvelopePayload(meta, typ, payload)
 		})
 
-		// Report the envelope claim to persistence.
-		q.reportEnvelopeClaim(meta)
+		q.dispatchStart(meta, opts.envelope)
 
 		// Run the job and report the result to persistence.
 		err := job(jobCtx)
-		q.reportEnvelopeResult(meta, err)
+		q.dispatchResult(meta, opts.envelope, err)
 		return err
 	}
 
@@ -484,7 +491,7 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 		}
 	}
 	if ok {
-		q.reportEnvelopeEnqueue(meta, opts.envelope)
+		q.dispatchEnqueue(meta, opts.envelope)
 	}
 	return
 }
@@ -644,5 +651,12 @@ func WithEnvelopeStore(store EnvelopeStore) QueueOption {
 func WithIDGenerator(gen IDGenerator) QueueOption {
 	return func(q *Queue) {
 		q.idGenerator = gen
+	}
+}
+
+// WithHooks sets optional lifecycle hooks for queue transitions.
+func WithHooks(hooks Hooks) QueueOption {
+	return func(q *Queue) {
+		q.hooks = append(q.hooks, hooks)
 	}
 }

@@ -19,6 +19,9 @@ Queue options configure runtime behavior for worker lifecycle, context managemen
 - `cq.WithEnvelopeStore(store)`  
   Persists envelope lifecycle metadata (`enqueue`, `claim`, `ack`, `nack`, `reschedule`) for recovery and replay.
 
+- `cq.WithHooks(hooks)`  
+  Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`, `OnSuccess`, `OnFailure`, `OnReschedule`) for observability integrations. You can pass `WithHooks` multiple times; callbacks are appended and all are executed.
+
 - `cq.WithIDGenerator(fn)`  
   Overrides fallback job ID generation. If the generator returns an empty string, the queue falls back to its atomic counter.
 
@@ -30,6 +33,11 @@ queue := cq.NewQueue(1, 10, 100,
 	cq.WithContext(ctx),
 	cq.WithPanicHandler(func(err any) {
 		log.Printf("panic: %v", err)
+	}),
+	cq.WithHooks(cq.Hooks{
+		OnFailure: func(event cq.JobEvent) {
+			log.Printf("job failed (id=%s): %v", event.ID, event.Err)
+		},
 	}),
 	cq.WithIDGenerator(func() string {
 		return uuid.NewString()

@@ -17,6 +17,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Job scheduler for recurring and one-time jobs
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
+- Optional queue lifecycle hooks (enqueue/start/success/failure/reschedule)
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
 - Tracing hooks for observability
@@ -36,7 +37,7 @@ Use this as a quick guide before diving into detailed sections.
 | Concurrency safety | `WithoutOverlap`, `WithUnique` | Prevent overlap and deduplicate work |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
-| Observability and outcomes | `WithTracing`, `WithOutcome`, `MetaFromContext` | Track attempts, durations, and final job outcomes |
+| Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext` | Track attempts, durations, and queue lifecycle transitions |
 | Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
 
@@ -291,6 +292,7 @@ queue.Terminate()  // Immediate shutdown.
 For detailed usage and advanced features, see the following guides:
 
 - **[Job Wrappers](docs/JOB_WRAPPERS.md)** - Complete reference for all job wrappers including retries, timeouts, tracing, rate limiting, circuit breakers, and custom wrappers
+- **[Queue Options](docs/QUEUE_OPTIONS.md)** - Queue configuration options including context, panic handling, hooks, envelope persistence, and custom ID generation
 - **[Envelope Persistence](docs/ENVELOPE_PERSISTENCE.md)** - Persist and recover jobs using envelope stores with examples for DLQ, file-based, and DynamoDB implementations
 - **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
