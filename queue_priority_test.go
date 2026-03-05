@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -250,6 +251,84 @@ func TestPriorityQueue(t *testing.T) {
 
 		if !executed.Load() {
 			t.Error("TryEnqueue(): job should have executed")
+		}
+	})
+
+	t.Run("enqueue_or_error_invalid_falls_back_medium", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		var executed atomic.Bool
+		job := func(ctx context.Context) error {
+			executed.Store(true)
+			return nil
+		}
+
+		// Invalid priority maps to medium in EnqueueOrError for backward compatibility.
+		if err := pq.EnqueueOrError(job, Priority(999)); err != nil {
+			t.Fatalf("EnqueueOrError(): unexpected err: %v", err)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+		if !executed.Load() {
+			t.Error("EnqueueOrError(): job should have executed via medium fallback")
+		}
+	})
+
+	t.Run("try_enqueue_or_error_invalid", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		defer pq.Stop(false)
+
+		ok, err := pq.TryEnqueueOrError(func(ctx context.Context) error { return nil }, Priority(999))
+		if ok {
+			t.Error("TryEnqueueOrError(): got ok=true, want false")
+		}
+		if !errors.Is(err, ErrPriorityInvalid) {
+			t.Fatalf("TryEnqueueOrError(): got err=%v, want %v", err, ErrPriorityInvalid)
+		}
+	})
+
+	t.Run("try_enqueue_or_error_full", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 1)
+		defer pq.Stop(false)
+
+		job := func(ctx context.Context) error { return nil }
+		if ok, err := pq.TryEnqueueOrError(job, PriorityHigh); !ok || err != nil {
+			t.Fatalf("TryEnqueueOrError(): first enqueue got (%v,%v), want (true,nil)", ok, err)
+		}
+
+		ok, err := pq.TryEnqueueOrError(job, PriorityHigh)
+		if ok {
+			t.Error("TryEnqueueOrError(): got ok=true on full channel, want false")
+		}
+		if !errors.Is(err, ErrPriorityQueueFull) {
+			t.Fatalf("TryEnqueueOrError(): got err=%v, want %v", err, ErrPriorityQueueFull)
+		}
+	})
+
+	t.Run("enqueue_or_error_stopped", func(t *testing.T) {
+		queue := NewQueue(1, 5, 100)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 10)
+		pq.Stop(false)
+
+		err := pq.EnqueueOrError(func(ctx context.Context) error { return nil }, PriorityHigh)
+		if !errors.Is(err, ErrPriorityQueueStopped) {
+			t.Fatalf("EnqueueOrError(): got err=%v, want %v", err, ErrPriorityQueueStopped)
 		}
 	})
 

@@ -12,11 +12,20 @@ defer pq.Stop(true)
 pq.Enqueue(criticalJob, cq.PriorityHighest)
 pq.Enqueue(normalJob, cq.PriorityMedium)
 pq.Enqueue(cleanupJob, cq.PriorityLowest)
+
+// Explicit result variants.
+_ = pq.EnqueueOrError(criticalJob, cq.PriorityHighest)
+ok, err := pq.TryEnqueueOrError(normalJob, cq.PriorityMedium)
 ```
 
 Priority levels: `PriorityHighest`, `PriorityHigh`, `PriorityMedium`, `PriorityLow`, `PriorityLowest`
 
 Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle, the highest priority queue gets 5 job attempts, then the next gets 3, then 2, then 1, then 1 for the lowest.
+
+Typed priority enqueue errors:
+- `cq.ErrPriorityInvalid`
+- `cq.ErrPriorityQueueStopped`
+- `cq.ErrPriorityQueueFull`
 
 #### Custom Weights
 

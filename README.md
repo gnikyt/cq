@@ -42,7 +42,7 @@ Use this as a quick guide before diving into detailed sections.
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext` | Track attempts, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
 | Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
-| Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
+| Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs and run recurring work with typed enqueue outcomes |
 
 ## When to Use
 
@@ -352,7 +352,7 @@ For detailed usage and advanced features, see the following guides:
 `make test`
 
 ```
-ok      github.com/gnikyt/cq            19.013s coverage: 89.5% of statements
+ok      github.com/gnikyt/cq            18.755s coverage: 90.0% of statements
 ```
 
 ### Benchmarks
