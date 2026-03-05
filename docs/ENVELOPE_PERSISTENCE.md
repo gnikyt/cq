@@ -211,11 +211,75 @@ Recovery timing behavior:
 - If `Envelope.NextRunAt` is zero or in the past, recovery enqueues immediately.
 - If `Envelope.NextRunAt` is in the future, recovery uses `DelayEnqueue` for that remaining duration.
 
+## Failed / Dead Set Operations
+
+For stores that expose nacked-envelope listing, use:
+
+```go
+page, err := cq.ListNackedEnvelopes(
+	context.Background(),
+	store,
+	cq.NackedEnvelopeQuery{Limit: 50, Cursor: "", Type: "send_invitation"},
+)
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("failed=%d next=%q", len(page.Envelopes), page.NextCursor)
+```
+
+Retry a failed envelope by ID:
+
+```go
+ok, err := cq.RetryNackedEnvelopeByID(
+	context.Background(),
+	queue,
+	store,
+	registry,
+	"job-id-123",
+	time.Now(),
+)
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("retried=%v", ok)
+```
+
+`RetryNackedEnvelopeByID` timing behavior:
+- If `retryAt` is zero, in the past, or now: retry is enqueued immediately.
+- If `retryAt` is in the future: retry is delayed until `retryAt`.
+- For immediate retries, stores can optionally implement `EnvelopeRetryStateStore`
+  and persist an explicit retry transition via `MarkRetried(...)`.
+- For delayed retries, `Reschedule(...)` is used to persist timing intent.
+
+Discard a failed envelope by ID:
+
+```go
+if err := cq.DiscardNackedEnvelopeByID(context.Background(), store, "job-id-123"); err != nil {
+	log.Fatal(err)
+}
+```
+
+Notes:
+- `ListNackedEnvelopes` is cursor-paginated and returns `NackedEnvelopePage` (`Envelopes`, `NextCursor`).
+- `ListNackedEnvelopes` requires store support for `NackedEnvelopeLister`... otherwise it returns `cq.ErrNackedListUnsupported`.
+- `RetryNackedEnvelopeByID` and `DiscardNackedEnvelopeByID` require target envelope status to be `nacked`... otherwise they return `cq.ErrEnvelopeNotNacked`.
+
+Optional retry transition interface:
+
+```go
+type EnvelopeRetryStateStore interface {
+	MarkRetried(ctx context.Context, id string, retriedAt time.Time, reason string) error
+}
+```
+
 ## Store Implementations
 
 **What it does:** Shows concrete `EnvelopeStore` implementations for different persistence goals.
+
 **When to use:** You need recovery, auditability, DLQ routing, or custom side effects.
+
 **Example:** See the DLQ, file-backed, and DynamoDB snippets below.
+
 **Caveat:** Operationally, use durable storage when restart recovery guarantees are required.
 
 ### DLQ-only Example
@@ -576,3 +640,437 @@ Suggested table configuration:
 - Partition key: `id` (string)
 - Attributes: `type`, `status`, `payload`, `enqueued_at`, `claimed_at`, `next_run_at`, `last_error`
 - Optional GSI for recovery polling: (`status`, `next_run_at`)
+
+## End-to-End SQLite Example
+
+The following example shows a SQLite-backed envelope store that supports:
+
+- `EnvelopeStore` (persistence + recovery)
+- `NackedEnvelopeLister` (cursor paging for nacked items)
+- `EnvelopeRetryStateStore` (explicit immediate retry transition)
+
+```go
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/gnikyt/cq"
+)
+
+const (
+	defaultNackedPageLimit = 50
+	timeLayout             = time.RFC3339Nano
+)
+
+const (
+	sqlMigrate = `
+CREATE TABLE IF NOT EXISTS envelopes (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT '',
+  payload BLOB NOT NULL DEFAULT X'',
+  status TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  enqueued_at TEXT,
+  claimed_at TEXT,
+  next_run_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_env_status_updated_id ON envelopes(status, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_env_status_next_run ON envelopes(status, next_run_at);
+`
+
+	sqlUpsertEnqueue = `
+INSERT INTO envelopes (id, type, payload, status, attempt, enqueued_at, next_run_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  type=excluded.type,
+  payload=excluded.payload,
+  status=excluded.status,
+  attempt=excluded.attempt,
+  enqueued_at=excluded.enqueued_at,
+  next_run_at=excluded.next_run_at,
+  updated_at=excluded.updated_at
+`
+
+	sqlClaim = `
+UPDATE envelopes
+SET status=?, claimed_at=?, updated_at=?
+WHERE id=?
+`
+
+	sqlAck = `
+UPDATE envelopes
+SET status=?, updated_at=?
+WHERE id=?
+`
+
+	sqlNack = `
+UPDATE envelopes
+SET status=?, last_error=?, updated_at=?
+WHERE id=?
+`
+
+	sqlReschedule = `
+UPDATE envelopes
+SET status=?, next_run_at=?, last_error=?, updated_at=?
+WHERE id=?
+`
+
+	sqlSetPayload = `
+UPDATE envelopes
+SET type=?, payload=?, updated_at=?
+WHERE id=?
+`
+
+	sqlRecoverable = `
+SELECT id, type, payload, status, attempt, enqueued_at, claimed_at, next_run_at, last_error
+FROM envelopes
+WHERE status != ?
+  AND (next_run_at IS NULL OR next_run_at = '' OR next_run_at <= ?)
+ORDER BY updated_at ASC
+`
+
+	sqlRecoverByID = `
+SELECT id, type, payload, status, attempt, enqueued_at, claimed_at, next_run_at, last_error
+FROM envelopes
+WHERE id=?
+`
+)
+
+type sqliteEnvelopeStore struct {
+	db *sql.DB
+}
+
+type nackedCursor struct {
+	UpdatedAt string `json:"u"`
+	ID        string `json:"i"`
+}
+
+func newSQLiteEnvelopeStore(db *sql.DB) *sqliteEnvelopeStore {
+	return &sqliteEnvelopeStore{db: db}
+}
+
+func (s *sqliteEnvelopeStore) Migrate(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, sqlMigrate)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Enqueue(ctx context.Context, env cq.Envelope) error {
+	_, err := s.db.ExecContext(ctx, sqlUpsertEnqueue,
+		env.ID,
+		env.Type,
+		env.Payload,
+		cq.EnvelopeStatusEnqueued,
+		env.Attempt,
+		formatTime(env.EnqueuedAt),
+		nullableTime(env.NextRunAt),
+		nowString(),
+	)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Claim(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, sqlClaim, cq.EnvelopeStatusClaimed, nowString(), nowString(), id)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Ack(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, sqlAck, cq.EnvelopeStatusAcked, nowString(), id)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Nack(ctx context.Context, id string, reason error) error {
+	msg := ""
+	if reason != nil {
+		msg = reason.Error()
+	}
+	_, err := s.db.ExecContext(ctx, sqlNack, cq.EnvelopeStatusNacked, msg, nowString(), id)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Reschedule(ctx context.Context, id string, nextRunAt time.Time, reason string) error {
+	_, err := s.db.ExecContext(ctx, sqlReschedule,
+		cq.EnvelopeStatusEnqueued,
+		formatTime(nextRunAt),
+		reason,
+		nowString(),
+		id,
+	)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) MarkRetried(ctx context.Context, id string, retriedAt time.Time, reason string) error {
+	_, err := s.db.ExecContext(ctx, sqlReschedule,
+		cq.EnvelopeStatusEnqueued,
+		formatTime(retriedAt),
+		reason,
+		nowString(),
+		id,
+	)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) SetPayload(ctx context.Context, id string, typ string, payload []byte) error {
+	_, err := s.db.ExecContext(ctx, sqlSetPayload, typ, payload, nowString(), id)
+	return err
+}
+
+func (s *sqliteEnvelopeStore) Recoverable(ctx context.Context, now time.Time) ([]cq.Envelope, error) {
+	rows, err := s.db.QueryContext(ctx, sqlRecoverable, cq.EnvelopeStatusAcked, formatTime(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]cq.Envelope, 0, 64)
+	for rows.Next() {
+		env, err := scanEnvelope(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, env)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteEnvelopeStore) RecoverByID(ctx context.Context, id string) (cq.Envelope, error) {
+	row := s.db.QueryRowContext(ctx, sqlRecoverByID, id)
+	env, err := scanEnvelope(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return cq.Envelope{}, cq.ErrEnvelopeNotFound
+	}
+	return env, err
+}
+
+// NackedEnvelopeLister: cursor pagination by (updated_at DESC, id DESC).
+func (s *sqliteEnvelopeStore) Nacked(ctx context.Context, q cq.NackedEnvelopeQuery) (cq.NackedEnvelopePage, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = defaultNackedPageLimit
+	}
+
+	var cursor nackedCursor
+	if q.Cursor != "" {
+		raw, err := base64.StdEncoding.DecodeString(q.Cursor)
+		if err != nil {
+			return cq.NackedEnvelopePage{}, fmt.Errorf("invalid cursor: %w", err)
+		}
+		if err := json.Unmarshal(raw, &cursor); err != nil {
+			return cq.NackedEnvelopePage{}, fmt.Errorf("invalid cursor payload: %w", err)
+		}
+	}
+
+	args := []any{cq.EnvelopeStatusNacked}
+	query := `
+SELECT id, type, payload, status, attempt, enqueued_at, claimed_at, next_run_at, last_error, updated_at
+FROM envelopes
+WHERE status=?
+`
+	if q.Type != "" {
+		query += " AND type=?"
+		args = append(args, q.Type)
+	}
+	if cursor.UpdatedAt != "" && cursor.ID != "" {
+		query += " AND (updated_at < ? OR (updated_at = ? AND id < ?))"
+		args = append(args, cursor.UpdatedAt, cursor.UpdatedAt, cursor.ID)
+	}
+	query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+	args = append(args, limit+1) // fetch one extra for next cursor.
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return cq.NackedEnvelopePage{}, err
+	}
+	defer rows.Close()
+
+	type rowData struct {
+		env       cq.Envelope
+		updatedAt string
+	}
+	tmp := make([]rowData, 0, limit+1)
+	for rows.Next() {
+		var (
+			id, typ, status, updatedAt string
+			payload                    []byte
+			attempt                    int
+			enqueuedAt, claimedAt      sql.NullString
+			nextRunAt, lastError       sql.NullString
+		)
+		if err := rows.Scan(
+			&id, &typ, &payload, &status, &attempt,
+			&enqueuedAt, &claimedAt, &nextRunAt, &lastError, &updatedAt,
+		); err != nil {
+			return cq.NackedEnvelopePage{}, err
+		}
+		tmp = append(tmp, rowData{
+			env: cq.Envelope{
+				ID:         id,
+				Type:       typ,
+				Payload:    payload,
+				Status:     cq.EnvelopeStatus(status),
+				Attempt:    attempt,
+				EnqueuedAt: parseNullableTime(enqueuedAt),
+				ClaimedAt:  parseNullableTime(claimedAt),
+				NextRunAt:  parseNullableTime(nextRunAt),
+				LastError:  lastError.String,
+			},
+			updatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return cq.NackedEnvelopePage{}, err
+	}
+
+	page := cq.NackedEnvelopePage{
+		Envelopes: make([]cq.Envelope, 0, limit),
+	}
+	for i, item := range tmp {
+		if i == limit {
+			cur, _ := json.Marshal(nackedCursor{UpdatedAt: item.updatedAt, ID: item.env.ID})
+			page.NextCursor = base64.StdEncoding.EncodeToString(cur)
+			break
+		}
+		page.Envelopes = append(page.Envelopes, item.env)
+	}
+	return page, nil
+}
+
+func scanEnvelope(scanner interface{ Scan(dest ...any) error }) (cq.Envelope, error) {
+	var (
+		id					  string
+		typ					  string
+		status                string
+		payload               []byte
+		attempt               int
+		enqueuedAt, claimedAt sql.NullString
+		nextRunAt, lastError  sql.NullString
+	)
+	if err := scanner.Scan(
+		&id, &typ, &payload, &status, &attempt,
+		&enqueuedAt, &claimedAt, &nextRunAt, &lastError,
+	); err != nil {
+		return cq.Envelope{}, err
+	}
+	return cq.Envelope{
+		ID:         id,
+		Type:       typ,
+		Payload:    payload,
+		Status:     cq.EnvelopeStatus(status),
+		Attempt:    attempt,
+		EnqueuedAt: parseNullableTime(enqueuedAt),
+		ClaimedAt:  parseNullableTime(claimedAt),
+		NextRunAt:  parseNullableTime(nextRunAt),
+		LastError:  lastError.String,
+	}, nil
+}
+
+func nowString() string {
+	return time.Now().UTC().Format(timeLayout)
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(timeLayout)
+}
+
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(timeLayout)
+}
+
+func parseNullableTime(v sql.NullString) time.Time {
+	if !v.Valid || v.String == "" {
+		return time.Time{}
+	}
+	t, _ := time.Parse(timeLayout, v.String)
+	return t
+}
+```
+
+## Recovery Usage (Automatic)
+
+Use this when you want startup or loop-driven replay from `Recoverable(...)`:
+
+```go
+db, _ := sql.Open("sqlite", "file:queue.db?_foreign_keys=on")
+store := newSQLiteEnvelopeStore(db)
+_ = store.Migrate(context.Background())
+
+queue := cq.NewQueue(1, 10, 100, cq.WithEnvelopeStore(store))
+queue.Start()
+defer queue.Stop(true)
+
+registry := cq.NewEnvelopeRegistry()
+cq.RegisterEnvelopeHandler(registry, sendInvitationHandler)
+cq.RegisterEnvelopeHandler(registry, processOrderHandler)
+
+scheduled, err := cq.RecoverEnvelopes(context.Background(), queue, store, registry, time.Now())
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("recovered=%d", scheduled)
+
+cancelLoop, err := cq.StartRecoveryLoop(
+	context.Background(),
+	5*time.Second,
+	queue,
+	store,
+	registry,
+	cq.RecoverOptions{MaxEnvelopes: 100, ContinueOnError: true},
+	func(err error) {
+		log.Printf("recover loop error: %v", err)
+	},
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer cancelLoop()
+```
+
+## Recovery Usage (Manual Nacked Operations)
+
+Use this when operators decide exactly what to retry/discard:
+
+```go
+cursor := ""
+for {
+	page, err := cq.ListNackedEnvelopes(context.Background(), store, cq.NackedEnvelopeQuery{
+		Limit:  50,
+		Type:   "send_invitation",
+		Cursor: cursor,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, env := range page.Envelopes {
+		// Example policy: delay-retry some, discard others.
+		if shouldDiscard(env) {
+			_ = cq.DiscardNackedEnvelopeByID(context.Background(), store, env.ID)
+			continue
+		}
+
+		retryAt := time.Now().Add(10 * time.Second) // or time.Now() for immediate retry
+		_, _ = cq.RetryNackedEnvelopeByID(context.Background(), queue, store, registry, env.ID, retryAt)
+	}
+
+	if page.NextCursor == "" {
+		break
+	}
+	cursor = page.NextCursor
+}
+```

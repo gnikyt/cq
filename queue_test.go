@@ -270,6 +270,56 @@ func TestQueueEnqueueIfStopped(t *testing.T) {
 	}
 }
 
+func TestQueueEnqueueOrError(t *testing.T) {
+	t.Run("stopped", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+		q.Stop(true)
+
+		err := q.EnqueueOrError(func(ctx context.Context) error { return nil })
+		if !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("EnqueueOrError(): got %v, want %v", err, ErrQueueStopped)
+		}
+	})
+
+	t.Run("paused reject", func(t *testing.T) {
+		q := NewQueue(1, 1, 1, WithPauseBehavior(PauseReject))
+		q.Start()
+		defer q.Stop(true)
+
+		if err := q.Pause(); err != nil {
+			t.Fatalf("Pause(): unexpected error: %v", err)
+		}
+
+		err := q.EnqueueOrError(func(ctx context.Context) error { return nil })
+		if !errors.Is(err, ErrQueuePaused) {
+			t.Fatalf("EnqueueOrError(): got %v, want %v", err, ErrQueuePaused)
+		}
+	})
+}
+
+func TestQueueTryEnqueueOrError(t *testing.T) {
+	t.Run("full", func(t *testing.T) {
+		// No workers: jobs only occupy channel capacity.
+		q := NewQueue(0, 0, 1)
+		q.Start()
+		defer q.Stop(false)
+
+		ok, err := q.TryEnqueueOrError(func(ctx context.Context) error { return nil })
+		if !ok || err != nil {
+			t.Fatalf("TryEnqueueOrError(): first enqueue got (%v, %v), want (true, nil)", ok, err)
+		}
+
+		ok, err = q.TryEnqueueOrError(func(ctx context.Context) error { return nil })
+		if ok {
+			t.Fatal("TryEnqueueOrError(): got ok=true on full queue, want false")
+		}
+		if !errors.Is(err, ErrQueueFull) {
+			t.Fatalf("TryEnqueueOrError(): got %v, want %v", err, ErrQueueFull)
+		}
+	})
+}
+
 func TestQueueTallies(t *testing.T) {
 	tests := []struct {
 		state JobState

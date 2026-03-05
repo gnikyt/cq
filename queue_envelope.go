@@ -33,22 +33,35 @@ func envelopePreparedJobs[T any](handler EnvelopeHandler[T], payloads []T) ([]en
 // EnqueueEnvelope submits a typed envelope handler and payload to the queue.
 // Envelope type/payload are persisted at enqueue time when an envelope store is configured.
 func EnqueueEnvelope[T any](q *Queue, handler EnvelopeHandler[T], payload T) error {
+	return EnqueueEnvelopeOrError(q, handler, payload)
+}
+
+// EnqueueEnvelopeOrError submits a typed envelope handler and payload to the queue,
+// returning typed enqueue rejection errors.
+func EnqueueEnvelopeOrError[T any](q *Queue, handler EnvelopeHandler[T], payload T) error {
 	job, envelope, err := envelopeJobAndMetadata(handler, payload)
 	if err != nil {
 		return err
 	}
-	q.doEnqueue(job, enqueueOptions{blocking: true, envelope: envelope})
-	return nil
+	_, err = q.doEnqueueWithErr(job, enqueueOptions{blocking: true, envelope: envelope})
+	return err
 }
 
 // TryEnqueueEnvelope attempts to submit a typed envelope handler and payload without blocking.
 // Returns true when accepted, false when queue is full and no new worker can be started.
 func TryEnqueueEnvelope[T any](q *Queue, handler EnvelopeHandler[T], payload T) (bool, error) {
+	ok, err := TryEnqueueEnvelopeOrError(q, handler, payload)
+	return ok, err
+}
+
+// TryEnqueueEnvelopeOrError attempts to submit a typed envelope handler and payload without blocking.
+// Returns typed enqueue rejection errors.
+func TryEnqueueEnvelopeOrError[T any](q *Queue, handler EnvelopeHandler[T], payload T) (bool, error) {
 	job, envelope, err := envelopeJobAndMetadata(handler, payload)
 	if err != nil {
 		return false, err
 	}
-	return q.doEnqueue(job, enqueueOptions{blocking: false, envelope: envelope}), nil
+	return q.doEnqueueWithErr(job, enqueueOptions{blocking: false, envelope: envelope})
 }
 
 // DelayEnqueueEnvelope submits a typed envelope handler and payload after the given delay.

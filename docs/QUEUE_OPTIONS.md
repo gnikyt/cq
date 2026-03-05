@@ -25,6 +25,21 @@ Queue options configure runtime behavior for worker lifecycle, context managemen
 - `cq.WithIDGenerator(fn)`  
   Overrides fallback job ID generation. If the generator returns an empty string, the queue falls back to its atomic counter.
 
+- `cq.WithPauseStore(store, key)`  
+  Enables distributed pause/resume state using a shared store. All queue instances using the same key will honor the same pause flag.
+
+- `cq.WithPausePollTick(d)`  
+  Interval for polling distributed pause state. Default is `1*time.Second`.
+
+- `cq.WithPauseBehavior(mode)`  
+  Controls enqueue behavior while paused:
+  - `cq.PauseBuffer` (default): accept enqueue and buffer until resume
+  - `cq.PauseReject`: reject enqueue while paused
+
+- `cq.WithMiddleware(mw...)`  
+  Applies queue-level wrappers to every job accepted by the queue.
+  Registration order is preserved: `WithMiddleware(a, b)` executes as `a(b(job))`.
+
 ## Example
 
 ```go
@@ -50,3 +65,55 @@ queue.Enqueue(func(ctx context.Context) error {
 	return nil
 })
 ```
+
+## Pause / Resume
+
+Use `Pause()` to stop starting new work while allowing running jobs to finish:
+
+```go
+if err := queue.Pause(); err != nil {
+	log.Fatal(err)
+}
+
+// Jobs can still be enqueued while paused, but workers will not start them.
+
+if err := queue.Resume(); err != nil {
+	log.Fatal(err)
+}
+```
+
+## Distributed Pause Store
+
+`PauseStore` is optional and only needed when you want multiple queue instances
+to honor the same pause state.
+
+```go
+type PauseStore interface {
+	IsPaused(ctx context.Context, key string) (bool, error)
+	SetPaused(ctx context.Context, key string, paused bool) error
+}
+```
+
+Configure it with:
+
+```go
+queue := cq.NewQueue(1, 10, 100,
+	cq.WithPauseStore(store, "orders"),
+	cq.WithPausePollTick(500*time.Millisecond),
+	cq.WithPauseBehavior(cq.PauseBuffer),
+)
+```
+
+You can implement time-window pauses by either, for example:
+- Having an external scheduler call `SetPaused(key, true/false)` at start/end, or
+- Making `IsPaused` compute pause state from a DB table with `start_at`/`end_at`.
+
+### Pause Behavior Notes
+
+When paused:
+- `PauseBuffer` keeps accepting enqueue and defers execution until resume.
+- `PauseReject` rejects enqueue.
+
+- For rejection-awareness, use `TryEnqueue` (or `TryEnqueueEnvelope`) since they return if enqueue happened.
+- For typed rejection reasons, use `EnqueueOrError` / `TryEnqueueOrError` and check:
+`cq.ErrQueuePaused`, `cq.ErrQueueStopped`, `cq.ErrQueueFull`.

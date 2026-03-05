@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -449,5 +450,52 @@ func TestTryEnqueueEnvelopeBatch_PreValidationError(t *testing.T) {
 	}
 	if created := q.TallyOf(JobStateCreated); created != 0 {
 		t.Fatalf("got created=%d, want 0", created)
+	}
+}
+
+func TestEnqueueEnvelopeOrError_PauseReject(t *testing.T) {
+	q := NewQueue(1, 1, 10, WithPauseBehavior(PauseReject))
+	q.Start()
+	defer q.Stop(true)
+
+	if err := q.Pause(); err != nil {
+		t.Fatalf("Pause(): unexpected error: %v", err)
+	}
+
+	handler := EnvelopeHandler[typedEnvelopePayload]{
+		Type:  "order_create",
+		Codec: EnvelopeJSONCodec[typedEnvelopePayload](),
+		Handler: func(ctx context.Context, payload typedEnvelopePayload) error {
+			return nil
+		},
+	}
+	err := EnqueueEnvelopeOrError(q, handler, typedEnvelopePayload{OrderID: "ord_123", SourceLocation: "warehouse_a"})
+	if !errors.Is(err, ErrQueuePaused) {
+		t.Fatalf("got err=%v, want %v", err, ErrQueuePaused)
+	}
+}
+
+func TestTryEnqueueEnvelopeOrError_PauseReject(t *testing.T) {
+	q := NewQueue(1, 1, 10, WithPauseBehavior(PauseReject))
+	q.Start()
+	defer q.Stop(true)
+
+	if err := q.Pause(); err != nil {
+		t.Fatalf("Pause(): unexpected error: %v", err)
+	}
+
+	handler := EnvelopeHandler[typedEnvelopePayload]{
+		Type:  "order_create",
+		Codec: EnvelopeJSONCodec[typedEnvelopePayload](),
+		Handler: func(ctx context.Context, payload typedEnvelopePayload) error {
+			return nil
+		},
+	}
+	ok, err := TryEnqueueEnvelopeOrError(q, handler, typedEnvelopePayload{OrderID: "ord_123", SourceLocation: "warehouse_a"})
+	if ok {
+		t.Fatal("got ok=true, want false")
+	}
+	if !errors.Is(err, ErrQueuePaused) {
+		t.Fatalf("got err=%v, want %v", err, ErrQueuePaused)
 	}
 }

@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,7 +11,18 @@ import (
 	"time"
 )
 
-const defaultWorkerIdleTick = 5 * time.Second // Every five seconds check for idle workers.
+const (
+	defaultWorkerIdleTick = 5 * time.Second       // Every five seconds check for idle workers.
+	defaultPausePollTick  = 1 * time.Second       // Every second sync distributed pause state.
+	defaultPauseWaitTick  = 25 * time.Millisecond // Worker pause check interval.
+)
+
+// Queue enqueue errors.
+var (
+	ErrQueueStopped = errors.New("queue is stopped")
+	ErrQueuePaused  = errors.New("queue is paused")
+	ErrQueueFull    = errors.New("queue is full")
+)
 
 // IDGenerator creates a job ID for accepted enqueue operations.
 type IDGenerator func() string
@@ -48,7 +60,14 @@ type Queue struct {
 	completedJobsTally  atomic.Int64       // Jobs completed successfully.
 	jobIDCounter        atomic.Int64       // Counter for generating unique job IDs.
 	idGenerator         IDGenerator        // Optional override for generating job IDs.
+	middleware          []Middleware       // Optional queue-level middleware chain.
 	hooks               []Hooks            // Optional lifecycle hooks for queue transitions.
+	paused              atomic.Bool        // Local pause state.
+	distPaused          atomic.Bool        // Distributed pause state from store polling.
+	pauseStore          PauseStore         // Optional distributed pause state store.
+	pauseStoreKey       string             // Key used for distributed pause state.
+	pausePollTick       time.Duration      // Interval for distributed pause polling.
+	pauseBehavior       PauseBehavior      // Enqueue behavior while paused.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -75,6 +94,8 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 		jobWg:          sync.WaitGroup{},
 		workerWg:       sync.WaitGroup{},
 		workerIdleTick: defaultWorkerIdleTick,
+		pausePollTick:  defaultPausePollTick,
+		pauseBehavior:  PauseBuffer,
 	}
 
 	// Register built-in queue hooks first.
@@ -105,9 +126,17 @@ func (q *Queue) Capacity() int {
 
 // Start begins the idle-worker ticker and starts the configured minimum workers.
 func (q *Queue) Start() {
+	// Start the idle-worker ticker.
 	q.workerWg.Add(1)
 	go q.cleanupIdleWorkers()
 
+	if q.pauseStore != nil {
+		// Start the distributed pause poller.
+		q.workerWg.Add(1)
+		go q.pollDistributedPause()
+	}
+
+	// Start the minimum number of workers.
 	for range q.workersMin {
 		q.newWorker(nil)
 	}
@@ -123,11 +152,16 @@ func (q *Queue) Stop(jobWait bool) {
 
 	q.stopped.Store(true)
 	if jobWait {
+		// Ensure graceful shutdown can drain pending jobs.
+		q.paused.Store(false)
+		q.distPaused.Store(false)
 		q.jobWg.Wait()
 	}
 	q.ctxCancel()
 	q.workerWg.Wait()
 	q.resetWorkers()
+	q.paused.Store(false)
+	q.distPaused.Store(false)
 	close(q.jobs)
 }
 
@@ -140,12 +174,46 @@ func (q *Queue) Terminate() {
 	q.stopped.Store(true)
 	q.ctxCancel()
 	q.resetWorkers()
+	q.paused.Store(false)
+	q.distPaused.Store(false)
 	close(q.jobs)
 }
 
 // IsStopped atomically checks if the queue is stopped.
 func (q *Queue) IsStopped() bool {
 	return q.stopped.Load()
+}
+
+// Pause prevents new jobs from starting execution.
+// Enqueue operations are still accepted, and running jobs continue.
+func (q *Queue) Pause() error {
+	q.paused.Store(true)
+	if q.pauseStore == nil || q.pauseStoreKey == "" {
+		return nil // No distributed pause store, local pause only.
+	}
+
+	if err := q.pauseStore.SetPaused(q.ctx, q.pauseStoreKey, true); err != nil {
+		return fmt.Errorf("queue: pause: %w", err)
+	}
+	return nil
+}
+
+// Resume allows new jobs to start execution again.
+func (q *Queue) Resume() error {
+	q.paused.Store(false)
+	if q.pauseStore == nil || q.pauseStoreKey == "" {
+		return nil // No distributed pause store, local resume only.
+	}
+
+	if err := q.pauseStore.SetPaused(q.ctx, q.pauseStoreKey, false); err != nil {
+		return fmt.Errorf("queue: resume: %w", err)
+	}
+	return nil
+}
+
+// IsPaused reports whether queue execution is currently paused.
+func (q *Queue) IsPaused() bool {
+	return q.paused.Load() || q.distPaused.Load()
 }
 
 // TallyOf atomically returns the number of jobs for a given state.
@@ -179,14 +247,27 @@ func (q *Queue) IdleWorkers() int {
 // Enqueue submits a job to the queue.
 // It blocks if no worker can be started and the jobs channel is full.
 func (q *Queue) Enqueue(job Job) {
-	q.doEnqueue(job, enqueueOptions{blocking: true})
+	_, _ = q.doEnqueueWithErr(job, enqueueOptions{blocking: true})
+}
+
+// EnqueueOrError submits a job and returns a typed error on rejection.
+func (q *Queue) EnqueueOrError(job Job) error {
+	_, err := q.doEnqueueWithErr(job, enqueueOptions{blocking: true})
+	return err
 }
 
 // TryEnqueue attempts to submit a job without blocking.
 // It returns true if accepted, or false if no worker can be started and the
 // jobs channel is full.
 func (q *Queue) TryEnqueue(job Job) bool {
-	return q.doEnqueue(job, enqueueOptions{blocking: false})
+	ok, _ := q.doEnqueueWithErr(job, enqueueOptions{blocking: false})
+	return ok
+}
+
+// TryEnqueueOrError attempts to submit a job without blocking.
+// It returns typed rejection errors (for example ErrQueuePaused, ErrQueueStopped, ErrQueueFull).
+func (q *Queue) TryEnqueueOrError(job Job) (bool, error) {
+	return q.doEnqueueWithErr(job, enqueueOptions{blocking: false})
 }
 
 // DelayEnqueue submits a job after the given delay.
@@ -422,10 +503,23 @@ func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) 
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
 func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
+	ok, _ = q.doEnqueueWithErr(job, opts)
+	return ok
+}
+
+// doEnqueueWithErr submits a job to the queue internals.
+// It first tries to start a dedicated worker for the job when scaling limits allow.
+// If no worker can be started, it falls back to pushing the job onto `q.jobs`.
+// When `blocking` is false, the fallback channel send is non-blocking.
+func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err error) {
 	q.enqueueMut.RLock()
 	if q.IsStopped() {
 		q.enqueueMut.RUnlock()
-		return // Queue stopped.
+		return false, ErrQueueStopped
+	}
+	if q.IsPaused() && q.pauseBehavior == PauseReject {
+		q.enqueueMut.RUnlock()
+		return false, ErrQueuePaused
 	}
 
 	// Create job metadata.
@@ -442,6 +536,12 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 		EnqueuedAt: time.Now(),
 		Attempt:    0,
 	}
+
+	// Apply queue-level middleware.
+	job = q.applyMiddleware(job)
+
+	// Wrap the job with a job metadata context and an envelope payload setter.
+	// Additionally, dispatch the start and result of the job.
 	wrappedJob := func(ctx context.Context) error {
 		// Create a new context with the job metadata and the optional envelope payload setter.
 		jobCtx := contextWithMeta(ctx, meta)
@@ -468,6 +568,9 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 			if q.panicHandler != nil {
 				q.panicHandler(r)
 			}
+			if err == nil {
+				err = fmt.Errorf("queue: enqueue panic: %v", r)
+			}
 		}
 		if !ok {
 			// Job could not be enqueued, rollback tallies.
@@ -476,8 +579,14 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 		}
 	}()
 
-	// Attempt to create a dedicated worker for this job.
-	if ok = q.newWorker(wrappedJob); !ok {
+	// Attempt to create a dedicated worker for this job when not paused.
+	// If paused, we still accept enqueue and place work into q.jobs.
+	if !q.IsPaused() {
+		ok = q.newWorker(wrappedJob)
+	}
+	if !ok {
+		// Either no worker slot was available or queue is paused.
+		// Fallback is to buffer the job in q.jobs.
 		if opts.blocking {
 			q.jobs <- wrappedJob
 			ok = true
@@ -487,18 +596,42 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 				ok = true
 			default:
 				ok = false
+				err = ErrQueueFull
 			}
 		}
 	}
 	if ok {
 		q.dispatchEnqueue(meta, opts.envelope)
+		err = nil
 	}
-	return
+	return ok, err
+}
+
+// applyMiddleware applies queue-level middleware in registration order (first to last).
+// WithMiddleware(a, b) executes as a(b(job)).
+func (q *Queue) applyMiddleware(job Job) Job {
+	if len(q.middleware) == 0 {
+		return job
+	}
+
+	wrapped := job
+	for i := len(q.middleware) - 1; i >= 0; i-- {
+		mw := q.middleware[i]
+		if mw == nil {
+			continue
+		}
+		wrapped = mw(wrapped)
+	}
+	return wrapped
 }
 
 // workJob executes a single job.
 // `isFirst` is true when the job is the worker's initial dedicated job.
 func (q *Queue) workJob(job Job, isFirst bool) {
+	if ok := q.waitWhilePaused(); !ok {
+		return
+	}
+
 	// No matter what, mark job as done and attempt to
 	// recover from a panic in the handler.
 	defer func() {
@@ -550,11 +683,19 @@ func (q *Queue) workJobs(initialJob Job) {
 	defer q.workerWg.Done()
 
 	if initialJob != nil {
+		if ok := q.waitWhilePaused(); !ok {
+			return
+		}
+
 		// Execute the initial job provided.
 		q.workJob(initialJob, true)
 	}
 
 	for {
+		if ok := q.waitWhilePaused(); !ok {
+			return
+		}
+
 		select {
 		case <-q.ctx.Done():
 			return // Context cancelled, stop worker.
@@ -585,6 +726,63 @@ func (q *Queue) newWorker(initialJob Job) (ok bool) {
 	go q.workJobs(initialJob)
 	ok = true
 	return
+}
+
+// pollDistributedPause periodically syncs pause state from the configured store.
+func (q *Queue) pollDistributedPause() {
+	t := time.NewTicker(q.pausePollTick)
+	defer t.Stop()
+	defer q.workerWg.Done()
+
+	// Sync immediately on startup.
+	q.syncDistributedPause()
+
+	for {
+		select {
+		case <-q.ctx.Done():
+			return
+		case <-t.C:
+			q.syncDistributedPause()
+		}
+	}
+}
+
+// syncDistributedPause fetches pause state from the store and updates local cache.
+func (q *Queue) syncDistributedPause() {
+	if q.pauseStore == nil || q.pauseStoreKey == "" {
+		return // No distributed pause store, skip sync.
+	}
+
+	paused, err := q.pauseStore.IsPaused(q.ctx, q.pauseStoreKey)
+	if err != nil {
+		if q.panicHandler != nil {
+			q.panicHandler(fmt.Errorf("queue: pause poll: %w", err))
+		}
+		return
+	}
+
+	q.distPaused.Store(paused)
+}
+
+// waitWhilePaused blocks worker execution while the queue is paused.
+// It returns false when queue context is cancelled.
+func (q *Queue) waitWhilePaused() bool {
+	if !q.IsPaused() {
+		return true
+	}
+
+	t := time.NewTicker(defaultPauseWaitTick)
+	defer t.Stop()
+
+	for q.IsPaused() {
+		select {
+		case <-q.ctx.Done():
+			return false
+		case <-t.C:
+		}
+	}
+
+	return true
 }
 
 // cleanupIdleWorkers periodically tries to stop extra idle workers.
@@ -651,6 +849,38 @@ func WithEnvelopeStore(store EnvelopeStore) QueueOption {
 func WithIDGenerator(gen IDGenerator) QueueOption {
 	return func(q *Queue) {
 		q.idGenerator = gen
+	}
+}
+
+// WithPauseStore enables distributed pause synchronization.
+// `key` identifies this queue in the store.
+func WithPauseStore(store PauseStore, key string) QueueOption {
+	return func(q *Queue) {
+		q.pauseStore = store
+		q.pauseStoreKey = key
+	}
+}
+
+// WithPausePollTick sets how often distributed pause state is refreshed.
+func WithPausePollTick(tt time.Duration) QueueOption {
+	return func(q *Queue) {
+		q.pausePollTick = tt
+	}
+}
+
+// WithPauseBehavior sets enqueue behavior while queue execution is paused.
+// Defaults to PauseBuffer.
+func WithPauseBehavior(pb PauseBehavior) QueueOption {
+	return func(q *Queue) {
+		q.pauseBehavior = pb
+	}
+}
+
+// WithMiddleware registers queue-level middleware wrappers.
+// Middleware is applied in registration order.
+func WithMiddleware(mw ...Middleware) QueueOption {
+	return func(q *Queue) {
+		q.middleware = append(q.middleware, mw...)
 	}
 }
 

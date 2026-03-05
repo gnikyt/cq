@@ -15,9 +15,11 @@ Inspired by Bull, Pond, Ants, and more.
 - Composable job wrappers (retries, timeouts, backoffs, etc.)
 - Priority queue with weighted dispatch
 - Job scheduler for recurring and one-time jobs
+- Pause/resume queue execution (local or distributed)
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
 - Optional queue lifecycle hooks (enqueue/start/success/failure/reschedule)
+- Queue-level middleware chain for all jobs
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
 - Tracing hooks for observability
@@ -38,7 +40,8 @@ Use this as a quick guide before diving into detailed sections.
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext` | Track attempts, durations, and queue lifecycle transitions |
-| Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop` | Persist lifecycle events and replay jobs |
+| Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
+| Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewScheduler` | Prioritize urgent jobs and run recurring work |
 
 ## When to Use
@@ -228,19 +231,28 @@ Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`.
 ```go
 // For normal jobs.
 queue.Enqueue(job)                            // Blocking.
+queue.EnqueueOrError(job)                     // Blocking, returns typed rejection error.
 queue.TryEnqueue(job)                         // Non-blocking, returns bool.
+queue.TryEnqueueOrError(job)                  // Non-blocking, returns typed (accepted, error).
 queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
 queue.EnqueueBatch(jobs)                      // Multiple jobs.
 queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
 
 // For envelopes.
 cq.EnqueueEnvelope(queue, handler, payload)                          // Blocking.
+cq.EnqueueEnvelopeOrError(queue, handler, payload)                   // Blocking, returns typed rejection error.
 cq.TryEnqueueEnvelope(queue, handler, payload)                       // Non-blocking, returns (bool, error).
+cq.TryEnqueueEnvelopeOrError(queue, handler, payload)                // Non-blocking, returns typed (accepted, error).
 cq.DelayEnqueueEnvelope(queue, handler, payload, 2*time.Minute)      // Delayed.
 cq.EnqueueEnvelopeBatch(queue, handler, payloads)                    // Multiple payloads, one handler.
 cq.TryEnqueueEnvelopeBatch(queue, handler, payloads)                 // Non-blocking batch, returns (accepted, error).
 cq.DelayEnqueueEnvelopeBatch(queue, handler, payloads, 30*time.Second) // Delayed, multiple payloads.
 ```
+
+Typed enqueue rejection errors:
+- `cq.ErrQueueStopped`
+- `cq.ErrQueuePaused`
+- `cq.ErrQueueFull`
 
 ### Metrics
 
@@ -277,7 +289,44 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
 // cq.WithEnvelopeStore(store)        - Persist envelope lifecycle and recovery metadata.
 // cq.WithIDGenerator(fn)             - Override fallback job ID generation.
+// cq.WithPauseStore(store, key)      - Share pause state across queue instances.
+// cq.WithPausePollTick(d)            - Poll interval for distributed pause sync.
+// cq.WithPauseBehavior(mode)         - Buffer or reject enqueue while paused.
+// cq.WithMiddleware(mw...)           - Apply queue-level wrappers to all jobs.
 ```
+
+### Queue Middleware
+
+```go
+withLogging := func(next cq.Job) cq.Job {
+	return func(ctx context.Context) error {
+		log.Println("job start")
+		err := next(ctx)
+		log.Printf("job end: %v", err)
+		return err
+	}
+}
+
+queue := cq.NewQueue(1, 10, 100, cq.WithMiddleware(withLogging))
+```
+
+`WithMiddleware(a, b)` executes as `a(b(job))`, so `a` first, then `b`. This allows you to apply common middlware to all jobs which are sent to that queue instead of per-job.
+
+### Pause / Resume
+
+```go
+if err := queue.Pause(); err != nil {
+	log.Fatal(err)
+}
+
+// ... perform maintenance ...
+
+if err := queue.Resume(); err != nil {
+	log.Fatal(err)
+}
+```
+
+Use `cq.WithPauseBehavior(cq.PauseReject)` if you prefer rejecting enqueue while paused.
 
 ### Stopping
 
