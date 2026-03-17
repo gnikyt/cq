@@ -20,6 +20,9 @@ type envelopePayloadSetterKey struct{}
 // envelopePayloadSetter stores replay envelope metadata for the current run.
 type envelopePayloadSetter func(typ string, payload []byte) bool
 
+// lastErrorKey is the context key for the previous attempt error.
+type lastErrorKey struct{}
+
 // JobMeta contains metadata about the current job execution.
 type JobMeta struct {
 	ID         string    // Unique job identifier.
@@ -39,6 +42,20 @@ func MetaFromContext(ctx context.Context) JobMeta {
 // contextWithMeta returns a new context with the given job metadata.
 func contextWithMeta(ctx context.Context, meta JobMeta) context.Context {
 	return context.WithValue(ctx, jobMetaKey{}, meta)
+}
+
+// LastErrorFromContext extracts the previous attempt error from context.
+// Returns nil when no previous attempt error is present.
+func LastErrorFromContext(ctx context.Context) error {
+	if err, ok := ctx.Value(lastErrorKey{}).(error); ok {
+		return err
+	}
+	return nil
+}
+
+// contextWithLastError returns a new context with the previous attempt error.
+func contextWithLastError(ctx context.Context, err error) context.Context {
+	return context.WithValue(ctx, lastErrorKey{}, err)
 }
 
 // RequestRelease asks the current wrapper chain to re-enqueue this job after delay.

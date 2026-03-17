@@ -48,6 +48,24 @@ func TestMetaFromContext(t *testing.T) {
 	})
 }
 
+func TestLastErrorFromContext(t *testing.T) {
+	t.Run("returns_nil_when_not_set", func(t *testing.T) {
+		got := LastErrorFromContext(context.Background())
+		if got != nil {
+			t.Fatalf("LastErrorFromContext(): got %v, want nil", got)
+		}
+	})
+
+	t.Run("returns_error_when_set", func(t *testing.T) {
+		want := errors.New("attempt failed")
+		ctx := contextWithLastError(context.Background(), want)
+		got := LastErrorFromContext(ctx)
+		if !errors.Is(got, want) {
+			t.Fatalf("LastErrorFromContext(): got %v, want %v", got, want)
+		}
+	})
+}
+
 func TestJobMetaInQueue(t *testing.T) {
 	t.Run("job_receives_metadata", func(t *testing.T) {
 		queue := NewQueue(1, 5, 10)

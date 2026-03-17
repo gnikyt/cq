@@ -31,6 +31,9 @@ func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
 			meta := MetaFromContext(ctx)
 			meta.Attempt = attempt
 			attemptCtx := contextWithMeta(ctx, meta)
+			if err != nil {
+				attemptCtx = contextWithLastError(attemptCtx, err)
+			}
 
 			if err = job(attemptCtx); err == nil {
 				break // Success, no retry needed.

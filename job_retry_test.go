@@ -168,4 +168,40 @@ func TestWithRetryIf(t *testing.T) {
 			t.Fatalf("ErrDiscard should stop retries: got %d calls", calls)
 		}
 	})
+
+	t.Run("propagates_previous_attempt_error_to_next_attempt_context", func(t *testing.T) {
+		firstErr := errors.New("first attempt error")
+		secondErr := errors.New("second attempt error")
+
+		var lastErrSeen []error
+		job := WithRetryIf(func(ctx context.Context) error {
+			lastErrSeen = append(lastErrSeen, LastErrorFromContext(ctx))
+
+			meta := MetaFromContext(ctx)
+			switch meta.Attempt {
+			case 0:
+				return firstErr
+			case 1:
+				return secondErr
+			default:
+				return nil
+			}
+		}, 3, nil)
+
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithRetryIf(): got err=%v, want nil", err)
+		}
+		if len(lastErrSeen) != 3 {
+			t.Fatalf("WithRetryIf(): got %d attempts, want 3", len(lastErrSeen))
+		}
+		if lastErrSeen[0] != nil {
+			t.Fatalf("attempt 0: got lastErr=%v, want nil", lastErrSeen[0])
+		}
+		if !errors.Is(lastErrSeen[1], firstErr) {
+			t.Fatalf("attempt 1: got lastErr=%v, want %v", lastErrSeen[1], firstErr)
+		}
+		if !errors.Is(lastErrSeen[2], secondErr) {
+			t.Fatalf("attempt 2: got lastErr=%v, want %v", lastErrSeen[2], secondErr)
+		}
+	})
 }

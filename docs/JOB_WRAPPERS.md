@@ -35,7 +35,7 @@ queue.Enqueue(job)
 
 #### Job Metadata
 
-**What it does:** Exposes per-job metadata through context (ID, enqueue time, attempt).
+**What it does:** Exposes per-job metadata through context (ID, enqueue time, attempt), plus previous retry error when applicable.
 
 **When to use:** Structured logging, tracing correlation, retry-aware logic.
 
@@ -57,6 +57,66 @@ The `JobMeta` struct contains:
 - `ID` - Unique identifier for the job
 - `EnqueuedAt` - Timestamp when the job was enqueued
 - `Attempt` - Current retry attempt (0-indexed, incremented by `WithRetry`)
+
+When using `WithRetry` / `WithRetryIf`, you can inspect the previous attempt error:
+
+```go
+job := cq.WithRetryIf(func(ctx context.Context) error {
+	meta := cq.MetaFromContext(ctx)
+	lastErr := cq.LastErrorFromContext(ctx)
+
+	if meta.Attempt > 0 && lastErr != nil {
+		log.Printf("retry attempt=%d, previous error=%v", meta.Attempt, lastErr)
+	}
+
+	return callExternalAPI(ctx)
+}, 5, nil)
+```
+
+You can also use a custom error type to carry step/checkpoint context across retries in-process:
+
+```go
+type StepError struct {
+	Step string
+	Err  error
+}
+
+func (e *StepError) Error() string {
+	return fmt.Sprintf("step=%s: %v", e.Step, e.Err)
+}
+
+func (e *StepError) Unwrap() error {
+	return e.Err
+}
+
+job := cq.WithRetryIf(func(ctx context.Context) error {
+	meta := cq.MetaFromContext(ctx)
+	lastErr := cq.LastErrorFromContext(ctx)
+
+	// On retries, inspect previous step failure.
+	var prev *StepError
+	if meta.Attempt > 0 && errors.As(lastErr, &prev) {
+		log.Printf("retrying after failure (step=%s)", prev.Step)
+		// Optional: branch behavior from previous failure step.
+	}
+
+	if err := chargeCard(ctx); err != nil {
+		return &StepError{Step: "charge_card", Err: err}
+	}
+	if err := writeLedger(ctx); err != nil {
+		return &StepError{Step: "write_ledger", Err: err}
+	}
+	if err := sendReceipt(ctx); err != nil {
+		return &StepError{Step: "send_receipt", Err: err}
+	}
+	return nil
+}, 5, nil)
+```
+
+Notes:
+- On first attempt, `cq.LastErrorFromContext(ctx)` returns `nil`.
+- On attempt `N > 0`, it returns the error from attempt `N-1`.
+- This context value is in-process retry state, not durable restart state.
 
 #### Retries
 

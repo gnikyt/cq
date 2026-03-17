@@ -39,7 +39,7 @@ Use this as a quick guide before diving into detailed sections.
 | Concurrency safety | `WithoutOverlap`, `WithUnique` | Prevent overlap and deduplicate work |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
-| Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext` | Track attempts, durations, and queue lifecycle transitions |
+| Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
 | Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs and run recurring work with typed enqueue outcomes |
