@@ -12,7 +12,7 @@ Use this quick wrapper index to choose the right building block:
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithPipeline`, `WithBatch` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
-| Protect dependencies | `WithRateLimit`, `WithCircuitBreaker` |
+| Protect dependencies | `WithRateLimit`, `WithCircuitBreaker`, `WithConcurrencyLimit` |
 
 #### Basic Function
 
@@ -644,6 +644,64 @@ queue.Enqueue(job)
 ```
 
 `WithRateLimitRelease` re-enqueues the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. `maxReleases` controls how many times this defer/re-enqueue can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
+
+#### Concurrency Limit
+
+**What it does:** Limits how many jobs sharing the same key can execute concurrently using a shared counter.
+
+**When to use:** Restricting parallel access to a shared resource (API with concurrency limits, database connections, file locks, etc).
+
+**Caveat:** Operationally, when a job hits the limit it is re-enqueued after a retry delay; the current worker is freed immediately (non-blocking).
+
+```go
+limiter := cq.NewConcurrencyLimiter()
+
+job := cq.WithConcurrencyLimit(
+	actualJob,
+	"api-endpoint",        // Key identifying the concurrency group.
+	5,                     // Max concurrent jobs allowed for this key.
+	50*time.Millisecond,   // Retry delay when at limit (0 uses default).
+	limiter,
+	queue,
+)
+queue.Enqueue(job)
+```
+
+Multiple jobs sharing the same key are serialized or limited to the `max` count. If all slots are occupied, a new job requesting the same key is immediately released (returns `nil`) and re-enqueued after the retry delay. A single `ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
+
+```go
+limiter := cq.NewConcurrencyLimiter()
+
+// Limit requests to /api/payments to 5 concurrent.
+paymentJob := cq.WithConcurrencyLimit(
+	processPayment,
+	"api-payments",
+	5,
+	50*time.Millisecond,
+	limiter,
+	queue,
+)
+
+// Limit database write operations to 2 concurrent.
+dbJob := cq.WithConcurrencyLimit(
+	writeToDatabase,
+	"db-writes",
+	2,
+	50*time.Millisecond,
+	limiter,
+	queue,
+)
+
+queue.Enqueue(paymentJob)
+queue.Enqueue(dbJob)
+```
+
+Check current concurrency for a key:
+
+```go
+active := limiter.ActiveFor("api-payments")
+log.Printf("Active jobs for api-payments: %d", active)
+```
 
 #### Circuit Breaker
 

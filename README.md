@@ -36,7 +36,7 @@ Use this as a quick guide before diving into detailed sections.
 | Reliability | `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
 | Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
 | Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch` | Build multi-step and grouped workflows |
-| Concurrency safety | `WithoutOverlap`, `WithUnique` | Prevent overlap and deduplicate work |
+| Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyLimit` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
