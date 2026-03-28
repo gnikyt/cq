@@ -20,7 +20,8 @@ const (
 	EnvelopeRescheduleReasonRelease     = "release"
 	EnvelopeRescheduleReasonReleaseSelf = "release_self"
 	EnvelopeRescheduleReasonRateLimit   = "rate_limit"
-	EnvelopeRescheduleReasonManualRetry = "manual_retry"
+	EnvelopeRescheduleReasonManualRetry        = "manual_retry"
+	EnvelopeRescheduleReasonConcurrencyLimit   = "concurrency_limit"
 )
 
 // Envelope is a persistence-friendly snapshot of a queue job transition.
