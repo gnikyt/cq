@@ -35,7 +35,7 @@ Use this as a quick guide before diving into detailed sections.
 | Queueing and workers | `NewQueue`, `Enqueue`, `Stop` | Run background jobs with auto-scaling workers |
 | Reliability | `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
 | Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
-| Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch` | Build multi-step and grouped workflows |
+| Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn` | Build multi-step and grouped workflows with configurable dependency failure modes |
 | Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyLimit` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |

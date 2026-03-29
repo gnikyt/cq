@@ -10,7 +10,7 @@ Use this quick wrapper index to choose the right building block:
 | Bound runtime | `WithTimeout`, `WithDeadline` |
 | Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
-| Build workflows | `WithChain`, `WithPipeline`, `WithBatch` |
+| Build workflows | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
 | Protect dependencies | `WithRateLimit`, `WithCircuitBreaker`, `WithConcurrencyLimit` |
 
@@ -524,6 +524,65 @@ batchJobs, _ := cq.WithBatch(
 	nil,
 )
 queue.EnqueueBatch(batchJobs)
+```
+
+#### Dependencies
+
+**What it does:** Executes dependency jobs sequentially before the main job, with configurable failure behavior per dependency.
+
+**When to use:** Sequential workflows where some steps are optional or should be skipped/ignored on failure.
+
+**Caveat:** Operationally, dependencies run sequentially (one after another). For concurrent dependencies, wrap them in `WithChain` inside a `Dep()` call.
+
+```go
+job := cq.WithDependsOn(
+    actualJob,
+    cq.Dep(dep1, cq.DependencyFailCancel),    // If dep1 fails, stop and return error.
+    cq.Dep(dep2, cq.DependencyFailContinue),  // If dep2 fails, ignore and continue.
+)
+queue.Enqueue(job)
+```
+
+Three failure modes control what happens when a dependency fails:
+
+- **`DependencyFailCancel`** — stops execution and returns an error wrapping `ErrDependencyCancelled`; the main job never runs.
+- **`DependencyFailSkip`** — stops execution and returns a discard outcome; the main job never runs but is not counted as failed.
+- **`DependencyFailContinue`** — ignores the failure and proceeds to the next dependency or job.
+
+Execution order is always: `dep1 -> dep2 -> ... -> job`.
+
+**Example: Validate then process**
+
+```go
+job := cq.WithDependsOn(
+    processOrder,
+    cq.Dep(validatePayment, cq.DependencyFailCancel),    // Must succeed.
+    cq.Dep(logAttempt, cq.DependencyFailContinue),       // Ignore if fails.
+)
+queue.Enqueue(job)
+```
+
+**Example: Compose with retry**
+
+```go
+job := cq.WithDependsOn(
+    cq.WithRetry(processOrder, 3),
+    cq.Dep(cq.WithRetry(validatePayment, 2), cq.DependencyFailCancel),
+    cq.Dep(updateInventory, cq.DependencyFailSkip),
+)
+queue.Enqueue(job)
+```
+
+**Example: Group dependencies with `WithChain`**
+
+```go
+// Run dep1 and dep2 sequentially as a single dependency unit.
+job := cq.WithDependsOn(
+    processOrder,
+    cq.Dep(cq.WithChain(checkInventory, reserveItems), cq.DependencyFailCancel),
+    cq.Dep(notifyWarehouse, cq.DependencyFailContinue),
+)
+queue.Enqueue(job)
 ```
 
 #### Release
