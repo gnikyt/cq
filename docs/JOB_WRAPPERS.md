@@ -403,7 +403,7 @@ This releases the overlap lock when the timeout wrapper returns, but note the un
 
 **When to use:** Per-tenant or per-resource protection (for example: max 5 concurrent API calls per customer).
 
-**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is process-local only; it does not coordinate across multiple service instances.
+**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is process-local only; use a custom `KeyConcurrencyLimiter` for multi-instance coordination.
 
 ```go
 limiter := cq.NewMemoryKeyConcurrencyLimiter(5)
@@ -418,6 +418,8 @@ queue.Enqueue(job)
 
 When the key limit is already reached, the wrapper returns `cq.ErrConcurrencyByKeyLimited`.
 Invalid limits (`<= 0`) return `cq.ErrConcurrencyByKeyInvalidLimit`.
+
+For distributed implementations (for example Redis or SQLite), see [Custom Key Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md).
 
 #### Unique Jobs
 
