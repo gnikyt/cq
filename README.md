@@ -41,6 +41,7 @@ Use this as a quick guide before diving into detailed sections.
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
+| Multi-queue routing | `NewQueueManager`, `Register`, `Enqueue`, `StartAll`, `StopAll` | Route jobs to named queues with isolated worker pools |
 | Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs and run recurring work with typed enqueue outcomes |
 
@@ -92,6 +93,31 @@ func main() {
 
 	// Stop queue, wait for in-flight jobs to finish.
 	queue.Stop(true)
+}
+```
+
+### Quick Start: Named Queues
+
+```go
+highQ := cq.NewQueue(5, 50, 1000) // High-priority lane.
+lowQ := cq.NewQueue(1, 5, 5000)   // Bulk/background lane.
+
+mgr := cq.NewQueueManager()
+if err := mgr.Register("high", highQ); err != nil {
+	log.Fatal(err)
+}
+if err := mgr.Register("low", lowQ); err != nil {
+	log.Fatal(err)
+}
+
+mgr.StartAll()
+defer mgr.StopAll(true)
+
+if err := mgr.Enqueue("high", processCritical); err != nil {
+	log.Fatal(err)
+}
+if err := mgr.Enqueue("low", processBulk); err != nil {
+	log.Fatal(err)
 }
 ```
 
@@ -344,8 +370,10 @@ For detailed usage and advanced features, see the following guides:
 - **[Queue Options](docs/QUEUE_OPTIONS.md)** - Queue configuration options including context, panic handling, hooks, envelope persistence, and custom ID generation
 - **[Envelope Persistence](docs/ENVELOPE_PERSISTENCE.md)** - Persist and recover jobs using envelope stores with examples for DLQ, file-based, and DynamoDB implementations
 - **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
+- **[Queue Routing](docs/QUEUE_ROUTING.md)** - Register named queues and route jobs to isolated worker pools
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
 - **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
+- **[Custom Key Concurrency Limiter](docs/CUSTOM_CONCURRENCY_LIMITER.md)** - Distributed limiter implementations for `WithConcurrencyByKey` with Redis and SQLite examples
 
 ## Testing
 
