@@ -121,8 +121,9 @@ Notes:
 #### Retries
 
 **What it does:** Re-runs failed jobs for a bounded number of attempts.
+
 **When to use:** Transient failures such as timeout, throttling, or temporary outages.
-**Example:** See snippets below (`WithRetry` and `WithRetryIf`).
+
 **Caveat:** Operationally, retries can duplicate side effects unless work is idempotent.
 
 ```go
@@ -181,8 +182,9 @@ Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBac
 #### Outcome Handler
 
 **What it does:** Runs callbacks for completion, failure, or discard outcomes.
+
 **When to use:** Metrics, DLQ forwarding, notifications, and audit hooks.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, callbacks run inline with job completion... throughput impact depends on callback implementation.
 
 ```go
@@ -285,8 +287,9 @@ Available outcome markers:
 #### Tracing
 
 **What it does:** Emits lifecycle signals for timing and success/failure instrumentation.
+
 **When to use:** Integrating observability platforms or custom telemetry.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, wrapper placement changes measured duration scope (single attempt vs total retries).
 
 ```go
@@ -369,8 +372,9 @@ queue.Enqueue(job)
 #### Overlap Prevention
 
 **What it does:** Ensures only one job with the same key runs at a time.
+
 **When to use:** Non-overlapping work such as account sync or balance mutation.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, lock contention blocks workers... use `WithUnique` when drop-on-duplicate is preferred.
 
 ```go
@@ -396,8 +400,9 @@ This releases the overlap lock when the timeout wrapper returns, but note the un
 #### Unique Jobs
 
 **What it does:** Deduplicates jobs by key within a configured time window.
+
 **When to use:** Idempotent workloads where repeated work should be skipped.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, uniqueness controls deduplication only, not run duration.
 
 ```go
@@ -462,8 +467,9 @@ queue.Enqueue(job)
 #### Batch
 
 **What it does:** Wraps a job set with group-level progress and completion callbacks.
+
 **When to use:** Bulk operations where aggregate completion and error tracking matter.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, expensive batch callbacks can throttle completion throughput.
 
 ```go
@@ -609,8 +615,9 @@ queue.Enqueue(job)
 #### Release Self
 
 **What it does:** Lets job code request its own delayed re-enqueue.
+
 **When to use:** Jobs that decide at runtime to defer themselves.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, multiple release requests in one run use last-write-wins delay.
 
 ```go
@@ -684,8 +691,9 @@ registry.CancelForTag("export")
 #### Rate Limit
 
 **What it does:** Applies token-bucket throttling before job execution using Go builtins.
+
 **When to use:** Respecting external quotas and protecting shared dependencies.
-**Example:** See snippets below.
+
 **Caveat:** Operationally, `WithRateLimit` blocks workers unless release mode is used.
 
 ```go
