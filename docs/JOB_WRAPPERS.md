@@ -8,7 +8,7 @@ Use this quick wrapper index to choose the right building block:
 | --- | --- |
 | Retry transient failures | `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
-| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap` |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
@@ -396,6 +396,28 @@ queue.Enqueue(job)
 ```
 
 This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
+
+#### Concurrency By Key
+
+**What it does:** Caps how many jobs with the same key can execute concurrently.
+
+**When to use:** Per-tenant or per-resource protection (for example: max 5 concurrent API calls per customer).
+
+**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is process-local only; it does not coordinate across multiple service instances.
+
+```go
+limiter := cq.NewMemoryKeyConcurrencyLimiter(5)
+
+job := cq.WithConcurrencyByKey(
+	actualJob,
+	"customer:123",
+	limiter,
+)
+queue.Enqueue(job)
+```
+
+When the key limit is already reached, the wrapper returns `cq.ErrConcurrencyByKeyLimited`.
+Invalid limits (`<= 0`) return `cq.ErrConcurrencyByKeyInvalidLimit`.
 
 #### Unique Jobs
 
