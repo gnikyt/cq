@@ -27,6 +27,31 @@ Typed priority enqueue errors:
 - `cq.ErrPriorityQueueStopped`
 - `cq.ErrPriorityQueueFull`
 
+#### Named Priority Queues
+
+**What it does:** Registers multiple priority queues by name and routes jobs to them through one manager.
+
+**When to use:** You want the same named-routing convenience as `QueueManager`, but your application only works with `PriorityQueue`.
+
+**Caveat:** `PriorityQueueManager` manages priority queue routing and shutdown, but each underlying base `Queue` still defines worker sizing and execution behavior.
+
+```go
+criticalBase := cq.NewQueue(5, 20, 500)
+criticalBase.Start()
+
+bulkBase := cq.NewQueue(2, 10, 1000)
+bulkBase.Start()
+
+mgr := cq.NewPriorityQueueManager()
+_ = mgr.Register("critical", cq.NewPriorityQueue(criticalBase, 100))
+_ = mgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200))
+
+defer mgr.StopAll(true)
+
+_ = mgr.Enqueue("critical", criticalJob, cq.PriorityHighest)
+_ = mgr.DelayEnqueue("bulk", cleanupJob, cq.PriorityLow, time.Minute)
+```
+
 #### Custom Weights
 
 **What it does:** Customizes dispatch share across priority levels.

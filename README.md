@@ -41,9 +41,9 @@ Use this as a quick guide before diving into detailed sections.
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
-| Multi-queue routing | `NewQueueManager`, `Register`, `Enqueue`, `StartAll`, `StopAll` | Route jobs to named queues with isolated worker pools |
+| Multi-queue routing | `NewQueueManager`, `NewPriorityQueueManager`, `Register`, `Enqueue`, `DelayEnqueue`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
 | Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
-| Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs and run recurring work with typed enqueue outcomes |
+| Prioritization and scheduling | `NewPriorityQueue`, `NewPriorityQueueManager`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed enqueue outcomes |
 
 ## When to Use
 
@@ -117,6 +117,37 @@ if err := mgr.Enqueue("high", processCritical); err != nil {
 	log.Fatal(err)
 }
 if err := mgr.Enqueue("low", processBulk); err != nil {
+	log.Fatal(err)
+}
+
+if err := mgr.DelayEnqueue("low", processLater, 30*time.Second); err != nil {
+	log.Fatal(err)
+}
+```
+
+### Quick Start: Named Priority Queues
+
+```go
+criticalBase := cq.NewQueue(5, 20, 500)
+criticalBase.Start()
+
+bulkBase := cq.NewQueue(2, 10, 1000)
+bulkBase.Start()
+
+pmgr := cq.NewPriorityQueueManager()
+if err := pmgr.Register("critical", cq.NewPriorityQueue(criticalBase, 100)); err != nil {
+	log.Fatal(err)
+}
+if err := pmgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200)); err != nil {
+	log.Fatal(err)
+}
+
+defer pmgr.StopAll(true)
+
+if err := pmgr.Enqueue("critical", processNow, cq.PriorityHighest); err != nil {
+	log.Fatal(err)
+}
+if err := pmgr.DelayEnqueue("bulk", processLater, cq.PriorityLow, time.Minute); err != nil {
 	log.Fatal(err)
 }
 ```

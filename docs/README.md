@@ -27,9 +27,16 @@ Persist and recover jobs using envelope stores:
 
 ## Advanced Topics
 
+### [Queue Routing](QUEUE_ROUTING.md)
+Register named queues and route jobs explicitly:
+- Named routing with `QueueManager`
+- Manager-level delayed enqueue
+- Isolated worker pools per queue
+
 ### [Priority Queue](PRIORITY_QUEUE.md)
 Weighted fair queuing with priority levels:
 - Priority-based dispatch
+- Named priority routing with `PriorityQueueManager`
 - Custom weight configuration
 - Graceful shutdown with drain
 

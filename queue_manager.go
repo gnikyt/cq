@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Queue manager errors.
@@ -132,4 +133,14 @@ func (m *QueueManager) TryEnqueue(name string, job Job) (bool, error) {
 		return false, ErrQueueManagerNotFound
 	}
 	return q.TryEnqueueOrError(job)
+}
+
+// DelayEnqueue routes a delayed job to a named queue.
+func (m *QueueManager) DelayEnqueue(name string, job Job, delay time.Duration) error {
+	q, ok := m.ByName(name)
+	if !ok {
+		return ErrQueueManagerNotFound
+	}
+	q.DelayEnqueue(job, delay)
+	return nil
 }

@@ -81,6 +81,38 @@ func TestQueueManager_EnqueueAndTryEnqueue(t *testing.T) {
 	}
 }
 
+func TestQueueManager_DelayEnqueue(t *testing.T) {
+	mgr := NewQueueManager()
+	q := NewQueue(1, 1, 10)
+
+	if err := mgr.Register("delayed", q); err != nil {
+		t.Fatalf("Register(delayed): %v", err)
+	}
+
+	q.Start()
+	defer q.Stop(true)
+
+	done := make(chan struct{}, 1)
+	if err := mgr.DelayEnqueue("delayed", func(ctx context.Context) error {
+		done <- struct{}{}
+		return nil
+	}, 100*time.Millisecond); err != nil {
+		t.Fatalf("DelayEnqueue(delayed): unexpected err: %v", err)
+	}
+
+	select {
+	case <-done:
+		t.Fatal("delayed queue job executed too early")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("delayed queue job did not execute")
+	}
+}
+
 func TestQueueManager_NotFound(t *testing.T) {
 	mgr := NewQueueManager()
 
@@ -95,5 +127,8 @@ func TestQueueManager_NotFound(t *testing.T) {
 	}
 	if ok, err := mgr.TryEnqueue("missing", func(ctx context.Context) error { return nil }); ok || !errors.Is(err, ErrQueueManagerNotFound) {
 		t.Fatalf("TryEnqueue(missing): got (%v, %v), want (false, %v)", ok, err, ErrQueueManagerNotFound)
+	}
+	if err := mgr.DelayEnqueue("missing", func(ctx context.Context) error { return nil }, time.Millisecond); !errors.Is(err, ErrQueueManagerNotFound) {
+		t.Fatalf("DelayEnqueue(missing): got %v, want %v", err, ErrQueueManagerNotFound)
 	}
 }
