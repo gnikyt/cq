@@ -136,8 +136,7 @@ func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
 
 		if maxReleases == 0 {
 			// Unlimited releases, just delay and re-enqueue.
-			queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonReleaseSelf)
-			queue.DelayEnqueue(wrappedJob, delay)
+			_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
 			return nil
 		}
 
@@ -148,8 +147,7 @@ func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
 			}
 
 			if releases.CompareAndSwap(current, current+1) {
-				queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonReleaseSelf)
-				queue.DelayEnqueue(wrappedJob, delay)
+				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
 				return nil // Release budget allows, delay and re-enqueue.
 			}
 		}
@@ -167,12 +165,10 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 	var wrappedJob Job
 
 	wrappedJob = func(ctx context.Context) error {
-		meta := MetaFromContext(ctx)
 		err := job(ctx)
 		if err != nil && shouldRelease(err) {
 			if maxReleases == 0 {
-				queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonRelease)
-				queue.DelayEnqueue(wrappedJob, delay)
+				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
 				return nil
 			}
 
@@ -182,8 +178,7 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 					break
 				}
 				if releases.CompareAndSwap(current, current+1) {
-					queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonRelease)
-					queue.DelayEnqueue(wrappedJob, delay)
+					_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
 					return nil
 				}
 			}

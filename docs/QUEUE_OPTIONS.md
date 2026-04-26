@@ -1,6 +1,6 @@
 # Queue Options
 
-Queue options configure runtime behavior for worker lifecycle, context management, panic handling, envelope persistence, and job ID generation.
+Queue options configure runtime behavior for worker lifecycle, context management, panic handling, and job ID generation.
 
 ## Option Reference
 
@@ -15,9 +15,6 @@ Queue options configure runtime behavior for worker lifecycle, context managemen
 
 - `cq.WithPanicHandler(fn)`  
   Handles recovered panics from job execution and internal queue reporting.
-
-- `cq.WithEnvelopeStore(store)`  
-  Persists envelope lifecycle metadata (`enqueue`, `claim`, `ack`, `nack`, `reschedule`) for recovery and replay.
 
 - `cq.WithHooks(hooks)`  
   Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`, `OnSuccess`, `OnFailure`, `OnReschedule`) for observability integrations. You can pass `WithHooks` multiple times; callbacks are appended and all are executed.
@@ -114,6 +111,6 @@ When paused:
 - `PauseBuffer` keeps accepting enqueue and defers execution until resume.
 - `PauseReject` rejects enqueue.
 
-- For rejection-awareness, use `TryEnqueue` (or `TryEnqueueEnvelope`) since they return if enqueue happened.
+- For rejection-awareness, use `TryEnqueue` since it returns if enqueue happened.
 - For typed rejection reasons, use `EnqueueOrError` / `TryEnqueueOrError` and check:
 `cq.ErrQueuePaused`, `cq.ErrQueueStopped`, `cq.ErrQueueFull`.

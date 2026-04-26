@@ -29,9 +29,8 @@ type IDGenerator func() string
 
 // enqueueOptions configures internal enqueue behavior.
 type enqueueOptions struct {
-	blocking bool      // Whether to block if no worker can be started and the jobs channel is full.
-	envelope *Envelope // Optional envelope to be persisted.
-	id       string    // Optional job ID to be used.
+	blocking bool   // Whether to block if no worker can be started and the jobs channel is full.
+	id       string // Optional job ID to be used.
 }
 
 // Queue dispatches jobs to workers.
@@ -47,7 +46,6 @@ type Queue struct {
 	ctx                 context.Context    // Queue context for workers/jobs.
 	ctxCancel           context.CancelFunc // Cancels the queue context.
 	panicHandler        func(any)          // Optional panic handler for job panics.
-	envelopeStore       EnvelopeStore      // Optional persistence hook for enqueue/ack/nack.
 	mut                 sync.Mutex         // Guards worker scaling decisions.
 	enqueueMut          sync.RWMutex       // Synchronizes enqueue tracking with Stop/Terminate.
 	stopped             atomic.Bool        // Indicates queue shutdown has started.
@@ -97,9 +95,6 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 		pausePollTick:  defaultPausePollTick,
 		pauseBehavior:  PauseBuffer,
 	}
-
-	// Register built-in queue hooks first.
-	q.hooks = append(q.hooks, q.defaultHooks())
 
 	// Apply functional options.
 	for _, opt := range opts {
@@ -407,97 +402,6 @@ func (q *Queue) nextJobID() string {
 	return strconv.FormatInt(q.jobIDCounter.Add(1), 10)
 }
 
-// reportEnvelopeEnqueue reports an accepted enqueue to persistence, if configured.
-// It merges runtime JobMeta fields (ID/attempt/enqueued time) with optional
-// envelope fields (type/payload), then stamps enqueue status and timestamps.
-func (q *Queue) reportEnvelopeEnqueue(meta JobMeta, envelope *Envelope) {
-	if q.envelopeStore == nil {
-		return
-	}
-
-	var typ string
-	var payload []byte
-	if envelope != nil {
-		typ = envelope.Type
-		payload = envelope.Payload
-	}
-
-	if err := q.envelopeStore.Enqueue(q.ctx, Envelope{
-		ID:          meta.ID,
-		Type:        typ,
-		Payload:     payload,
-		Attempt:     meta.Attempt,
-		Status:      EnvelopeStatusEnqueued,
-		EnqueuedAt:  meta.EnqueuedAt,
-		AvailableAt: time.Now(),
-	}); err != nil && q.panicHandler != nil {
-		// Issue with persistence, report the error to the panic handler.
-		q.panicHandler(fmt.Errorf("queue: envelope enqueue: %w", err))
-	}
-}
-
-// reportEnvelopeResult reports final result to persistence, if configured.
-func (q *Queue) reportEnvelopeResult(meta JobMeta, err error) {
-	if q.envelopeStore == nil {
-		return
-	}
-
-	var repErr error
-	if err != nil {
-		// Report the failure to persistence.
-		repErr = q.envelopeStore.Nack(q.ctx, meta.ID, err)
-	} else {
-		// Report the success to persistence.
-		repErr = q.envelopeStore.Ack(q.ctx, meta.ID)
-	}
-
-	if repErr != nil && q.panicHandler != nil {
-		// Issue with persistence, report the error to the panic handler.
-		q.panicHandler(fmt.Errorf("queue: envelope result: %w", repErr))
-	}
-}
-
-// reportEnvelopeClaim reports "claimed/started" to persistence.
-func (q *Queue) reportEnvelopeClaim(meta JobMeta) {
-	if q.envelopeStore == nil {
-		return
-	}
-
-	if err := q.envelopeStore.Claim(q.ctx, meta.ID); err != nil && q.panicHandler != nil {
-		// Issue with persistence, report the error to the panic handler.
-		q.panicHandler(fmt.Errorf("queue: envelope claim: %w", err))
-	}
-}
-
-// reportEnvelopeReschedule reports deferred execution for an envelope.
-func (q *Queue) reportEnvelopeReschedule(meta JobMeta, delay time.Duration, reason string) {
-	if q.envelopeStore == nil || meta.ID == "" {
-		return
-	}
-
-	nextRunAt := time.Now().Add(delay)
-	if err := q.envelopeStore.Reschedule(q.ctx, meta.ID, nextRunAt, reason); err != nil && q.panicHandler != nil {
-		// Issue with persistence, report the error to the panic handler.
-		q.panicHandler(fmt.Errorf("queue: envelope reschedule: %w", err))
-	}
-}
-
-// reportEnvelopePayload stores replay payload metadata for an envelope, if supported.
-func (q *Queue) reportEnvelopePayload(meta JobMeta, typ string, payload []byte) bool {
-	if q.envelopeStore == nil || meta.ID == "" || typ == "" {
-		return false
-	}
-
-	if err := q.envelopeStore.SetPayload(q.ctx, meta.ID, typ, payload); err != nil {
-		if q.panicHandler != nil {
-			// Issue with persistence, report the error to the panic handler.
-			q.panicHandler(fmt.Errorf("queue: envelope payload: %w", err))
-		}
-		return false
-	}
-	return true
-}
-
 // doEnqueue submits a job to the queue internals.
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
@@ -523,10 +427,6 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 	}
 
 	// Create job metadata.
-	if opts.id == "" && opts.envelope != nil && opts.envelope.ID != "" {
-		// Use the envelope ID.
-		opts.id = opts.envelope.ID
-	}
 	if opts.id == "" {
 		// Generate a new job ID.
 		opts.id = q.nextJobID()
@@ -540,20 +440,17 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 	// Apply queue-level middleware.
 	job = q.applyMiddleware(job)
 
-	// Wrap the job with a job metadata context and an envelope payload setter.
+	// Wrap the job with a job metadata context.
 	// Additionally, dispatch the start and result of the job.
 	wrappedJob := func(ctx context.Context) error {
-		// Create a new context with the job metadata and the optional envelope payload setter.
+		// Create a new context with the job metadata.
 		jobCtx := contextWithMeta(ctx, meta)
-		jobCtx = contextWithEnvelopePayloadSetter(jobCtx, func(typ string, payload []byte) bool {
-			return q.reportEnvelopePayload(meta, typ, payload)
-		})
 
-		q.dispatchStart(meta, opts.envelope)
+		q.dispatchStart(meta)
 
-		// Run the job and report the result to persistence.
+		// Run the job and dispatch the result.
 		err := job(jobCtx)
-		q.dispatchResult(meta, opts.envelope, err)
+		q.dispatchResult(meta, err)
 		return err
 	}
 
@@ -601,7 +498,7 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 		}
 	}
 	if ok {
-		q.dispatchEnqueue(meta, opts.envelope)
+		q.dispatchEnqueue(meta)
 		err = nil
 	}
 	return ok, err
@@ -834,13 +731,6 @@ func WithCancelableContext(ctx context.Context, ctxCancel context.CancelFunc) Qu
 func WithPanicHandler(handler func(any)) QueueOption {
 	return func(q *Queue) {
 		q.panicHandler = handler
-	}
-}
-
-// WithEnvelopeStore sets an optional persistence adapter for enqueue/ack/nack reporting.
-func WithEnvelopeStore(store EnvelopeStore) QueueOption {
-	return func(q *Queue) {
-		q.envelopeStore = store
 	}
 }
 

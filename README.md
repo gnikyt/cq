@@ -24,7 +24,6 @@ Inspired by Bull, Pond, Ants, and more.
 - Overlap prevention and uniqueness constraints
 - Tracing hooks for observability
 - Zero external dependencies for core functionality
-- Extensible envelope system for optional persistence
 
 ## Feature Matrix
 
@@ -42,13 +41,13 @@ Use this as a quick guide before diving into detailed sections.
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
 | Multi-queue routing | `NewQueueManager`, `NewPriorityQueueManager`, `Register`, `Enqueue`, `DelayEnqueue`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
-| Recovery and durability hooks | `WithEnvelopeStore`, `EnvelopeHandler`, `EnqueueEnvelope`, `RegisterEnvelopeHandler`, `RecoverEnvelopes`, `RecoverEnvelopeByID`, `StartRecoveryLoop`, `ListNackedEnvelopes`, `RetryNackedEnvelopeByID` | Persist lifecycle events and replay/operate nacked jobs |
 | Prioritization and scheduling | `NewPriorityQueue`, `NewPriorityQueueManager`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed enqueue outcomes |
 
 ## When to Use
 
 - **Standalone**: Process jobs in-memory without external infrastructure. Great for CLI tools, internal services, or cases where Redis/SQS is unnecessary.
 - **With external queues**: Use cq as the execution engine behind SQS, Redis, RabbitMQ, or any broker that feeds jobs.
+- **With external persistence**: Keep durability outside cq with DB outbox polling or queue-native retries/DLQ semantics.
 - **Embedded**: Add background processing to an existing app without introducing new operational infrastructure.
 
 ## Quick Start
@@ -221,56 +220,6 @@ defer scheduler.Stop()
 _ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
 ```
 
-### Replay-Ready Envelope Payloads
-
-Use envelope handlers when you want durability and replay. With `WithEnvelopeStore(...)` configured,
-`cq` persists envelope lifecycle snapshots (type, payload, and status transitions) so jobs can be recovered and replayed after process restarts or failures.
-
-Use a first-class `EnvelopeHandler` for enqueue and recovery:
-
-```go
-orderCreate := cq.EnvelopeHandler[OrderPayload]{
-	Type:  "process_order", // Job type identifier.
-	Codec: cq.EnvelopeJSONCodec[OrderPayload](), // Codec for encoding and decoding the payload.
-	Handler: func(ctx context.Context, payload OrderPayload) error {
-		log.Printf("processing from %s (order_id=%s)", payload.Source, payload.OrderID)
-		return nil
-	}, // Handler which is job-compatible, accepting the payload.
-}
-
-payload := OrderPayload{OrderID: "123", Source: "web"}
-
-// Enqueue with envelope persisted at enqueue-time.
-if err := cq.EnqueueEnvelope(queue, orderCreate, payload); err != nil {
-	log.Fatal(err)
-}
-
-// or ...
-
-// Batch enqueue with one handler and multiple payloads.
-if err := cq.EnqueueEnvelopeBatch(queue, orderCreate, []OrderPayload{
-	{OrderID: "124", Source: "web"},
-	{OrderID: "125", Source: "mobile"},
-}); err != nil {
-	log.Fatal(err)
-}
-
-// or ...
-
-// Non-blocking batch enqueue returns accepted count.
-accepted, err := cq.TryEnqueueEnvelopeBatch(queue, orderCreate, []OrderPayload{
-	{OrderID: "126", Source: "web"},
-	{OrderID: "127", Source: "mobile"},
-})
-if err != nil {
-	log.Fatal(err)
-}
-log.Printf("accepted %d", accepted)
-
-// Register the same handler for recovery/replay.
-cq.RegisterEnvelopeHandler(registry, orderCreate)
-```
-
 ## Queue
 
 ### Creating a Queue
@@ -295,15 +244,6 @@ queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
 queue.EnqueueBatch(jobs)                      // Multiple jobs.
 queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
 
-// For envelopes.
-cq.EnqueueEnvelope(queue, handler, payload)                          // Blocking.
-cq.EnqueueEnvelopeOrError(queue, handler, payload)                   // Blocking, returns typed rejection error.
-cq.TryEnqueueEnvelope(queue, handler, payload)                       // Non-blocking, returns (bool, error).
-cq.TryEnqueueEnvelopeOrError(queue, handler, payload)                // Non-blocking, returns typed (accepted, error).
-cq.DelayEnqueueEnvelope(queue, handler, payload, 2*time.Minute)      // Delayed.
-cq.EnqueueEnvelopeBatch(queue, handler, payloads)                    // Multiple payloads, one handler.
-cq.TryEnqueueEnvelopeBatch(queue, handler, payloads)                 // Non-blocking batch, returns (accepted, error).
-cq.DelayEnqueueEnvelopeBatch(queue, handler, payloads, 30*time.Second) // Delayed, multiple payloads.
 ```
 
 Typed enqueue rejection errors:
@@ -344,7 +284,6 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithContext(ctx)                - Parent context for the queue.
 // cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
-// cq.WithEnvelopeStore(store)        - Persist envelope lifecycle and recovery metadata.
 // cq.WithIDGenerator(fn)             - Override fallback job ID generation.
 // cq.WithPauseStore(store, key)      - Share pause state across queue instances.
 // cq.WithPausePollTick(d)            - Poll interval for distributed pause sync.
@@ -398,8 +337,7 @@ queue.Terminate()  // Immediate shutdown.
 For detailed usage and advanced features, see the following guides:
 
 - **[Job Wrappers](docs/JOB_WRAPPERS.md)** - Complete reference for all job wrappers including retries, timeouts, tracing, rate limiting, circuit breakers, and custom wrappers
-- **[Queue Options](docs/QUEUE_OPTIONS.md)** - Queue configuration options including context, panic handling, hooks, envelope persistence, and custom ID generation
-- **[Envelope Persistence](docs/ENVELOPE_PERSISTENCE.md)** - Persist and recover jobs using envelope stores with examples for DLQ, file-based, and DynamoDB implementations
+- **[Queue Options](docs/QUEUE_OPTIONS.md)** - Queue configuration options including context, panic handling, hooks, and custom ID generation
 - **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
 - **[Queue Routing](docs/QUEUE_ROUTING.md)** - Register named queues and route jobs to isolated worker pools
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior

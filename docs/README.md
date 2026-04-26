@@ -18,13 +18,6 @@ Complete reference for all job wrappers including:
 - Workflow composition (chains, pipelines, batches)
 - Deduplication and overlap prevention
 
-### [Envelope Persistence](ENVELOPE_PERSISTENCE.md)
-Persist and recover jobs using envelope stores:
-- Lifecycle callbacks and recovery APIs
-- DLQ-only implementation example
-- File-backed storage example
-- DynamoDB implementation example
-
 ## Advanced Topics
 
 ### [Queue Routing](QUEUE_ROUTING.md)
@@ -57,5 +50,4 @@ Queue construction and runtime options:
 - Worker idle cleanup tuning
 - Context and cancellation strategies
 - Panic handling
-- Envelope store integration
 - Custom job ID generation

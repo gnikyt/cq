@@ -1,7 +1,6 @@
 package cq
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"sync/atomic"
@@ -75,8 +74,8 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 	q := NewQueue(1, 1, 10, WithHooks(Hooks{
 		OnReschedule: func(event JobEvent) {
 			reschedules.Add(1)
-			if event.RescheduleReason != EnvelopeRescheduleReasonReleaseSelf {
-				t.Fatalf("got reason=%q, want %q", event.RescheduleReason, EnvelopeRescheduleReasonReleaseSelf)
+			if event.RescheduleReason != RescheduleReasonReleaseSelf {
+				t.Fatalf("got reason=%q, want %q", event.RescheduleReason, RescheduleReasonReleaseSelf)
 			}
 		},
 	}))
@@ -174,53 +173,5 @@ func TestQueueHooks_MultipleWithHooksAppend(t *testing.T) {
 			t.Fatalf("got first=%d second=%d, want 1 each", first.Load(), second.Load())
 		}
 		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func TestQueueHooks_ExposesEnvelopePayload(t *testing.T) {
-	store := newPayloadReplayStore()
-	var seenPayload []byte
-
-	q := NewQueue(1, 1, 10,
-		WithEnvelopeStore(store),
-		WithHooks(Hooks{
-			OnEnqueue: func(event JobEvent) {
-				seenPayload = append([]byte(nil), event.EnvelopePayload...)
-			},
-		}),
-	)
-	q.Start()
-	defer q.Stop(true)
-
-	handler := EnvelopeHandler[typedEnvelopePayload]{
-		Type:  "order_create",
-		Codec: EnvelopeJSONCodec[typedEnvelopePayload](),
-		Handler: func(ctx context.Context, payload typedEnvelopePayload) error {
-			return nil
-		},
-	}
-	input := typedEnvelopePayload{OrderID: "ord_1", SourceLocation: "warehouse_a"}
-
-	if err := EnqueueEnvelope(q, handler, input); err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-
-	expected, err := handler.Codec.Marshal(input)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-
-	deadline := time.Now().Add(1 * time.Second)
-	for {
-		if len(seenPayload) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for enqueue hook payload")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !bytes.Equal(seenPayload, expected) {
-		t.Fatalf("got payload=%q, want %q", string(seenPayload), string(expected))
 	}
 }

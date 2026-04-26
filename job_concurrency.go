@@ -84,9 +84,7 @@ func WithConcurrencyLimit(job Job, key string, max int, retryDelay time.Duration
 		entry, ok := limiter.acquire(key, max)
 		if !ok {
 			// At limit: free this worker, schedule retry.
-			meta := MetaFromContext(ctx)
-			queue.dispatchReschedule(meta, retryDelay, EnvelopeRescheduleReasonConcurrencyLimit)
-			queue.DelayEnqueue(wrappedJob, retryDelay)
+			_ = Reschedule(ctx, queue, wrappedJob, retryDelay, RescheduleReasonConcurrencyLimit)
 			return nil
 		}
 		defer limiter.release(entry)

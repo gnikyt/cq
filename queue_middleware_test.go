@@ -88,32 +88,3 @@ func TestQueueMiddleware_AppendsAcrossOptions(t *testing.T) {
 		t.Fatalf("middleware append mismatch: got %v, want %v", got, want)
 	}
 }
-
-func TestQueueMiddleware_AppliesToEnvelopeJobs(t *testing.T) {
-	var called bool
-	mw := func(next Job) Job {
-		return func(ctx context.Context) error {
-			called = true
-			return next(ctx)
-		}
-	}
-
-	q := NewQueue(1, 1, 10, WithMiddleware(mw))
-	q.Start()
-
-	handler := EnvelopeHandler[string]{
-		Type:  "t",
-		Codec: EnvelopeJSONCodec[string](),
-		Handler: func(ctx context.Context, payload string) error {
-			return nil
-		},
-	}
-	if err := EnqueueEnvelope(q, handler, "x"); err != nil {
-		t.Fatalf("EnqueueEnvelope(): unexpected error: %v", err)
-	}
-
-	q.Stop(true)
-	if !called {
-		t.Fatal("expected middleware to run for envelope job")
-	}
-}

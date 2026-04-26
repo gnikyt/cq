@@ -14,12 +14,6 @@ type releaseRequesterKey struct{}
 // releaseRequester is a function that requests a release of a job after a delay.
 type releaseRequester func(time.Duration) bool
 
-// envelopePayloadSetterKey is the context key for runtime envelope payload updates.
-type envelopePayloadSetterKey struct{}
-
-// envelopePayloadSetter stores replay envelope metadata for the current run.
-type envelopePayloadSetter func(typ string, payload []byte) bool
-
 // lastErrorKey is the context key for the previous attempt error.
 type lastErrorKey struct{}
 
@@ -73,17 +67,3 @@ func contextWithReleaseRequester(ctx context.Context, fn releaseRequester) conte
 	return context.WithValue(ctx, releaseRequesterKey{}, fn)
 }
 
-// SetEnvelopePayload stores replay metadata (type + payload) for the current job run.
-// Returns false when no envelope payload sink is configured for this context.
-func SetEnvelopePayload(ctx context.Context, typ string, payload []byte) bool {
-	fn, ok := ctx.Value(envelopePayloadSetterKey{}).(envelopePayloadSetter)
-	if !ok || fn == nil {
-		return false
-	}
-	return fn(typ, payload)
-}
-
-// contextWithEnvelopePayloadSetter returns a new context with envelope payload setter.
-func contextWithEnvelopePayloadSetter(ctx context.Context, fn envelopePayloadSetter) context.Context {
-	return context.WithValue(ctx, envelopePayloadSetterKey{}, fn)
-}

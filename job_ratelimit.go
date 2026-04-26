@@ -38,7 +38,6 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 	var wrappedJob Job
 
 	wrappedJob = func(ctx context.Context) error {
-		meta := MetaFromContext(ctx)
 		res := limiter.Reserve()
 		if !res.OK() {
 			// Fallback to blocking path if limiter cannot reserve.
@@ -57,8 +56,7 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 		res.Cancel()
 
 		if maxReleases == 0 {
-			queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonRateLimit)
-			queue.DelayEnqueue(wrappedJob, delay)
+			_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
 			return nil // Unlimited releases, delay and re-enqueue.
 		}
 
@@ -72,8 +70,7 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 				return job(ctx) // Job executed.
 			}
 			if releases.CompareAndSwap(current, current+1) {
-				queue.dispatchReschedule(meta, delay, EnvelopeRescheduleReasonRateLimit)
-				queue.DelayEnqueue(wrappedJob, delay)
+				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
 				return nil // Release budget allows, delay and re-enqueue.
 			}
 		}
