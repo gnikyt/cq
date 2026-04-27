@@ -6,11 +6,11 @@ Use this quick wrapper index to choose the right building block:
 
 | Goal | Wrappers |
 | --- | --- |
-| Retry transient failures | `WithRetry`, `WithRetryIf`, `WithBackoff` |
+| Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
 | Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
-| Build workflows | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
+| Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
 | Protect dependencies | `WithRateLimit`, `WithCircuitBreaker`, `WithConcurrencyLimit` |
 
@@ -58,7 +58,7 @@ The `JobMeta` struct contains:
 - `EnqueuedAt` - Timestamp when the job was enqueued
 - `Attempt` - Current retry attempt (0-indexed, incremented by `WithRetry`)
 
-When using `WithRetry` / `WithRetryIf`, you can inspect the previous attempt error:
+When using `WithRetryPolicy` / `WithRetry` / `WithRetryIf`, you can inspect the previous attempt error:
 
 ```go
 job := cq.WithRetryIf(func(ctx context.Context) error {
@@ -126,13 +126,22 @@ Notes:
 
 **Caveat:** Operationally, retries can duplicate side effects unless work is idempotent.
 
+Use `WithRetryPolicy` as the default path:
+
 ```go
-// Retry 3 times.
-job := cq.WithRetry(func(ctx context.Context) error {
-	return fetchEndpoint(ctx)
-}, 3)
+job := cq.WithRetryPolicy(
+	func(ctx context.Context) error {
+		return fetchEndpoint(ctx)
+	},
+	cq.RetryPolicy{
+		MaxAttempts: 3,
+		Backoff:     cq.ExponentialBackoff,
+	},
+)
 queue.Enqueue(job)
 ```
+
+`WithRetry`, `WithRetryIf`, and `WithBackoff` remain available for manual composition when you need finer control.
 
 Conditional retries allow you to retry only on specific errors:
 
@@ -168,12 +177,23 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 
 **Caveat:** Operationally, backoff has no effect unless composed with retries.
 
+With policy-based retries, backoff is usually configured in `RetryPolicy.Backoff`:
+
 ```go
-// Retry 3 times with exponential backoff.
-job := cq.WithRetry(
-	cq.WithBackoff(actualJob, cq.ExponentialBackoff),
-	3,
+job := cq.WithRetryPolicy(
+	actualJob,
+	cq.RetryPolicy{
+		MaxAttempts: 3,
+		Backoff:     cq.ExponentialBackoff,
+	},
 )
+queue.Enqueue(job)
+```
+
+You can still use explicit wrapper composition:
+
+```go
+job := cq.WithRetry(cq.WithBackoff(actualJob, cq.ExponentialBackoff), 3)
 queue.Enqueue(job)
 ```
 
@@ -454,11 +474,72 @@ queue.Enqueue(job)
 
 **When to use:** Ordered workflows with step dependencies.
 
-**Caveat:** Operationally, chains provide no data handoff... use `WithPipeline` when sharing values.
+**Caveat:** Operationally, chains provide no data handoff and no built-in checkpointing... use `WithPipeline` for data passing and `WithCheckpoint` for retry-safe step gating.
 
 ```go
 job := cq.WithChain(step1, step2, step3)
 queue.Enqueue(job)
+```
+
+#### Checkpoint
+
+**What it does:** Skips a step when it was already completed for the same checkpoint key, and supports loading/saving step payload data across retries.
+
+**When to use:** Retry-safe chains/dependencies where previously successful steps should not run again.
+
+**Caveat:** Operationally, correctness depends on stable key resolution and durable checkpoint storage in distributed environments.
+
+```go
+store := cq.NewMemoryCheckpointStore()
+
+step := cq.WithCheckpoint(
+	sendInvoice,
+	"send-invoice",
+	store,
+	cq.WithCheckpointNamespace("billing"),
+)
+
+job := cq.WithChain(validateOrder, step, notifyCustomer)
+queue.Enqueue(job)
+```
+
+To persist resume data from a failed run and load it on retry:
+
+```go
+step := cq.WithCheckpoint(
+	sendInvoice,
+	"send-invoice",
+	store,
+	cq.WithCheckpointSaveOnFailure(),
+)
+
+job := func(ctx context.Context) error {
+	prev := cq.CheckpointDataFromContext(ctx) // nil on first run.
+	if len(prev) > 0 {
+		// Resume from prior state.
+	}
+	cq.SetCheckpointData(ctx, []byte("partial-progress"))
+	return callExternalService(ctx)
+}
+```
+
+To remove checkpoint records after success, add `cq.WithCheckpointDeleteOnSuccess()`.
+
+To use domain keys (for example `orderID`) instead of job ID, override key resolution:
+
+```go
+step := cq.WithCheckpoint(
+	sendInvoice,
+	"send-invoice",
+	store,
+	cq.WithCheckpointKeyFunc(func(ctx context.Context, step string) (string, bool) {
+		orderID, ok := ctx.Value(orderIDKey{}).(string)
+		if !ok || orderID == "" {
+			return "", false
+		}
+		return "order:" + orderID + ":" + step, true
+	}),
+)
 ```
 
 #### Pipeline

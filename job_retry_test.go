@@ -205,3 +205,65 @@ func TestWithRetryIf(t *testing.T) {
 		}
 	})
 }
+
+func TestWithRetryPolicy(t *testing.T) {
+	t.Run("retries_with_policy_defaults", func(t *testing.T) {
+		var calls int
+		job := WithRetryPolicy(func(context.Context) error {
+			calls++
+			return errors.New("retry me")
+		}, RetryPolicy{MaxAttempts: 3})
+
+		if err := job(context.Background()); err == nil {
+			t.Fatal("WithRetryPolicy(): expected error")
+		}
+		if calls != 3 {
+			t.Fatalf("WithRetryPolicy(): got calls=%d, want 3", calls)
+		}
+	})
+
+	t.Run("backoff_applies_between_attempts", func(t *testing.T) {
+		var (
+			calls      int
+			backoffFor []int
+		)
+		job := WithRetryPolicy(func(context.Context) error {
+			calls++
+			return errors.New("retry me")
+		}, RetryPolicy{
+			MaxAttempts: 3,
+			Backoff: func(retries int) time.Duration {
+				backoffFor = append(backoffFor, retries)
+				return 0
+			},
+		})
+
+		_ = job(context.Background())
+		if calls != 3 {
+			t.Fatalf("WithRetryPolicy(): got calls=%d, want 3", calls)
+		}
+		if len(backoffFor) != 2 || backoffFor[0] != 1 || backoffFor[1] != 2 {
+			t.Fatalf("WithRetryPolicy(): got backoff attempts=%v, want [1 2]", backoffFor)
+		}
+	})
+
+	t.Run("stops_when_predicate_returns_false", func(t *testing.T) {
+		var calls int
+		stopErr := errors.New("stop")
+		job := WithRetryPolicy(func(context.Context) error {
+			calls++
+			return stopErr
+		}, RetryPolicy{
+			MaxAttempts: 5,
+			ShouldRetry: func(error) bool { return false },
+		})
+
+		err := job(context.Background())
+		if !errors.Is(err, stopErr) {
+			t.Fatalf("WithRetryPolicy(): got err=%v, want %v", err, stopErr)
+		}
+		if calls != 1 {
+			t.Fatalf("WithRetryPolicy(): got calls=%d, want 1", calls)
+		}
+	})
+}

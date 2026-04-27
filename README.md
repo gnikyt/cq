@@ -22,6 +22,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Queue-level middleware chain for all jobs
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
+- Workflow step checkpointing for retry-safe chains/dependencies
 - Tracing hooks for observability
 - Zero external dependencies for core functionality
 
@@ -32,9 +33,9 @@ Use this as a quick guide before diving into detailed sections.
 | Capability | Primary APIs | What it solves |
 | --- | --- | --- |
 | Queueing and workers | `NewQueue`, `Enqueue`, `Stop` | Run background jobs with auto-scaling workers |
-| Reliability | `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
+| Reliability | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
 | Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
-| Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn` | Build multi-step and grouped workflows with configurable dependency failure modes |
+| Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn`, `WithCheckpoint` | Build multi-step and grouped workflows with configurable dependency failure modes |
 | Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyByKey` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
@@ -156,16 +157,16 @@ if err := pmgr.DelayEnqueue("bulk", processLater, cq.PriorityLow, time.Minute); 
 Wrappers let you add behavior to jobs without modifying the job itself. Compose them from **innermost to outermost** - the outermost wrapper runs first and controls the flow. This keeps job logic clean while adding retries, timeouts, tracing, and error handling declaratively.
 
 ```go
-job := WithOutcome(              // 4. Outermost: catches final outcome.
-	WithRetry(                   // 3. Retries on error.
-		WithBackoff(             // 2. Adds delay between retries.
-			WithTimeout(         // 1. Innermost: runs with timeout.
+job := WithOutcome(              // 3. Outermost: catches final outcome.
+	WithRetryPolicy(            // 2. Preferred retry wrapper.
+		WithTimeout(             // 1. Innermost: runs with timeout.
 				actualJob,
 				5*time.Minute,
 			),
-			ExponentialBackoff,
-		),
-		3,
+		RetryPolicy{
+			MaxAttempts: 3,
+			Backoff:     ExponentialBackoff,
+		},
 	),
 	onComplete,
 	onFail,
@@ -174,12 +175,14 @@ job := WithOutcome(              // 4. Outermost: catches final outcome.
 ```
 
 **Execution flow:**
-1. `WithOutcome` calls `WithRetry`
-2. `WithRetry` calls `WithBackoff`
-3. `WithBackoff` waits (if retry > 0), then calls `WithTimeout`
-4. `WithTimeout` runs `actualJob` with a 5-minute timeout
-5. If `actualJob` fails, control returns up the chain for retry logic
-6. After all retries, `WithOutcome` receives the final outcome
+1. `WithOutcome` calls `WithRetryPolicy`
+2. `WithRetryPolicy` calls `WithTimeout`
+3. `WithTimeout` runs `actualJob` with a 5-minute timeout
+4. If `actualJob` fails, control returns up the chain for retry logic
+5. After all retries, `WithOutcome` receives the final outcome
+
+`WithRetryPolicy` is the recommended default for retry behavior. `WithRetry`,
+`WithRetryIf`, and `WithBackoff` still exist for finer-grained manual composition.
 
 ## Common Recipes
 
@@ -188,12 +191,31 @@ Use these first when you want practical defaults quickly.
 ### Reliable API Call (timeout + retry + backoff)
 
 ```go
-job := cq.WithRetry(
-	cq.WithBackoff(
-		cq.WithTimeout(fetchFromAPI, 10*time.Second),
-		cq.ExponentialBackoff,
-	),
-	3,
+job := cq.WithRetryPolicy(
+	cq.WithTimeout(fetchFromAPI, 10*time.Second),
+	cq.RetryPolicy{
+		MaxAttempts: 3,
+		Backoff:     cq.ExponentialBackoff,
+	},
+)
+queue.Enqueue(job)
+```
+
+### Retry-safe chain step (checkpoint)
+
+```go
+store := cq.NewMemoryCheckpointStore()
+step := cq.WithCheckpoint(
+	sendInvoice,
+	"send-invoice",
+	store,
+	cq.WithCheckpointNamespace("billing"),
+)
+
+job := cq.WithChain(
+	validateOrder,
+	step, // Will be skipped on retry after first success.
+	notifyCustomer,
 )
 queue.Enqueue(job)
 ```
@@ -342,6 +364,7 @@ For detailed usage and advanced features, see the following guides:
 - **[Queue Routing](docs/QUEUE_ROUTING.md)** - Register named queues and route jobs to isolated worker pools
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
 - **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
+- **[Custom Checkpoint Store](docs/CUSTOM_CHECKPOINT_STORE.md)** - Distributed checkpoint implementations for `WithCheckpoint` with Redis and SQLite examples
 - **[Custom Key Concurrency Limiter](docs/CUSTOM_CONCURRENCY_LIMITER.md)** - Distributed limiter implementations for `WithConcurrencyByKey` with Redis and SQLite examples
 
 ## Testing

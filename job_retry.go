@@ -10,23 +10,59 @@ import (
 // BackoffFunc returns the delay before the next retry attempt.
 type BackoffFunc func(retries int) time.Duration
 
+// RetryPolicy controls how retries are applied by WithRetryPolicy.
+type RetryPolicy struct {
+	// MaxAttempts is the total number of attempts to run.
+	MaxAttempts int
+	// ShouldRetry decides whether an error should be retried.
+	// If nil, any non-nil error is retried.
+	ShouldRetry func(error) bool
+	// Backoff controls delay before retry attempts where Attempt > 0.
+	// If nil, retries happen immediately.
+	Backoff BackoffFunc
+}
+
 // WithRetry retries a job up to `limit` times until it succeeds.
 // Retries happen immediately unless composed with WithBackoff.
 func WithRetry(job Job, limit int) Job {
-	return WithRetryIf(job, limit, nil)
+	return WithRetryPolicy(job, RetryPolicy{MaxAttempts: limit})
 }
 
 // WithRetryIf retries a job up to `limit` times while shouldRetry(err) is true.
 // shouldRetry is optional... if nil, any non-nil error is retried.
 // Each attempt increments JobMeta.Attempt in the context.
 func WithRetryIf(job Job, limit int, shouldRetry func(error) bool) Job {
+	return WithRetryPolicy(job, RetryPolicy{
+		MaxAttempts: limit,
+		ShouldRetry: shouldRetry,
+	})
+}
+
+// WithRetryPolicy retries a job using a single consolidated retry configuration.
+// Prefer this wrapper for typical retry use cases.
+//
+// WithRetry/WithRetryIf/WithBackoff remain available when you want finer control
+// by composing wrappers manually.
+func WithRetryPolicy(job Job, policy RetryPolicy) Job {
+	shouldRetry := policy.ShouldRetry
 	if shouldRetry == nil {
 		shouldRetry = func(err error) bool { return err != nil }
 	}
 
 	return func(ctx context.Context) error {
 		var err error
-		for attempt := range limit {
+		for attempt := range policy.MaxAttempts {
+			if attempt > 0 && policy.Backoff != nil {
+				timer := time.NewTimer(policy.Backoff(attempt))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+				}
+				timer.Stop()
+			}
+
 			// Update JobMeta with current attempt number.
 			meta := MetaFromContext(ctx)
 			meta.Attempt = attempt

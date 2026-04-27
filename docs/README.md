@@ -11,11 +11,11 @@ Complete reference documentation for cq.
 
 ### [Job Wrappers](JOB_WRAPPERS.md)
 Complete reference for all job wrappers including:
-- Retry logic and backoff strategies
+- Retry logic and policy-based retries
 - Timeouts and deadlines
 - Outcome handlers and tracing
 - Rate limiting and circuit breakers
-- Workflow composition (chains, pipelines, batches)
+- Workflow composition (chains, checkpoints, pipelines, batches)
 - Deduplication and overlap prevention
 
 ## Advanced Topics
@@ -42,6 +42,12 @@ Recurring and one-time job scheduling:
 ### [Custom Locker](CUSTOM_LOCKER.md)
 Distributed lock implementations for `WithUnique` and `WithoutOverlap`:
 - Locker interface specification
+- Redis implementation example
+- SQLite implementation example
+
+### [Custom Checkpoint Store](CUSTOM_CHECKPOINT_STORE.md)
+Distributed checkpoint implementations for `WithCheckpoint`:
+- CheckpointStore interface specification
 - Redis implementation example
 - SQLite implementation example
 
