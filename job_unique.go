@@ -6,6 +6,23 @@ import (
 	"time"
 )
 
+// UniqueOption configures WithUnique and WithUniqueWindow behavior.
+type UniqueOption func(*uniqueConfig)
+
+// uniqueConfig configures unique job behavior.
+type uniqueConfig struct {
+	lockedErr error
+}
+
+// WithUniqueLockedError returns err when a unique lock is active instead of
+// discarding the duplicate job. Use a sentinel error here when composing with
+// WithRelease to release the message for later consumption.
+func WithUniqueLockedError(err error) UniqueOption {
+	return func(cfg *uniqueConfig) {
+		cfg.lockedErr = err
+	}
+}
+
 // WithoutOverlap ensures multiple jobs of a given key cannot run concurrently.
 // This is useful when jobs touch shared data (such as account balances) and must
 // execute sequentially to prevent race conditions.
@@ -39,11 +56,23 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 // one instance can run at a time without any time-based constraint.
 // For enforcing a fixed minimum time between executions regardless of job
 // completion time, use WithUniqueWindow instead.
-func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) Job {
+// Use WithUniqueLockedError with WithRelease when duplicates should be
+// re-enqueued instead of discarded.
+func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], opts ...UniqueOption) Job {
+	cfg := uniqueConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	return func(ctx context.Context) error {
 		lock, exists := locker.Get(key)
 		if exists {
 			if !lock.IsExpired() {
+				if cfg.lockedErr != nil {
+					return cfg.lockedErr
+				}
 				return nil // Return this job as "done" since original job has not yet completed.
 			} else {
 				// Lock exists, but is expired, release it. In this event, the job may have
@@ -77,11 +106,23 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}]) 
 // regardless of how quickly the job completes. Unlike WithUnique, the lock is
 // not released when the job completes... instead, it persists for the full duration.
 // This guarantees a minimum time gap between executions.
-func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[struct{}]) Job {
+// Use WithUniqueLockedError with WithRelease when duplicates should be
+// re-enqueued instead of discarded.
+func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[struct{}], opts ...UniqueOption) Job {
+	cfg := uniqueConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	return func(ctx context.Context) error {
 		lock, exists := locker.Get(key)
 		if exists {
 			if !lock.IsExpired() {
+				if cfg.lockedErr != nil {
+					return cfg.lockedErr
+				}
 				return nil // Lock still active, discard this job.
 			} else {
 				// Lock expired, release it.

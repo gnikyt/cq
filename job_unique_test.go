@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -138,6 +139,62 @@ func TestWithUnique(t *testing.T) {
 			t.Error("WithUnique(): job should have been called")
 		}
 	})
+
+	t.Run("release_duplicate", func(t *testing.T) {
+		lockedErr := errors.New("unique locked")
+		var calls atomic.Int32
+		locker := NewUniqueMemoryLocker()
+		queue := NewQueue(1, 1, 10)
+		queue.Start()
+		defer queue.Stop(true)
+
+		job := WithUnique(func(ctx context.Context) error {
+			if calls.Add(1) == 1 {
+				time.Sleep(30 * time.Millisecond)
+			}
+			return nil
+		}, "test", 0, locker, WithUniqueLockedError(lockedErr))
+		job = WithRelease(job, queue, 40*time.Millisecond, 1, func(err error) bool {
+			return errors.Is(err, lockedErr)
+		})
+
+		go job(context.Background())
+		time.Sleep(10 * time.Millisecond)
+
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithUnique(): got %v, want nil on release", err)
+		}
+
+		deadline := time.After(200 * time.Millisecond)
+		for calls.Load() < 2 {
+			select {
+			case <-deadline:
+				t.Fatalf("WithUnique(): got %d calls, want released duplicate to run", calls.Load())
+			default:
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	})
+
+	t.Run("locked_error", func(t *testing.T) {
+		lockedErr := errors.New("unique locked")
+		locker := NewUniqueMemoryLocker()
+
+		go WithUnique(func(ctx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			return nil
+		}, "test", 0, locker)(context.Background())
+
+		time.Sleep(10 * time.Millisecond)
+
+		err := WithUnique(func(ctx context.Context) error {
+			t.Error("WithUnique(): duplicate should not run")
+			return nil
+		}, "test", 0, locker, WithUniqueLockedError(lockedErr))(context.Background())
+		if !errors.Is(err, lockedErr) {
+			t.Fatalf("WithUnique(): got %v, want locked error", err)
+		}
+	})
 }
 
 func TestWithUniqueWindow(t *testing.T) {
@@ -229,5 +286,33 @@ func TestWithUniqueWindow(t *testing.T) {
 			t.Errorf("WithUniqueWindow(): got %d calls, want 1 (all duplicates should be blocked)", calls)
 		}
 		mu.Unlock()
+	})
+
+	t.Run("locked_error", func(t *testing.T) {
+		lockedErr := errors.New("unique window locked")
+		var calls atomic.Int32
+		locker := NewUniqueMemoryLocker()
+
+		window := 50 * time.Millisecond
+		job := WithUniqueWindow(func(ctx context.Context) error {
+			calls.Add(1)
+			return nil
+		}, "test", window, locker)
+
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithUniqueWindow(): got %v, want nil (first job)", err)
+		}
+
+		err := WithUniqueWindow(func(ctx context.Context) error {
+			calls.Add(1)
+			return nil
+		}, "test", window, locker, WithUniqueLockedError(lockedErr))(context.Background())
+		if !errors.Is(err, lockedErr) {
+			t.Fatalf("WithUniqueWindow(): got %v, want locked error", err)
+		}
+
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("WithUniqueWindow(): got %d calls, want duplicate not to run", got)
+		}
 	})
 }

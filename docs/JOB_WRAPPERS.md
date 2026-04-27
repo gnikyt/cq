@@ -455,6 +455,26 @@ job := cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker)
 queue.Enqueue(job)
 ```
 
+By default, duplicate jobs are discarded while the unique lock is active. To
+release the message for later consumption instead, return a sentinel error on
+lock contention and compose with `WithRelease`:
+
+```go
+var errUniqueLocked = errors.New("unique lock active")
+
+job := cq.WithUnique(
+	actualJob,
+	"index-products",
+	1*time.Hour,
+	locker,
+	cq.WithUniqueLockedError(errUniqueLocked),
+)
+job = cq.WithRelease(job, queue, 30*time.Second, 0, func(err error) bool {
+	return errors.Is(err, errUniqueLocked)
+})
+queue.Enqueue(job)
+```
+
 Combine with timeout to limit both uniqueness and execution time:
 
 ```go
