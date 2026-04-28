@@ -95,6 +95,9 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 			Value:     es,
 		}) {
 			// Another worker acquired the lock first.
+			if cfg.lockedErr != nil {
+				return cfg.lockedErr
+			}
 			return nil
 		}
 		defer locker.Release(key)
@@ -135,6 +138,9 @@ func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[s
 			Value:     struct{}{},
 		}) {
 			// Another worker acquired the lock first.
+			if cfg.lockedErr != nil {
+				return cfg.lockedErr
+			}
 			return nil
 		}
 		return job(ctx)

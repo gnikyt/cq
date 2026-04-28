@@ -9,6 +9,33 @@ import (
 	"time"
 )
 
+type acquireFailLocker struct {
+	acquireCalls atomic.Int32
+}
+
+func (l *acquireFailLocker) Exists(key string) bool {
+	return false
+}
+
+func (l *acquireFailLocker) Get(key string) (LockValue[struct{}], bool) {
+	return LockValue[struct{}]{}, false
+}
+
+func (l *acquireFailLocker) Acquire(key string, lock LockValue[struct{}]) bool {
+	l.acquireCalls.Add(1)
+	return false
+}
+
+func (l *acquireFailLocker) Release(key string) bool {
+	return false
+}
+
+func (l *acquireFailLocker) ForceRelease(key string) {}
+
+func (l *acquireFailLocker) Aquire(key string, lock LockValue[struct{}]) bool {
+	return l.Acquire(key, lock)
+}
+
 func TestWithoutOverlap(t *testing.T) {
 	var wg sync.WaitGroup
 	locker := NewOverlapMemoryLocker()
@@ -195,6 +222,23 @@ func TestWithUnique(t *testing.T) {
 			t.Fatalf("WithUnique(): got %v, want locked error", err)
 		}
 	})
+
+	t.Run("locked_error_when_acquire_race_lost", func(t *testing.T) {
+		lockedErr := errors.New("unique locked")
+		locker := &acquireFailLocker{}
+
+		err := WithUnique(func(ctx context.Context) error {
+			t.Error("WithUnique(): job should not run when acquire fails")
+			return nil
+		}, "test", time.Minute, locker, WithUniqueLockedError(lockedErr))(context.Background())
+
+		if !errors.Is(err, lockedErr) {
+			t.Fatalf("WithUnique(): got %v, want locked error on acquire fail", err)
+		}
+		if got := locker.acquireCalls.Load(); got != 1 {
+			t.Fatalf("WithUnique(): acquire calls got %d, want 1", got)
+		}
+	})
 }
 
 func TestWithUniqueWindow(t *testing.T) {
@@ -313,6 +357,23 @@ func TestWithUniqueWindow(t *testing.T) {
 
 		if got := calls.Load(); got != 1 {
 			t.Fatalf("WithUniqueWindow(): got %d calls, want duplicate not to run", got)
+		}
+	})
+
+	t.Run("locked_error_when_acquire_race_lost", func(t *testing.T) {
+		lockedErr := errors.New("unique window locked")
+		locker := &acquireFailLocker{}
+
+		err := WithUniqueWindow(func(ctx context.Context) error {
+			t.Error("WithUniqueWindow(): job should not run when acquire fails")
+			return nil
+		}, "test", time.Minute, locker, WithUniqueLockedError(lockedErr))(context.Background())
+
+		if !errors.Is(err, lockedErr) {
+			t.Fatalf("WithUniqueWindow(): got %v, want locked error on acquire fail", err)
+		}
+		if got := locker.acquireCalls.Load(); got != 1 {
+			t.Fatalf("WithUniqueWindow(): acquire calls got %d, want 1", got)
 		}
 	})
 }
