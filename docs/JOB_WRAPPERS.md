@@ -8,7 +8,7 @@ Use this quick wrapper index to choose the right building block:
 | --- | --- |
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
-| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey` |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`; contention handoff: [`WithDispatchOnContention`](#dispatch-on-contention-or-error), [`WithErrorOnContention`](#dispatch-on-contention-or-error), [`WithDispatchOnError`](#dispatch-on-contention-or-error) (classify with `IsContentionError`) |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
@@ -391,11 +391,11 @@ queue.Enqueue(job)
 
 #### Overlap Prevention
 
-**What it does:** Ensures only one job with the same key runs at a time.
+**What it does:** `WithoutOverlap` runs jobs for the same key **one after another**. Waits on a mutex until the previous run finishes, then executes. Workers block while queued on that key.
 
 **When to use:** Non-overlapping work such as account sync or balance mutation.
 
-**Caveat:** Operationally, lock contention blocks workers... use `WithUnique` when drop-on-duplicate is preferred.
+**Caveat:** Hot keys can occupy workers while others wait. That differs from `WithUnique`, which deduplicates by key/window and often drops duplicates instead of forming a queue behind the mutex.
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
@@ -403,7 +403,7 @@ job := cq.WithoutOverlap(actualJob, "account-123", locker)
 queue.Enqueue(job)
 ```
 
-To cap how long the overlap lock is held, compose `WithTimeout` inside `WithoutOverlap`:
+To cap how long the overlap lock is held, wrap the inner job with `WithTimeout`:
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
@@ -416,6 +416,18 @@ queue.Enqueue(job)
 ```
 
 This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
+
+For **overlap contention** (dispatch to a side queue instead of blocking on the mutex), see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+
+#### Dispatching Contract
+
+* `DispatchRequest.Key`: Routing key for the dispatched job.
+* `DispatchRequest.Job`: Job to hand off (may execute asynchronously).
+* `DispatchRequest.Reason`: Why dispatch occurred (`DispatchReasonContention` from `WithDispatchOnContention`, or `DispatchReasonError` from `WithDispatchOnError`).
+* `DispatchRequest.Err`: Set when `Reason` is `DispatchReasonError` (the inner error that triggered dispatch).
+* `DispatchError.Kind`: Classify failures (`rejected` vs `unavailable`) for retry policy decisions.
+* Built-in adapters: `NewQueueJobDispatcher`, `NewQueueManagerJobDispatcher`,
+  `NewPriorityQueueJobDispatcher`, `NewPriorityQueueManagerJobDispatcher`.
 
 #### Concurrency By Key
 
@@ -441,6 +453,8 @@ Invalid limits (`<= 0`) return `cq.ErrConcurrencyByKeyInvalidLimit`.
 
 For distributed implementations (for example Redis or SQLite), see [Custom Key Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md).
 
+`WithConcurrencyByKey` does not provide a built-in "block until a slot frees" mode... `MemoryKeyConcurrencyLimiter.Acquire` returns `ErrConcurrencyByKeyLimited` immediately. If you want to wait for a slot, implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a semaphore per key). To route contended runs elsewhere, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+
 #### Unique Jobs
 
 **What it does:** Deduplicates jobs by key within a configured time window.
@@ -455,25 +469,24 @@ job := cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker)
 queue.Enqueue(job)
 ```
 
-By default, duplicate jobs are discarded while the unique lock is active. To
-release the message for later consumption instead, return a sentinel error on
-lock contention and compose with `WithRelease`:
+Duplicate runs while the lock is active **do not execute** the inner job... by default the wrapper **returns nil** (discard the job). For `WithUniqueWindow`, the lock covers the full window even after the job finishes.
+
+To re-enqueue duplicates instead of discarding them, wrap with `WithErrorOnContention` so the duplicate surfaces as `ErrUniqueContended`, and pair with `WithRelease` using `IsContentionError` as the predicate:
 
 ```go
-var errUniqueLocked = errors.New("unique lock active")
-
-job := cq.WithUnique(
-	actualJob,
-	"index-products",
-	1*time.Hour,
-	locker,
-	cq.WithUniqueLockedError(errUniqueLocked),
+job := cq.WithRelease(
+	cq.WithErrorOnContention(
+		cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker),
+	),
+	queue,
+	30*time.Second,
+	0,
+	cq.IsContentionError,
 )
-job = cq.WithRelease(job, queue, 30*time.Second, 0, func(err error) bool {
-	return errors.Is(err, errUniqueLocked)
-})
 queue.Enqueue(job)
 ```
+
+To route duplicates to a side queue or different dispatcher, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
 
 Combine with timeout to limit both uniqueness and execution time:
 
@@ -676,9 +689,9 @@ queue.Enqueue(job)
 
 Three failure modes control what happens when a dependency fails:
 
-- **`DependencyFailCancel`** — stops execution and returns an error wrapping `ErrDependencyCancelled`; the main job never runs.
-- **`DependencyFailSkip`** — stops execution and returns a discard outcome; the main job never runs but is not counted as failed.
-- **`DependencyFailContinue`** — ignores the failure and proceeds to the next dependency or job.
+* `DependencyFailCancel`: Stops execution and returns an error wrapping `ErrDependencyCancelled`; the main job never runs.
+* `DependencyFailSkip`: Stops execution and returns a discard outcome; the main job never runs but is not counted as failed.
+* `DependencyFailContinue`: Ignores the failure and proceeds to the next dependency or job.
 
 Execution order is always: `dep1 -> dep2 -> ... -> job`.
 
@@ -775,10 +788,10 @@ queue.Enqueue(job)
 
 Logic:
 
-- If a release request is made and release budget allows, the job is delayed and re-enqueued, and this run returns `nil`.
-- If both an error and release request occur, release wins while budget allows.
-- Multiple requests in one run use last-write-wins delay.
-- `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
+* If a release request is made and release budget allows, the job is delayed and re-enqueued, and this run returns `nil`.
+* If both an error and release request occur, release wins while budget allows.
+* Multiple requests in one run use last-write-wins delay.
+* `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
 
 #### Recover
 
@@ -959,6 +972,57 @@ for _, orderID := range orderIDs {
 ```
 
 This pattern isolates failing dependency traffic from the main queue. Use with your normal replay/DLQ strategy for long-term failed work handling.
+
+#### Dispatch on contention or error
+
+**`WithDispatchOnContention(job, key, dispatcher)`** runs the inner job with `ContextWithContentionTry`. When the inner job returns a contention error (`ErrWithoutOverlapContended`, `ErrUniqueContended`, or `ErrConcurrencyByKeyLimited`), it forwards the **same** inner `Job` to `dispatcher` with `DispatchReasonContention`. Other errors are returned unchanged. A nil `dispatcher` yields `ErrDispatchRequired`.
+
+Bare `WithoutOverlap` uses `Lock()` (blocks until the key is free). Under contention-try, it uses `TryLock` and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
+
+**`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to re-enqueue duplicates, or with custom retry logic.
+
+**`WithDispatchOnError(job, key, dispatcher)`** does **not** inject contention-try; any non-nil error from the inner job triggers dispatch with `DispatchReasonError`, and `DispatchRequest.Err` carries that error. Pick `WithDispatchOnContention` when you specifically want to route contended runs (and let other errors propagate); pick `WithDispatchOnError` when you want a generic "send all failures somewhere else" handoff.
+
+**`IsContentionError(err)`** reports whether `err` is any of the three contention sentinels. Use it as the predicate for `WithRelease`, custom routing, or logging classification.
+
+> **Context propagation note:** `ContextWithContentionTry` (set by `WithDispatchOnContention` and `WithErrorOnContention`) propagates through ctx, so every nested `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` deeper in the chain switches to try semantics too. Usually that's what you want; if you compose multiple of these, only the outermost needs the wrapper.
+
+Use the **same routing `key`** as the inner wrapper where applicable.
+
+##### Example: hand off contended overlap work
+
+Dispatch contended runs to a **per-key side queue** so this worker returns immediately:
+
+```go
+var (
+	mu     sync.Mutex
+	byKeyQ = map[string]*cq.Queue{}
+)
+
+dispatcher := cq.JobDispatcherFunc(func(ctx context.Context, req cq.DispatchRequest) error {
+	mu.Lock()
+	q, ok := byKeyQ[req.Key]
+	if !ok {
+		q = cq.NewQueue(1, 1, 100)
+		q.Start()
+		byKeyQ[req.Key] = q
+	}
+	mu.Unlock()
+	return q.EnqueueOrError(req.Job)
+})
+
+job := cq.WithDispatchOnContention(
+	cq.WithoutOverlap(actualJob, "account-123", locker),
+	"account-123",
+	dispatcher,
+)
+```
+
+This is intentionally minimal to show routing only. In production, **stop or remove idle per-key queues** so the map does not grow without bound—for example **TTL-based eviction** together with checks on **pending vs active** work before tearing down a queue.
+
+##### Dispatch errors
+
+Typed `DispatchError` and adapters are described under [Dispatching Contract](#dispatching-contract).
 
 #### Custom Wrapper
 

@@ -70,11 +70,12 @@ func (l *MemoryKeyConcurrencyLimiter) Release(key string) {
 }
 
 // WithConcurrencyByKey caps concurrent executions for a key using limiter.
-// When the limit is reached, the wrapper returns ErrConcurrencyByKeyLimited.
+// When the limit is reached, Acquire returns ErrConcurrencyByKeyLimited and this wrapper returns it.
+// Compose with WithDispatchOnContention to hand off contended runs to a JobDispatcher.
 func WithConcurrencyByKey(job Job, key string, limiter KeyConcurrencyLimiter) Job {
 	return func(ctx context.Context) error {
 		if limiter == nil {
-			return job(ctx) // No limiter configured... run normally.
+			return job(ctx)
 		}
 
 		if err := limiter.Acquire(key); err != nil {
