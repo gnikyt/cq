@@ -614,18 +614,44 @@ queue.Enqueue(job)
 jobs := []cq.Job{job1, job2, job3}
 batchJobs, state := cq.WithBatch(
 	jobs,
-	func(errs []error) {
+	cq.WithBatchOnComplete(func(errs []error) {
 		log.Printf("done: %d errors", len(errs))
-	}, // onComplete: fires once when all finish.
-	func(done int, total int) {
+	}),
+	cq.WithBatchOnProgress(func(done int, total int) {
 		log.Printf(
 			"%d/%d (%.0f%%)",
 			done, total, float64(done)/float64(total)*100,
 		)
-	} // onProgress: fires after each job.
+	}),
+)
+queue.EnqueueBatch(batchJobs)
+
+// Optionally wait for completion in-process:
+<-state.Done()
+
+// Or query state at any time (works against the configured store):
+rec, _ := state.Snapshot(ctx) // BatchRecord{Total, Completed, Failed, Errors, Done}
+```
+
+**Pluggable storage:** by default batches use an in-memory store. Provide your own `BatchStore` (interface: `Init`, `RecordResult`, `Load`, `Delete`) to share batch state across processes — e.g. a service that enqueues writes progress to Postgres, and a separate HTTP handler reads `Snapshot` from the same store:
+
+```go
+batchJobs, state := cq.WithBatch(
+	jobs,
+	cq.WithBatchID("import-42"),
+	cq.WithBatchStore(myPostgresStore),
 )
 queue.EnqueueBatch(batchJobs)
 ```
+
+`state.Done()` only fires in the process that ran the jobs. Cross-process consumers should poll `Snapshot` (or query the store directly).
+
+**Options:**
+* `WithBatchID(string)` — Explicit batch identifier (auto-generated if omitted).
+* `WithBatchNamespace(string)` — Prefixes the ID (e.g. tenant scoping).
+* `WithBatchStore(BatchStore)` — Overrides the default `MemoryBatchStore`.
+* `WithBatchOnComplete(func([]error))` — Fires once when all jobs finish.
+* `WithBatchOnProgress(func(completed, total int))` — Fires after each completed job.
 
 To access job metadata in batch callbacks, use a sentinel error type to wrap errors with the job ID. The `onComplete` callback receives all errors from the batch, allowing you to extract IDs using `errors.As`:
 
@@ -657,15 +683,14 @@ for i, item := range items {
 }
 batchJobs, _ := cq.WithBatch(
 	jobs,
-	func(errs []error) {
+	cq.WithBatchOnComplete(func(errs []error) {
 		for _, err := range errs {
 			var jobErr *JobError
 			if errors.As(err, &jobErr) {
 				log.Printf("job %s failed: %v", jobErr.JobID, jobErr.Err)
 			}
 		}
-	},
-	nil,
+	}),
 )
 queue.EnqueueBatch(batchJobs)
 ```
