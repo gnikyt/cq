@@ -2,6 +2,20 @@
 
 Queue options configure runtime behavior for worker lifecycle, context management, panic handling, and job ID generation.
 
+## Runtime Worker Range
+
+Use `SetWorkerRange(min, max)` to change worker limits at runtime:
+
+```go
+if err := queue.SetWorkerRange(2, 20); err != nil {
+	log.Fatal(err)
+}
+```
+
+Behavior:
+- Increasing `min` starts additional workers immediately.
+- Decreasing `max` does not stop active workers, the idle cleanup drains excess workers.
+
 ## Option Reference
 
 - `cq.WithWorkerIdleTick(d)`  

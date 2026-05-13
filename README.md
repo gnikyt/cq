@@ -280,6 +280,7 @@ queue.RunningWorkers()           // Current running workers.
 queue.IdleWorkers()              // Current idle workers.
 queue.Capacity()                 // Job channel capacity.
 queue.WorkerRange()              // (min, max) workers.
+queue.SetWorkerRange(2, 20)      // Update (min, max) at runtime.
 queue.TallyOf(cq.JobStateFailed) // Count by state.
 
 // Available job states for TallyOf:
@@ -289,6 +290,17 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStateFailed    - Jobs completed with error.
 // cq.JobStateCompleted - Jobs completed successfully.
 ```
+
+### Runtime Scaling
+
+```go
+if err := queue.SetWorkerRange(2, 20); err != nil {
+	log.Fatal(err)
+}
+```
+
+`SetWorkerRange` starts workers immediately when `min` increases.
+When `max` decreases, running workers are not touched, the idle cleanup drains excess workers.
 
 ### Options
 

@@ -111,7 +111,48 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 
 // WorkerRange returns the minimum and maximum workers configured.
 func (q *Queue) WorkerRange() (int, int) {
+	q.mut.Lock()
+	defer q.mut.Unlock()
 	return q.workersMin, q.workersMax
+}
+
+// SetWorkerRange updates the minimum and maximum workers at runtime.
+// It starts workers immediately when min increases.
+// It does not affect running workers when max decreases... idle cleanup will drain excess workers.
+func (q *Queue) SetWorkerRange(min int, max int) error {
+	if min < 0 {
+		return fmt.Errorf("queue: min workers must be >= 0")
+	}
+	if max < min {
+		return fmt.Errorf("queue: max workers must be >= min workers")
+	}
+	if q.IsStopped() {
+		return ErrQueueStopped
+	}
+
+	toStart := 0
+
+	q.mut.Lock()
+	if q.stopped.Load() {
+		q.mut.Unlock()
+		return ErrQueueStopped
+	}
+
+	q.workersMin = min
+	q.workersMax = max
+
+	running := int(q.workersRunningTally.Load())
+	if running < q.workersMin {
+		toStart = q.workersMin - running
+	}
+	q.mut.Unlock()
+
+	for range toStart {
+		// Best-effort pre-warm to satisfy the updated minimum.
+		_ = q.newWorker(nil)
+	}
+
+	return nil
 }
 
 // Capacity returns the capacity of the jobs channel.

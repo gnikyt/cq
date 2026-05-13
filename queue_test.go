@@ -425,3 +425,96 @@ func TestIdleWorkerTick(t *testing.T) {
 		t.Errorf("RunningWorkers(): got %v, want %v", nrw, wmin)
 	}
 }
+
+func TestQueueSetWorkerRangeValidation(t *testing.T) {
+	q := NewQueue(0, 1, 1)
+	q.Start()
+	defer q.Stop(false)
+
+	if err := q.SetWorkerRange(-1, 1); err == nil {
+		t.Fatal("SetWorkerRange(): expected error for negative min")
+	}
+	if err := q.SetWorkerRange(2, 1); err == nil {
+		t.Fatal("SetWorkerRange(): expected error for max < min")
+	}
+}
+
+func TestQueueSetWorkerRangeScaleUpMin(t *testing.T) {
+	q := NewQueue(0, 1, 1)
+	q.Start()
+	defer q.Stop(false)
+
+	if err := q.SetWorkerRange(2, 2); err != nil {
+		t.Fatalf("SetWorkerRange(): unexpected error: %v", err)
+	}
+
+	waitFor(t, 500*time.Millisecond, func() bool {
+		return q.RunningWorkers() == 2 && q.IdleWorkers() == 2
+	})
+
+	wmin, wmax := q.WorkerRange()
+	if wmin != 2 || wmax != 2 {
+		t.Fatalf("WorkerRange(): got %d:%d, want 2:2", wmin, wmax)
+	}
+}
+
+func TestQueueSetWorkerRangeScaleDownMaxDoesNotPreemptActive(t *testing.T) {
+	release := make(chan struct{})
+	var started atomic.Int32
+
+	q := NewQueue(0, 3, 10, WithWorkerIdleTick(20*time.Millisecond))
+	q.Start()
+	defer q.Stop(true)
+
+	job := func(ctx context.Context) error {
+		started.Add(1)
+		<-release
+		return nil
+	}
+
+	q.Enqueue(job)
+	q.Enqueue(job)
+	q.Enqueue(job)
+
+	waitFor(t, 1*time.Second, func() bool {
+		return started.Load() == 3 && q.RunningWorkers() == 3
+	})
+
+	if err := q.SetWorkerRange(0, 1); err != nil {
+		t.Fatalf("SetWorkerRange(): unexpected error: %v", err)
+	}
+
+	// Active workers should not be preempted just because max was reduced.
+	time.Sleep(100 * time.Millisecond)
+	if got := q.RunningWorkers(); got != 3 {
+		t.Fatalf("RunningWorkers(): got %d while jobs active, want 3", got)
+	}
+
+	close(release)
+
+	waitFor(t, 1*time.Second, func() bool {
+		return q.RunningWorkers() == 1
+	})
+}
+
+func waitFor(t *testing.T, timeout time.Duration, pred func() bool) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	tk := time.NewTicker(10 * time.Millisecond)
+	defer tk.Stop()
+
+	for {
+		if pred() {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatal("condition not met before timeout")
+		case <-tk.C:
+		}
+	}
+}
