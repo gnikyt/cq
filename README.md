@@ -233,6 +233,13 @@ job := cq.WithUnique(
 queue.Enqueue(job)
 ```
 
+### Long-Running Unique Window (optional touch renewal)
+
+`WithUniqueWindow` keeps a fixed window by default.
+For manual extension, use `TouchLock` inside your job when the locker implements
+optional lease renewal (`RenewableLocker` with `Touch`).
+For custom ownership token formats, pass `WithUniqueTokenGenerator(...)`.
+
 ### Recurring Job (scheduler)
 
 ```go

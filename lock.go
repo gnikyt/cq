@@ -7,8 +7,9 @@ import (
 
 // LockValue stores a lock value and optional expiration for a key.
 type LockValue[T any] struct {
-	Value     T
-	ExpiresAt time.Time
+	Value     T         // Value stored in the lock.
+	ExpiresAt time.Time // Expiration time of the lock.
+	Token     string    // Optional token for owner-safe operations.
 }
 
 // IsExpired checks if the lock is expired.
@@ -32,6 +33,14 @@ type Locker[T any] interface {
 	// Deprecated: Use Acquire instead. This method exists for backwards compatibility.
 	// It was a typo in the original implementation.
 	Aquire(key string, lock LockValue[T]) bool
+}
+
+// RenewableLocker extends Locker with optional owner-safe lease renewal methods.
+// Implement this when your lock backend supports atomic owner checks.
+type RenewableLocker[T any] interface {
+	Locker[T]
+	Touch(key string, token string, expiresAt time.Time) bool
+	ReleaseIfOwner(key string, token string) bool
 }
 
 // CleanableLocker extends Locker with cleanup capabilities for removing expired locks.
@@ -121,6 +130,52 @@ func (ml *MemoryLocker[T]) Release(key string) bool {
 	}
 	ml.ForceRelease(key)
 	return true
+}
+
+// ReleaseIfOwner removes the lock for key only when the provided token matches.
+func (ml *MemoryLocker[T]) ReleaseIfOwner(key string, token string) bool {
+	for {
+		existing, ok := ml.locks.Load(key)
+		if !ok {
+			return false
+		}
+
+		current := existing.(LockValue[T])
+		if current.Token != token {
+			return false
+		}
+
+		if ml.locks.CompareAndDelete(key, current) {
+			return true
+		}
+	}
+}
+
+// Touch updates a lock expiration when the provided owner token matches.
+// It returns false if the lock is missing, expired, token-mismatched, or replaced concurrently.
+func (ml *MemoryLocker[T]) Touch(key string, token string, expiresAt time.Time) bool {
+	if expiresAt.IsZero() || !expiresAt.After(time.Now()) {
+		return false
+	}
+
+	for {
+		existing, ok := ml.locks.Load(key)
+		if !ok {
+			return false
+		}
+
+		current := existing.(LockValue[T])
+		if current.IsExpired() || current.Token != token {
+			return false
+		}
+
+		next := current
+		next.ExpiresAt = expiresAt
+
+		if ml.locks.CompareAndSwap(key, current, next) {
+			return true
+		}
+	}
 }
 
 // ForceRelease removes the lock for key without existence checks.

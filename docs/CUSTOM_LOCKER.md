@@ -13,6 +13,9 @@ type Locker[T any] interface {
 	Acquire(key string, lock LockValue[T]) bool
 	Release(key string) bool
 	ForceRelease(key string)
+
+	// Deprecated: kept for backward compatibility.
+	Aquire(key string, lock LockValue[T]) bool
 }
 ```
 
@@ -24,6 +27,21 @@ type CleanableLocker[T any] interface {
 	Cleanup() int // Remove expired locks, return count removed.
 }
 ```
+
+Optionally implement `RenewableLocker[T]` when your store supports owner-safe lease renewal:
+
+```go
+type RenewableLocker[T any] interface {
+	Locker[T]
+	Touch(key string, token string, expiresAt time.Time) bool
+	ReleaseIfOwner(key string, token string) bool
+}
+```
+
+`WithUniqueWindow` does not auto-renew by default. Use `TouchLock(ctx, ttl)` from inside
+the running job to extend the lease when `RenewableLocker` is available.
+This requires preserving `LockValue.Token` as lock ownership identity.
+You can override token generation with `WithUniqueTokenGenerator(...)` when wrapping jobs.
 
 #### Redis Example
 
@@ -49,8 +67,8 @@ func (r *RedisLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
 	if ttl <= 0 {
 		ttl = time.Minute // Default TTL if no expiration set.
 	}
-	// SET NX ensures atomic acquire.
-	ok, _ := r.client.SetNX(context.Background(), key, "1", ttl).Result()
+	// SET NX ensures atomic acquire. Store lock token as value.
+	ok, _ := r.client.SetNX(context.Background(), key, lock.Token, ttl).Result()
 	return ok
 }
 
@@ -60,6 +78,30 @@ func (r *RedisLocker) Release(key string) bool {
 
 func (r *RedisLocker) ForceRelease(key string) {
 	_ := r.Release(key)
+}
+
+func (r *RedisLocker) Touch(key string, token string, expiresAt time.Time) bool {
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return false
+	}
+	// Pseudocode: atomically verify token match and update TTL.
+	// Use a Lua script in production.
+	current, err := r.client.Get(context.Background(), key).Result()
+	if err != nil || current != token {
+		return false
+	}
+	return r.client.Expire(context.Background(), key, ttl).Val()
+}
+
+func (r *RedisLocker) ReleaseIfOwner(key string, token string) bool {
+	// Pseudocode: atomically compare value and delete key.
+	// Use a Lua script in production.
+	current, err := r.client.Get(context.Background(), key).Result()
+	if err != nil || current != token {
+		return false
+	}
+	return r.client.Del(context.Background(), key).Val() > 0
 }
 
 // Usage with WithUnique.
@@ -117,7 +159,11 @@ func (s *SQLiteLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
 	tx.Exec("DELETE FROM locks WHERE key = ? AND expires_at <= ?", key, time.Now())
 
 	// Try to insert new lock (fails if non-expired lock exists).
-	_, err = tx.Exec("INSERT INTO locks (key, expires_at) VALUES (?, ?)", key, lock.ExpiresAt)
+	_, err = tx.Exec(
+		"INSERT INTO locks (key, expires_at) VALUES (?, ?)",
+		key,
+		lock.ExpiresAt,
+	)
 	if err != nil {
 		return false // Lock exists and is not expired.
 	}

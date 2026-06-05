@@ -14,6 +14,12 @@ type releaseRequesterKey struct{}
 // releaseRequester is a function that requests a release of a job after a delay.
 type releaseRequester func(time.Duration) bool
 
+// lockTouchRequesterKey is the context key for unique lock touch requester.
+type lockTouchRequesterKey struct{}
+
+// lockTouchRequester is a function that requests a unique lock touch.
+type lockTouchRequester func(time.Duration) bool
+
 // lastErrorKey is the context key for the previous attempt error.
 type lastErrorKey struct{}
 
@@ -67,3 +73,17 @@ func contextWithReleaseRequester(ctx context.Context, fn releaseRequester) conte
 	return context.WithValue(ctx, releaseRequesterKey{}, fn)
 }
 
+// TouchLock requests the current unique lock lease to be extended by ttl.
+// Returns false when no unique lock touch requester is present.
+func TouchLock(ctx context.Context, ttl time.Duration) bool {
+	fn, ok := ctx.Value(lockTouchRequesterKey{}).(lockTouchRequester)
+	if !ok || fn == nil {
+		return false
+	}
+	return fn(ttl)
+}
+
+// contextWithLockTouchRequester returns a new context with unique lock touch requester.
+func contextWithLockTouchRequester(ctx context.Context, fn lockTouchRequester) context.Context {
+	return context.WithValue(ctx, lockTouchRequesterKey{}, fn)
+}

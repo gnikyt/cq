@@ -135,6 +135,89 @@ func TestMemoryLockerRelease(t *testing.T) {
 	}
 }
 
+func TestMemoryLockerTouch(t *testing.T) {
+	ml := NewMemoryLocker[string]()
+	key := "touch"
+	token := "owner-1"
+
+	if ok := ml.Acquire(key, LockValue[string]{
+		ExpiresAt: time.Now().Add(50 * time.Millisecond),
+		Value:     "test",
+		Token:     token,
+	}); !ok {
+		t.Fatal("Acquire(): got false, want true")
+	}
+
+	t.Run("touch_with_owner_token", func(t *testing.T) {
+		expiresAt := time.Now().Add(1 * time.Minute)
+		if ok := ml.Touch(key, token, expiresAt); !ok {
+			t.Fatal("Touch(): got false, want true")
+		}
+
+		lock, ok := ml.Get(key)
+		if !ok {
+			t.Fatal("Get(): lock missing after touch")
+		}
+		if lock.ExpiresAt.Before(time.Now().Add(30 * time.Second)) {
+			t.Fatalf("Touch(): expiration was not extended: got %v", lock.ExpiresAt)
+		}
+	})
+
+	t.Run("touch_rejected_for_wrong_token", func(t *testing.T) {
+		if ok := ml.Touch(key, "owner-2", time.Now().Add(1*time.Minute)); ok {
+			t.Fatal("Touch(): got true for wrong token, want false")
+		}
+	})
+
+	t.Run("touch_rejected_for_missing_key", func(t *testing.T) {
+		if ok := ml.Touch("missing", token, time.Now().Add(1*time.Minute)); ok {
+			t.Fatal("Touch(): got true for missing key, want false")
+		}
+	})
+
+	t.Run("touch_rejected_for_expired_lock", func(t *testing.T) {
+		expiredKey := "expired"
+		if ok := ml.Acquire(expiredKey, LockValue[string]{
+			ExpiresAt: time.Now().Add(-1 * time.Second),
+			Value:     "expired",
+			Token:     "owner-expired",
+		}); !ok {
+			t.Fatal("Acquire(): got false, want true for expired setup lock")
+		}
+
+		if ok := ml.Touch(expiredKey, "owner-expired", time.Now().Add(1*time.Minute)); ok {
+			t.Fatal("Touch(): got true for expired lock, want false")
+		}
+	})
+}
+
+func TestMemoryLockerReleaseIfOwner(t *testing.T) {
+	ml := NewMemoryLocker[string]()
+	key := "release-owner"
+
+	if ok := ml.Acquire(key, LockValue[string]{
+		ExpiresAt: time.Now().Add(1 * time.Minute),
+		Value:     "test",
+		Token:     "owner-1",
+	}); !ok {
+		t.Fatal("Acquire(): got false, want true")
+	}
+
+	if ok := ml.ReleaseIfOwner(key, "owner-2"); ok {
+		t.Fatal("ReleaseIfOwner(): got true for wrong token, want false")
+	}
+	if !ml.Exists(key) {
+		t.Fatal("ReleaseIfOwner(): lock removed on wrong token")
+	}
+
+	if ok := ml.ReleaseIfOwner(key, "owner-1"); !ok {
+		t.Fatal("ReleaseIfOwner(): got false for owner token, want true")
+	}
+	if ml.Exists(key) {
+		t.Fatal("ReleaseIfOwner(): lock should be removed")
+	}
+}
+
 func TestMemoryLockerCleanup(t *testing.T) {
 	t.Run("removes_expired_locks", func(t *testing.T) {
 		ml := NewMemoryLocker[string]()
@@ -296,6 +379,25 @@ func TestCleanableLockerInterface(t *testing.T) {
 	removed := locker.Cleanup()
 	if removed != 1 {
 		t.Errorf("CleanableLocker: Cleanup(): got %d removed, want 1", removed)
+	}
+}
+
+func TestRenewableLockerInterface(t *testing.T) {
+	var locker RenewableLocker[string] = NewMemoryLocker[string]()
+
+	if ok := locker.Acquire("renew", LockValue[string]{
+		ExpiresAt: time.Now().Add(1 * time.Minute),
+		Value:     "test",
+		Token:     "owner",
+	}); !ok {
+		t.Fatal("Acquire(): got false, want true")
+	}
+
+	if ok := locker.Touch("renew", "owner", time.Now().Add(2*time.Minute)); !ok {
+		t.Fatal("Touch(): got false, want true")
+	}
+	if ok := locker.ReleaseIfOwner("renew", "owner"); !ok {
+		t.Fatal("ReleaseIfOwner(): got false, want true")
 	}
 }
 

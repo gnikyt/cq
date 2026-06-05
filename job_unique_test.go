@@ -13,6 +13,59 @@ type acquireFailLocker struct {
 	acquireCalls atomic.Int32
 }
 
+type nonRenewableLocker struct {
+	mu    sync.Mutex
+	locks map[string]LockValue[struct{}]
+}
+
+func newNonRenewableLocker() *nonRenewableLocker {
+	return &nonRenewableLocker{
+		locks: make(map[string]LockValue[struct{}]),
+	}
+}
+
+func (l *nonRenewableLocker) Exists(key string) bool {
+	_, ok := l.Get(key)
+	return ok
+}
+
+func (l *nonRenewableLocker) Get(key string) (LockValue[struct{}], bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lock, ok := l.locks[key]
+	return lock, ok
+}
+
+func (l *nonRenewableLocker) Acquire(key string, lock LockValue[struct{}]) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if existing, ok := l.locks[key]; ok && !existing.IsExpired() {
+		return false
+	}
+	l.locks[key] = lock
+	return true
+}
+
+func (l *nonRenewableLocker) Release(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.locks[key]; !ok {
+		return false
+	}
+	delete(l.locks, key)
+	return true
+}
+
+func (l *nonRenewableLocker) ForceRelease(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.locks, key)
+}
+
+func (l *nonRenewableLocker) Aquire(key string, lock LockValue[struct{}]) bool {
+	return l.Acquire(key, lock)
+}
+
 func (l *acquireFailLocker) Exists(key string) bool {
 	return false
 }
@@ -423,6 +476,186 @@ func TestWithUnique(t *testing.T) {
 }
 
 func TestWithUniqueWindow(t *testing.T) {
+	t.Run("custom_token_generator_is_used", func(t *testing.T) {
+		locker := NewUniqueMemoryLocker()
+		window := 200 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+
+		go func() {
+			done <- WithUniqueWindow(func(ctx context.Context) error {
+				close(started)
+				<-release
+				return nil
+			}, "test-custom-token", window, locker, WithUniqueTokenGenerator(func() string {
+				return "custom-token"
+			}))(context.Background())
+		}()
+
+		<-started
+		lock, ok := locker.Get("test-custom-token")
+		if !ok {
+			t.Fatal("WithUniqueWindow(): expected lock to exist while job is running")
+		}
+		if lock.Token != "custom-token" {
+			t.Fatalf("WithUniqueWindow(): got token %q, want %q", lock.Token, "custom-token")
+		}
+
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("WithUniqueWindow(): first run got %v, want nil", err)
+		}
+	})
+
+	t.Run("empty_custom_token_falls_back_to_default_generator", func(t *testing.T) {
+		locker := NewUniqueMemoryLocker()
+		window := 200 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+
+		go func() {
+			done <- WithUniqueWindow(func(ctx context.Context) error {
+				close(started)
+				<-release
+				return nil
+			}, "test-empty-token-fallback", window, locker, WithUniqueTokenGenerator(func() string {
+				return ""
+			}))(context.Background())
+		}()
+
+		<-started
+		lock, ok := locker.Get("test-empty-token-fallback")
+		if !ok {
+			t.Fatal("WithUniqueWindow(): expected lock to exist while job is running")
+		}
+		if lock.Token == "" {
+			t.Fatal("WithUniqueWindow(): expected fallback token to be non-empty")
+		}
+
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("WithUniqueWindow(): first run got %v, want nil", err)
+		}
+	})
+
+	t.Run("manual_touch_keeps_lock_alive_during_long_run", func(t *testing.T) {
+		locker := NewUniqueMemoryLocker()
+		window := 120 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+
+		go func() {
+			done <- WithUniqueWindow(func(ctx context.Context) error {
+				close(started)
+				if !TouchLock(ctx, window) {
+					t.Error("TouchLock(): expected true with renewable locker")
+				}
+				time.Sleep(75 * time.Millisecond)
+				if !TouchLock(ctx, window) {
+					t.Error("TouchLock(): expected true on subsequent touch")
+				}
+				time.Sleep(75 * time.Millisecond)
+				<-release
+				return nil
+			}, "test-heartbeat", window, locker)(context.Background())
+		}()
+
+		<-started
+		time.Sleep(170 * time.Millisecond) // Past initial window but renewed.
+
+		err := WithUniqueWindow(func(ctx context.Context) error {
+			t.Error("WithUniqueWindow(): duplicate should remain blocked while manual touch is active")
+			return nil
+		}, "test-heartbeat", window, locker)(ContextWithContentionTry(context.Background()))
+		if !errors.Is(err, ErrUniqueContended) {
+			t.Fatalf("WithUniqueWindow(): got %v, want %v while first run active", err, ErrUniqueContended)
+		}
+
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("WithUniqueWindow(): first run got %v, want nil", err)
+		}
+	})
+
+	t.Run("renewable_locker_does_not_auto_touch", func(t *testing.T) {
+		locker := NewUniqueMemoryLocker()
+		window := 80 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+
+		go func() {
+			_ = WithUniqueWindow(func(ctx context.Context) error {
+				if calls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				return nil
+			}, "test-renewable-no-auto", window, locker)(context.Background())
+		}()
+
+		<-started
+		time.Sleep(120 * time.Millisecond) // Past initial window.
+
+		err := WithUniqueWindow(func(ctx context.Context) error {
+			calls.Add(1)
+			return nil
+		}, "test-renewable-no-auto", window, locker)(ContextWithContentionTry(context.Background()))
+		if err != nil {
+			t.Fatalf("WithUniqueWindow(): got %v, want nil when window expires without manual touch", err)
+		}
+
+		if got := calls.Load(); got < 2 {
+			t.Fatalf("WithUniqueWindow(): got %d calls, want second run after window expiry", got)
+		}
+
+		close(release)
+	})
+
+	t.Run("non_renewable_locker_keeps_original_expiry_behavior", func(t *testing.T) {
+		locker := newNonRenewableLocker()
+		window := 80 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var calls atomic.Int32
+
+		go func() {
+			_ = WithUniqueWindow(func(ctx context.Context) error {
+				if calls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				return nil
+			}, "test-non-renewable", window, locker)(context.Background())
+		}()
+
+		<-started
+		time.Sleep(120 * time.Millisecond) // Past initial window.
+
+		err := WithUniqueWindow(func(ctx context.Context) error {
+			calls.Add(1)
+			return nil
+		}, "test-non-renewable", window, locker)(ContextWithContentionTry(context.Background()))
+		if err != nil {
+			t.Fatalf("WithUniqueWindow(): got %v, want nil when window has expired on non-renewable locker", err)
+		}
+
+		if got := calls.Load(); got < 2 {
+			t.Fatalf("WithUniqueWindow(): got %d calls, want second run after window expiry", got)
+		}
+
+		close(release)
+	})
+
+	t.Run("touch_lock_returns_false_without_touch_context", func(t *testing.T) {
+		if ok := TouchLock(context.Background(), 10*time.Millisecond); ok {
+			t.Fatal("TouchLock(): got true without touch context, want false")
+		}
+	})
+
 	t.Run("lock_persists_after_job_completes", func(t *testing.T) {
 		var calls int
 		var mu sync.Mutex
