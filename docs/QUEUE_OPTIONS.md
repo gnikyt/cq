@@ -128,3 +128,27 @@ When paused:
 - For rejection-awareness, use `TryEnqueue` since it returns if enqueue happened.
 - For typed rejection reasons, use `EnqueueOrError` / `TryEnqueueOrError` and check:
 `cq.ErrQueuePaused`, `cq.ErrQueueStopped`, `cq.ErrQueueFull`.
+- For blocking enqueue with caller-controlled timeout/cancel, use:
+`EnqueueContext(ctx, job)` (returns `ctx.Err()` if context ends first).
+
+## Context-Aware Shutdown
+
+In addition to `Stop(true/false)`, you can bound graceful shutdown:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+if err := queue.StopContext(ctx); err != nil {
+	// context deadline/cancel before drain
+	log.Printf("stop bounded: %v", err)
+}
+```
+
+Or use convenience timeout:
+
+```go
+if err := queue.StopTimeout(5 * time.Second); err != nil {
+	log.Printf("stop timeout: %v", err)
+}
+```

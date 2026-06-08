@@ -298,6 +298,65 @@ func TestQueueEnqueueOrError(t *testing.T) {
 	})
 }
 
+func TestQueueEnqueueContext(t *testing.T) {
+	t.Run("returns_context_error_when_full", func(t *testing.T) {
+		// No workers: first job fills the queue; second blocks until context timeout.
+		q := NewQueue(0, 0, 1)
+		q.Start()
+		defer q.Stop(false)
+
+		if err := q.EnqueueOrError(func(ctx context.Context) error { return nil }); err != nil {
+			t.Fatalf("EnqueueOrError(): unexpected error: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		defer cancel()
+
+		err := q.EnqueueContext(ctx, func(ctx context.Context) error { return nil })
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("EnqueueContext(): got %v, want %v", err, context.DeadlineExceeded)
+		}
+	})
+
+	t.Run("succeeds_when_space_frees_before_deadline", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+		defer q.Stop(true)
+
+		block := make(chan struct{})
+		var ranThird atomic.Bool
+
+		// Job 1 occupies the single worker.
+		q.Enqueue(func(ctx context.Context) error {
+			<-block
+			return nil
+		})
+		// Job 2 occupies the single buffer slot.
+		q.Enqueue(func(ctx context.Context) error { return nil })
+
+		errCh := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			errCh <- q.EnqueueContext(ctx, func(ctx context.Context) error {
+				ranThird.Store(true)
+				return nil
+			})
+		}()
+
+		time.Sleep(25 * time.Millisecond)
+		close(block) // Frees worker and then queue slot for the EnqueueContext call.
+
+		if err := <-errCh; err != nil {
+			t.Fatalf("EnqueueContext(): got %v, want nil", err)
+		}
+
+		waitFor(t, 500*time.Millisecond, func() bool {
+			return ranThird.Load()
+		})
+	})
+}
+
 func TestQueueTryEnqueueOrError(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
 		// No workers: jobs only occupy channel capacity.
@@ -318,6 +377,84 @@ func TestQueueTryEnqueueOrError(t *testing.T) {
 			t.Fatalf("TryEnqueueOrError(): got %v, want %v", err, ErrQueueFull)
 		}
 	})
+}
+
+func TestQueueStopContext(t *testing.T) {
+	t.Run("returns_nil_when_jobs_finish_before_deadline", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+
+		var called atomic.Bool
+		q.Enqueue(func(ctx context.Context) error {
+			called.Store(true)
+			return nil
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		if err := q.StopContext(ctx); err != nil {
+			t.Fatalf("StopContext(): got %v, want nil", err)
+		}
+		if !called.Load() {
+			t.Fatal("StopContext(): expected job to run before shutdown")
+		}
+	})
+
+	t.Run("returns_deadline_exceeded_when_job_hangs", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+
+		release := make(chan struct{})
+		q.Enqueue(func(ctx context.Context) error {
+			<-release
+			return nil
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+
+		err := q.StopContext(ctx)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopContext(): got %v, want %v", err, context.DeadlineExceeded)
+		}
+
+		// Unblock hanging job goroutine to avoid test leakage.
+		close(release)
+	})
+
+	t.Run("returns_stopped_on_repeat_calls", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		if err := q.StopContext(ctx); err != nil {
+			t.Fatalf("StopContext(): first call got %v, want nil", err)
+		}
+		if err := q.StopContext(ctx); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("StopContext(): second call got %v, want %v", err, ErrQueueStopped)
+		}
+	})
+}
+
+func TestQueueStopTimeout(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+
+	release := make(chan struct{})
+	q.Enqueue(func(ctx context.Context) error {
+		<-release
+		return nil
+	})
+
+	err := q.StopTimeout(30 * time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("StopTimeout(): got %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	close(release)
 }
 
 func TestQueueTallies(t *testing.T) {

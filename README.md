@@ -280,6 +280,7 @@ Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`.
 // For normal jobs.
 queue.Enqueue(job)                            // Blocking.
 queue.EnqueueOrError(job)                     // Blocking, returns typed rejection error.
+queue.EnqueueContext(ctx, job)                // Blocking, cancelable via context.
 queue.TryEnqueue(job)                         // Non-blocking, returns bool.
 queue.TryEnqueueOrError(job)                  // Non-blocking, returns typed (accepted, error).
 queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
@@ -383,6 +384,8 @@ Use `cq.WithPauseBehavior(cq.PauseReject)` if you prefer rejecting enqueue while
 ```go
 queue.Stop(true)   // Wait for jobs to finish.
 queue.Stop(false)  // Don't wait for queued jobs.
+queue.StopContext(ctx) // Wait for jobs or stop when ctx is done.
+queue.StopTimeout(5 * time.Second) // Wait up to timeout duration.
 queue.Terminate()  // Immediate shutdown.
 ```
 

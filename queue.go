@@ -29,8 +29,9 @@ type IDGenerator func() string
 
 // enqueueOptions configures internal enqueue behavior.
 type enqueueOptions struct {
-	blocking bool   // Whether to block if no worker can be started and the jobs channel is full.
-	id       string // Optional job ID to be used.
+	blocking   bool            // Whether to block if no worker can be started and the jobs channel is full.
+	id         string          // Optional job ID to be used.
+	enqueueCtx context.Context // Optional caller context used to cancel blocking enqueue.
 }
 
 // Queue dispatches jobs to workers.
@@ -66,6 +67,7 @@ type Queue struct {
 	pauseStoreKey       string             // Key used for distributed pause state.
 	pausePollTick       time.Duration      // Interval for distributed pause polling.
 	pauseBehavior       PauseBehavior      // Enqueue behavior while paused.
+	jobsCloseOnce       sync.Once          // Ensures jobs channel is closed at most once.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -198,7 +200,68 @@ func (q *Queue) Stop(jobWait bool) {
 	q.resetWorkers()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
-	close(q.jobs)
+	q.closeJobs()
+}
+
+// StopContext gracefully shuts down the queue while bounded by ctx.
+// It behaves like Stop(true) unless ctx is done before queued/in-flight jobs finish.
+// On timeout/cancel, it cancels queue context and closes the queue without waiting
+// for worker goroutines to exit.
+func (q *Queue) StopContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background() // Default to background context.
+	}
+
+	if q.IsStopped() {
+		return ErrQueueStopped
+	}
+
+	q.enqueueMut.Lock()
+	defer q.enqueueMut.Unlock()
+
+	if q.IsStopped() {
+		return ErrQueueStopped
+	}
+
+	q.stopped.Store(true)
+	// Ensure graceful shutdown can drain pending jobs.
+	q.paused.Store(false)
+	q.distPaused.Store(false)
+
+	done := make(chan struct{}, 1)
+	go func() {
+		q.jobWg.Wait()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		q.ctxCancel()
+		q.workerWg.Wait()
+		q.resetWorkers()
+		q.paused.Store(false)
+		q.distPaused.Store(false)
+		q.closeJobs()
+		return nil
+	case <-ctx.Done():
+		q.ctxCancel()
+		q.paused.Store(false)
+		q.distPaused.Store(false)
+		go func() {
+			q.workerWg.Wait()
+			q.resetWorkers()
+			q.closeJobs()
+		}()
+		return ctx.Err()
+	}
+}
+
+// StopTimeout gracefully shuts down the queue for up to tt.
+// It is equivalent to calling StopContext with a timeout context.
+func (q *Queue) StopTimeout(tt time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tt)
+	defer cancel()
+	return q.StopContext(ctx)
 }
 
 // Terminate forces an immediate shutdown.
@@ -209,10 +272,13 @@ func (q *Queue) Terminate() {
 
 	q.stopped.Store(true)
 	q.ctxCancel()
-	q.resetWorkers()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
-	close(q.jobs)
+	go func() {
+		q.workerWg.Wait()
+		q.resetWorkers()
+		q.closeJobs()
+	}()
 }
 
 // IsStopped atomically checks if the queue is stopped.
@@ -289,6 +355,17 @@ func (q *Queue) Enqueue(job Job) {
 // EnqueueOrError submits a job and returns a typed error on rejection.
 func (q *Queue) EnqueueOrError(job Job) error {
 	_, err := q.doEnqueueWithErr(job, enqueueOptions{blocking: true})
+	return err
+}
+
+// EnqueueContext submits a job to the queue with caller-controlled cancellation.
+// It behaves like EnqueueOrError in blocking mode, but if ctx is done while waiting
+// for queue space, it aborts and returns ctx.Err().
+func (q *Queue) EnqueueContext(ctx context.Context, job Job) error {
+	if ctx == nil {
+		ctx = context.Background() // Default to background context.
+	}
+	_, err := q.doEnqueueWithErr(job, enqueueOptions{blocking: true, enqueueCtx: ctx})
 	return err
 }
 
@@ -391,6 +468,13 @@ func (q *Queue) resetWorkers() {
 	q.workersIdleTally.Store(0)
 }
 
+// closeJobs closes the jobs channel at most once.
+func (q *Queue) closeJobs() {
+	q.jobsCloseOnce.Do(func() {
+		close(q.jobs)
+	})
+}
+
 // markJobEnqueued records a job accepted by the queue.
 func (q *Queue) markJobEnqueued() {
 	q.createdJobsTally.Add(1)
@@ -457,6 +541,14 @@ func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
 func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err error) {
+	if opts.enqueueCtx != nil {
+		select {
+		case <-opts.enqueueCtx.Done():
+			return false, opts.enqueueCtx.Err()
+		default:
+		}
+	}
+
 	q.enqueueMut.RLock()
 	if q.IsStopped() {
 		q.enqueueMut.RUnlock()
@@ -526,8 +618,20 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 		// Either no worker slot was available or queue is paused.
 		// Fallback is to buffer the job in q.jobs.
 		if opts.blocking {
-			q.jobs <- wrappedJob
-			ok = true
+			if opts.enqueueCtx == nil {
+				// No enqueue context provided, so block until the job is enqueued.
+				q.jobs <- wrappedJob
+				ok = true
+			} else {
+				// Enqueue context provided, so block until the job is enqueued or the context is done.
+				select {
+				case q.jobs <- wrappedJob:
+					ok = true
+				case <-opts.enqueueCtx.Done():
+					ok = false
+					err = opts.enqueueCtx.Err()
+				}
+			}
 		} else {
 			select {
 			case q.jobs <- wrappedJob:
