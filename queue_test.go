@@ -142,6 +142,79 @@ func TestQueueGetters(t *testing.T) {
 	}
 }
 
+func TestQueueStats(t *testing.T) {
+	t.Run("captures_state_and_tallies", func(t *testing.T) {
+		q := NewQueue(1, 1, 2)
+		q.Start()
+		defer q.Stop(true)
+
+		if err := q.Pause(); err != nil {
+			t.Fatalf("Pause(): unexpected error: %v", err)
+		}
+		stats := q.Stats()
+		if !stats.Paused {
+			t.Fatal("Stats(): paused got false, want true")
+		}
+		if stats.Stopped {
+			t.Fatal("Stats(): stopped got true, want false")
+		}
+		if stats.WorkersMin != 1 || stats.WorkersMax != 1 {
+			t.Fatalf("Stats(): worker range got %d:%d, want 1:1", stats.WorkersMin, stats.WorkersMax)
+		}
+		if stats.Capacity != 2 {
+			t.Fatalf("Stats(): capacity got %d, want 2", stats.Capacity)
+		}
+
+		if err := q.Resume(); err != nil {
+			t.Fatalf("Resume(): unexpected error: %v", err)
+		}
+
+		block := make(chan struct{})
+		q.Enqueue(func(ctx context.Context) error {
+			<-block
+			return nil
+		})
+		q.Enqueue(func(ctx context.Context) error { return nil })
+
+		waitFor(t, 500*time.Millisecond, func() bool {
+			s := q.Stats()
+			return s.CreatedJobs == 2 && s.ActiveJobs == 1 && s.PendingJobs == 1
+		})
+
+		stats = q.Stats()
+		if stats.CreatedJobs != 2 {
+			t.Fatalf("Stats(): created jobs got %d, want 2", stats.CreatedJobs)
+		}
+		if stats.ActiveJobs != 1 {
+			t.Fatalf("Stats(): active jobs got %d, want 1", stats.ActiveJobs)
+		}
+		if stats.PendingJobs != 1 {
+			t.Fatalf("Stats(): pending jobs got %d, want 1", stats.PendingJobs)
+		}
+		if stats.FailedJobs != 0 {
+			t.Fatalf("Stats(): failed jobs got %d, want 0", stats.FailedJobs)
+		}
+
+		close(block)
+
+		waitFor(t, 500*time.Millisecond, func() bool {
+			s := q.Stats()
+			return s.ActiveJobs == 0 && s.PendingJobs == 0 && s.CompletedJobs == 2
+		})
+	})
+
+	t.Run("reports_stopped_after_stop", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+		q.Stop(false)
+
+		stats := q.Stats()
+		if !stats.Stopped {
+			t.Fatal("Stats(): stopped got false, want true")
+		}
+	})
+}
+
 func TestQueueEnqueue(t *testing.T) {
 	var called atomic.Bool // Was job called?
 	q := NewQueue(1, 1, 1)

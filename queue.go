@@ -34,6 +34,22 @@ type enqueueOptions struct {
 	enqueueCtx context.Context // Optional caller context used to cancel blocking enqueue.
 }
 
+// QueueStats is an atomic snapshot of queue state and tallies.
+type QueueStats struct {
+	Stopped        bool
+	Paused         bool
+	WorkersMin     int
+	WorkersMax     int
+	RunningWorkers int
+	IdleWorkers    int
+	Capacity       int
+	CreatedJobs    int
+	PendingJobs    int
+	ActiveJobs     int
+	FailedJobs     int
+	CompletedJobs  int
+}
+
 // Queue dispatches jobs to workers.
 // It dynamically scales workers between configured minimum and maximum limits,
 // and tracks runtime job and worker metrics.
@@ -344,6 +360,31 @@ func (q *Queue) RunningWorkers() int {
 // IdleWorkers atomically returns the number of idle workers.
 func (q *Queue) IdleWorkers() int {
 	return int(q.workersIdleTally.Load())
+}
+
+// Stats returns a snapshot of queue state, worker counts, and job tallies.
+// This is intended for metrics/observability; it does not provide transactional
+// consistency across every field.
+func (q *Queue) Stats() QueueStats {
+	q.mut.Lock()
+	wmin := q.workersMin
+	wmax := q.workersMax
+	q.mut.Unlock()
+
+	return QueueStats{
+		Stopped:        q.stopped.Load(),
+		Paused:         q.IsPaused(),
+		WorkersMin:     wmin,
+		WorkersMax:     wmax,
+		RunningWorkers: int(q.workersRunningTally.Load()),
+		IdleWorkers:    int(q.workersIdleTally.Load()),
+		Capacity:       cap(q.jobs),
+		CreatedJobs:    int(q.createdJobsTally.Load()),
+		PendingJobs:    int(q.pendingJobsTally.Load()),
+		ActiveJobs:     int(q.activeJobsTally.Load()),
+		FailedJobs:     int(q.failedJobsTally.Load()),
+		CompletedJobs:  int(q.completedJobsTally.Load()),
+	}
 }
 
 // Enqueue submits a job to the queue.

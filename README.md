@@ -301,6 +301,7 @@ queue.RunningWorkers()           // Current running workers.
 queue.IdleWorkers()              // Current idle workers.
 queue.Capacity()                 // Job channel capacity.
 queue.WorkerRange()              // (min, max) workers.
+queue.Stats()                    // Single-call queue snapshot.
 queue.SetWorkerRange(2, 20)      // Update (min, max) at runtime.
 queue.TallyOf(cq.JobStateFailed) // Count by state.
 
@@ -311,6 +312,11 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStateFailed    - Jobs completed with error.
 // cq.JobStateCompleted - Jobs completed successfully.
 ```
+
+`queue.Stats()` returns `cq.QueueStats` with queue state (`Stopped`, `Paused`),
+worker details (`WorkersMin`, `WorkersMax`, `RunningWorkers`, `IdleWorkers`, `Capacity`),
+and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `CompletedJobs`)
+in one snapshot call.
 
 ### Runtime Scaling
 
