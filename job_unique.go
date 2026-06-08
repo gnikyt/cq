@@ -210,11 +210,14 @@ func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[s
 		}
 
 		if renewable && window > 0 {
-			ctx = contextWithLockTouchRequester(ctx, func(ttl time.Duration) bool {
+			ctx = contextWithLockTouchRequester(ctx, func(ttl time.Duration) error {
 				if ttl <= 0 {
 					ttl = window
 				}
-				return renewableLocker.Touch(key, token, time.Now().Add(ttl))
+				if !renewableLocker.Touch(key, token, time.Now().Add(ttl)) {
+					return ErrUniqueLeaseLost
+				}
+				return nil
 			})
 		}
 

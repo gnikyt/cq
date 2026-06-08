@@ -238,6 +238,19 @@ queue.Enqueue(job)
 `WithUniqueWindow` keeps a fixed window by default.
 For manual extension, use `TouchLock` inside your job when the locker implements
 optional lease renewal (`RenewableLocker` with `Touch`).
+`TouchLock` returns `nil` when lease renewal succeeds,
+`ErrUniqueLeaseLost` when renewal fails (for example lock ownership lost), and
+`ErrTouchLockUnavailable` when called outside a renewable unique-window context.
+
+```go
+job := cq.WithUnique(func(ctx context.Context) error {
+	if err := cq.TouchLock(ctx, 30*time.Second); err != nil {
+		return err // Handle cq.ErrUniqueLeaseLost / cq.ErrTouchLockUnavailable as needed.
+	}
+	return doWork(ctx)
+}, "index-products", 30*time.Second, locker)
+```
+
 For custom ownership token formats, pass `WithUniqueTokenGenerator(...)`.
 
 ### Recurring Job (scheduler)

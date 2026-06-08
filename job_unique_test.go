@@ -550,12 +550,12 @@ func TestWithUniqueWindow(t *testing.T) {
 		go func() {
 			done <- WithUniqueWindow(func(ctx context.Context) error {
 				close(started)
-				if !TouchLock(ctx, window) {
-					t.Error("TouchLock(): expected true with renewable locker")
+				if err := TouchLock(ctx, window); err != nil {
+					t.Errorf("TouchLock(): got %v, want nil with renewable locker", err)
 				}
 				time.Sleep(75 * time.Millisecond)
-				if !TouchLock(ctx, window) {
-					t.Error("TouchLock(): expected true on subsequent touch")
+				if err := TouchLock(ctx, window); err != nil {
+					t.Errorf("TouchLock(): got %v, want nil on subsequent touch", err)
 				}
 				time.Sleep(75 * time.Millisecond)
 				<-release
@@ -650,9 +650,10 @@ func TestWithUniqueWindow(t *testing.T) {
 		close(release)
 	})
 
-	t.Run("touch_lock_returns_false_without_touch_context", func(t *testing.T) {
-		if ok := TouchLock(context.Background(), 10*time.Millisecond); ok {
-			t.Fatal("TouchLock(): got true without touch context, want false")
+	t.Run("touch_lock_returns_unavailable_without_touch_context", func(t *testing.T) {
+		err := TouchLock(context.Background(), 10*time.Millisecond)
+		if !errors.Is(err, ErrTouchLockUnavailable) {
+			t.Fatalf("TouchLock(): got %v, want %v", err, ErrTouchLockUnavailable)
 		}
 	})
 

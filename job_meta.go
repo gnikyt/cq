@@ -2,7 +2,16 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+var (
+	// ErrTouchLockUnavailable is returned when TouchLock is called outside a unique-window
+	// execution context that exposes lock-touch capability.
+	ErrTouchLockUnavailable = errors.New("cq: touch lock unavailable in context")
+	// ErrUniqueLeaseLost is returned when a unique-window lock lease cannot be renewed.
+	ErrUniqueLeaseLost = errors.New("cq: unique lease lost")
 )
 
 // jobMetaKey is the context key for job metadata.
@@ -18,7 +27,7 @@ type releaseRequester func(time.Duration) bool
 type lockTouchRequesterKey struct{}
 
 // lockTouchRequester is a function that requests a unique lock touch.
-type lockTouchRequester func(time.Duration) bool
+type lockTouchRequester func(time.Duration) error
 
 // lastErrorKey is the context key for the previous attempt error.
 type lastErrorKey struct{}
@@ -74,11 +83,11 @@ func contextWithReleaseRequester(ctx context.Context, fn releaseRequester) conte
 }
 
 // TouchLock requests the current unique lock lease to be extended by ttl.
-// Returns false when no unique lock touch requester is present.
-func TouchLock(ctx context.Context, ttl time.Duration) bool {
+// Returns ErrTouchLockUnavailable when no unique lock touch requester is present.
+func TouchLock(ctx context.Context, ttl time.Duration) error {
 	fn, ok := ctx.Value(lockTouchRequesterKey{}).(lockTouchRequester)
 	if !ok || fn == nil {
-		return false
+		return ErrTouchLockUnavailable
 	}
 	return fn(ttl)
 }
