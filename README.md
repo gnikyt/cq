@@ -233,14 +233,15 @@ job := cq.WithUnique(
 queue.Enqueue(job)
 ```
 
-### Long-Running Unique Window (optional touch renewal)
+### Long-Running Unique Locks (optional touch renewal)
 
-`WithUniqueWindow` keeps a fixed window by default.
+`WithUniqueWindow` keeps a fixed window by default. `WithUnique` can also be
+manually renewed when configured with a positive unique duration.
 For manual extension, use `TouchLock` inside your job when the locker implements
 optional lease renewal (`RenewableLocker` with `Touch`).
 `TouchLock` returns `nil` when lease renewal succeeds,
 `ErrUniqueLeaseLost` when renewal fails (for example lock ownership lost), and
-`ErrTouchLockUnavailable` when called outside a renewable unique-window context.
+`ErrTouchLockUnavailable` when called outside a renewable unique-lock context.
 
 ```go
 job := cq.WithUnique(func(ctx context.Context) error {

@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	// ErrTouchLockUnavailable is returned when TouchLock is called outside a unique-window
+	// ErrTouchLockUnavailable is returned when TouchLock is called outside a unique
 	// execution context that exposes lock-touch capability.
 	ErrTouchLockUnavailable = errors.New("cq: touch lock unavailable in context")
 	// ErrUniqueLeaseLost is returned when a unique-window lock lease cannot be renewed.

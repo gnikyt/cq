@@ -297,6 +297,46 @@ func TestWithUnique(t *testing.T) {
 		}
 	})
 
+	t.Run("manual_touch_keeps_lock_alive_during_long_run", func(t *testing.T) {
+		locker := NewUniqueMemoryLocker()
+		window := 120 * time.Millisecond
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+
+		go func() {
+			done <- WithUnique(func(ctx context.Context) error {
+				close(started)
+				if err := TouchLock(ctx, window); err != nil {
+					t.Errorf("TouchLock(): got %v, want nil with renewable locker", err)
+				}
+				time.Sleep(75 * time.Millisecond)
+				if err := TouchLock(ctx, window); err != nil {
+					t.Errorf("TouchLock(): got %v, want nil on subsequent touch", err)
+				}
+				time.Sleep(75 * time.Millisecond)
+				<-release
+				return nil
+			}, "test-touch-unique", window, locker)(context.Background())
+		}()
+
+		<-started
+		time.Sleep(170 * time.Millisecond) // Past initial window but renewed.
+
+		err := WithUnique(func(ctx context.Context) error {
+			t.Error("WithUnique(): duplicate should remain blocked while manual touch is active")
+			return nil
+		}, "test-touch-unique", window, locker)(ContextWithContentionTry(context.Background()))
+		if !errors.Is(err, ErrUniqueContended) {
+			t.Fatalf("WithUnique(): got %v, want %v while first run active", err, ErrUniqueContended)
+		}
+
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("WithUnique(): first run got %v, want nil", err)
+		}
+	})
+
 	t.Run("zero_duration", func(t *testing.T) {
 		var called atomic.Bool
 		locker := NewUniqueMemoryLocker()
@@ -320,6 +360,16 @@ func TestWithUnique(t *testing.T) {
 		time.Sleep(60 * time.Millisecond)
 		if !called.Load() {
 			t.Error("WithUnique(): job should have been called")
+		}
+	})
+
+	t.Run("touch_unavailable_without_renewable_unique_context", func(t *testing.T) {
+		locker := newNonRenewableLocker()
+		err := WithUnique(func(ctx context.Context) error {
+			return TouchLock(ctx, 10*time.Millisecond)
+		}, "test-non-renewable-touch", 50*time.Millisecond, locker)(context.Background())
+		if !errors.Is(err, ErrTouchLockUnavailable) {
+			t.Fatalf("WithUnique(): got %v, want %v", err, ErrTouchLockUnavailable)
 		}
 	})
 

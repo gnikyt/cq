@@ -38,8 +38,9 @@ type RenewableLocker[T any] interface {
 }
 ```
 
-`WithUniqueWindow` does not auto-renew by default. Use `TouchLock(ctx, ttl)` from inside
-the running job to extend the lease when `RenewableLocker` is available.
+`WithUniqueWindow` and `WithUnique` (with `ut > 0`) do not auto-renew by default.
+Use `TouchLock(ctx, ttl)` from inside the running job to extend the lease when
+`RenewableLocker` is available.
 `TouchLock` returns `nil` on success, `cq.ErrUniqueLeaseLost` when renewal fails,
 and `cq.ErrTouchLockUnavailable` when no renewable touch context is present.
 This requires preserving `LockValue.Token` as lock ownership identity.

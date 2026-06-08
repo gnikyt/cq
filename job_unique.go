@@ -151,8 +151,9 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 		// Lock either does not exist or was released... acquire a new lock.
 		var es struct{}
 		var expiresAt time.Time
+		renewableLocker, renewable := locker.(RenewableLocker[struct{}])
 		token := ""
-		if _, ok := locker.(RenewableLocker[struct{}]); ok {
+		if renewable {
 			token = nextUniqueLockToken(cfg.tokenGenerator)
 		}
 		if ut == 0 {
@@ -168,6 +169,18 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 			Token:     token,
 		}) {
 			return uniqueContentionOrDiscard(ctx) // Lock acquisition failed, return the contention error.
+		}
+
+		if renewable && ut > 0 {
+			ctx = contextWithLockTouchRequester(ctx, func(ttl time.Duration) error {
+				if ttl <= 0 {
+					ttl = ut
+				}
+				if !renewableLocker.Touch(key, token, time.Now().Add(ttl)) {
+					return ErrUniqueLeaseLost
+				}
+				return nil
+			})
 		}
 
 		defer releaseLockByToken(locker, key, token)
