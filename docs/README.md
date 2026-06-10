@@ -23,7 +23,7 @@ Complete reference for all job wrappers including:
 ### [Queue Routing](QUEUE_ROUTING.md)
 Register named queues and route jobs explicitly:
 - Named routing with `QueueManager`
-- Manager-level delayed enqueue
+- Manager-level delayed submission
 - Isolated worker pools per queue
 
 ### [Priority Queue](PRIORITY_QUEUE.md)

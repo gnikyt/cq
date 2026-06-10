@@ -17,21 +17,22 @@ const (
 	defaultPauseWaitTick  = 25 * time.Millisecond // Worker pause check interval.
 )
 
-// Queue enqueue errors.
+// Queue submission errors.
 var (
 	ErrQueueStopped = errors.New("queue is stopped")
 	ErrQueuePaused  = errors.New("queue is paused")
 	ErrQueueFull    = errors.New("queue is full")
 )
 
-// IDGenerator creates a job ID for accepted enqueue operations.
+// IDGenerator creates a job ID for accepted submissions.
 type IDGenerator func() string
 
-// enqueueOptions configures internal enqueue behavior.
-type enqueueOptions struct {
-	blocking   bool            // Whether to block if no worker can be started and the jobs channel is full.
-	id         string          // Optional job ID to be used.
-	enqueueCtx context.Context // Optional caller context used to cancel blocking enqueue.
+// submissionOptions configures internal submission acceptance.
+type submissionOptions struct {
+	blocking  bool            // Whether to block if no worker can be started and the jobs channel is full.
+	acceptCtx context.Context // Cancels waiting for acceptance without cancelling an accepted job.
+	meta      JobMeta         // Metadata for the accepted submission.
+	handle    *JobHandle      // Completion handle for the accepted submission.
 }
 
 // QueueStats is an atomic snapshot of queue state and tallies.
@@ -54,36 +55,44 @@ type QueueStats struct {
 // It dynamically scales workers between configured minimum and maximum limits,
 // and tracks runtime job and worker metrics.
 type Queue struct {
-	workersMin          int                // Minimum worker count.
-	workersMax          int                // Maximum worker count.
-	workerIdleTick      time.Duration      // Interval for idle-worker cleanup.
-	workerWg            sync.WaitGroup     // Tracks worker and cleanup goroutines.
-	jobWg               sync.WaitGroup     // Tracks in-flight jobs.
-	jobs                chan Job           // Buffered job queue.
-	ctx                 context.Context    // Queue context for workers/jobs.
-	ctxCancel           context.CancelFunc // Cancels the queue context.
-	panicHandler        func(any)          // Optional panic handler for job panics.
-	mut                 sync.Mutex         // Guards worker scaling decisions.
-	enqueueMut          sync.RWMutex       // Synchronizes enqueue tracking with Stop/Terminate.
-	stopped             atomic.Bool        // Indicates queue shutdown has started.
-	workersRunningTally atomic.Int32       // Reserved/active worker slots used for scaling decisions.
-	workersIdleTally    atomic.Int32       // Reserved idle worker slots available for new jobs.
-	createdJobsTally    atomic.Int64       // Total jobs accepted.
-	activeJobsTally     atomic.Int64       // Jobs currently executing.
-	pendingJobsTally    atomic.Int64       // Jobs waiting in the queue.
-	failedJobsTally     atomic.Int64       // Jobs completed with error.
-	completedJobsTally  atomic.Int64       // Jobs completed successfully.
-	jobIDCounter        atomic.Int64       // Counter for generating unique job IDs.
-	idGenerator         IDGenerator        // Optional override for generating job IDs.
-	middleware          []Middleware       // Optional queue-level middleware chain.
-	hooks               []Hooks            // Optional lifecycle hooks for queue transitions.
-	paused              atomic.Bool        // Local pause state.
-	distPaused          atomic.Bool        // Distributed pause state from store polling.
-	pauseStore          PauseStore         // Optional distributed pause state store.
-	pauseStoreKey       string             // Key used for distributed pause state.
-	pausePollTick       time.Duration      // Interval for distributed pause polling.
-	pauseBehavior       PauseBehavior      // Enqueue behavior while paused.
-	jobsCloseOnce       sync.Once          // Ensures jobs channel is closed at most once.
+	ctx       context.Context    // Queue context for workers/jobs.
+	ctxCancel context.CancelFunc // Cancels the queue context.
+	stopped   atomic.Bool        // Indicates queue shutdown has started.
+
+	workersMin          int            // Minimum worker count.
+	workersMax          int            // Maximum worker count.
+	workerIdleTick      time.Duration  // Interval for idle-worker cleanup.
+	workerWg            sync.WaitGroup // Tracks worker and cleanup goroutines.
+	mut                 sync.Mutex     // Guards worker scaling decisions.
+	workersRunningTally atomic.Int32   // Reserved/active worker slots used for scaling decisions.
+	workersIdleTally    atomic.Int32   // Reserved idle worker slots available for new jobs.
+
+	jobs          chan Job       // Buffered job queue.
+	jobWg         sync.WaitGroup // Tracks accepted jobs.
+	acceptMut     sync.RWMutex   // Synchronizes submission acceptance with Stop/Terminate.
+	jobsCloseOnce sync.Once      // Ensures jobs channel is closed at most once.
+
+	createdJobsTally   atomic.Int64 // Total jobs accepted.
+	activeJobsTally    atomic.Int64 // Jobs currently executing.
+	pendingJobsTally   atomic.Int64 // Jobs waiting in the queue.
+	failedJobsTally    atomic.Int64 // Jobs completed with error.
+	completedJobsTally atomic.Int64 // Jobs completed successfully.
+
+	jobIDCounter   atomic.Int64            // Counter for generating unique job IDs.
+	idGenerator    IDGenerator             // Optional override for generating job IDs.
+	submissionsMut sync.Mutex              // Guards unresolved submissions.
+	submissions    map[*JobHandle]struct{} // Accepted submissions that are not terminal.
+
+	panicHandler func(any)    // Optional panic handler for job panics.
+	middleware   []Middleware // Optional queue-level middleware chain.
+	hooks        []Hooks      // Optional lifecycle hooks for queue transitions.
+
+	paused        atomic.Bool   // Local pause state.
+	distPaused    atomic.Bool   // Distributed pause state from store polling.
+	pauseStore    PauseStore    // Optional distributed pause state store.
+	pauseStoreKey string        // Key used for distributed pause state.
+	pausePollTick time.Duration // Interval for distributed pause polling.
+	pauseBehavior PauseBehavior // Submission behavior while paused.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -112,6 +121,7 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 		workerIdleTick: defaultWorkerIdleTick,
 		pausePollTick:  defaultPausePollTick,
 		pauseBehavior:  PauseBuffer,
+		submissions:    make(map[*JobHandle]struct{}),
 	}
 
 	// Apply functional options.
@@ -201,8 +211,8 @@ func (q *Queue) Start() {
 // when `jobWait` is true, waits for worker goroutines to exit, resets worker
 // tallies, and closes the jobs channel.
 func (q *Queue) Stop(jobWait bool) {
-	q.enqueueMut.Lock()
-	defer q.enqueueMut.Unlock()
+	q.acceptMut.Lock()
+	defer q.acceptMut.Unlock()
 
 	q.stopped.Store(true)
 	if jobWait {
@@ -210,6 +220,9 @@ func (q *Queue) Stop(jobWait bool) {
 		q.paused.Store(false)
 		q.distPaused.Store(false)
 		q.jobWg.Wait()
+	}
+	if !jobWait {
+		q.abandonPendingSubmissions()
 	}
 	q.ctxCancel()
 	q.workerWg.Wait()
@@ -232,8 +245,8 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		return ErrQueueStopped
 	}
 
-	q.enqueueMut.Lock()
-	defer q.enqueueMut.Unlock()
+	q.acceptMut.Lock()
+	defer q.acceptMut.Unlock()
 
 	if q.IsStopped() {
 		return ErrQueueStopped
@@ -261,6 +274,7 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		q.ctxCancel()
+		q.abandonPendingSubmissions()
 		q.paused.Store(false)
 		q.distPaused.Store(false)
 		go func() {
@@ -283,10 +297,11 @@ func (q *Queue) StopTimeout(tt time.Duration) error {
 // Terminate forces an immediate shutdown.
 // Unlike Stop, it does not wait for jobs or worker goroutines to finish.
 func (q *Queue) Terminate() {
-	q.enqueueMut.Lock()
-	defer q.enqueueMut.Unlock()
+	q.acceptMut.Lock()
+	defer q.acceptMut.Unlock()
 
 	q.stopped.Store(true)
+	q.abandonPendingSubmissions()
 	q.ctxCancel()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
@@ -303,7 +318,7 @@ func (q *Queue) IsStopped() bool {
 }
 
 // Pause prevents new jobs from starting execution.
-// Enqueue operations are still accepted, and running jobs continue.
+// Submissions are still accepted, and running jobs continue.
 func (q *Queue) Pause() error {
 	q.paused.Store(true)
 	if q.pauseStore == nil || q.pauseStoreKey == "" {
@@ -387,87 +402,117 @@ func (q *Queue) Stats() QueueStats {
 	}
 }
 
-// Enqueue submits a job to the queue.
-// It blocks if no worker can be started and the jobs channel is full.
-func (q *Queue) Enqueue(job Job) {
-	_, _ = q.doEnqueueWithErr(job, enqueueOptions{blocking: true})
-}
-
-// EnqueueOrError submits a job and returns a typed error on rejection.
-func (q *Queue) EnqueueOrError(job Job) error {
-	_, err := q.doEnqueueWithErr(job, enqueueOptions{blocking: true})
-	return err
-}
-
-// EnqueueContext submits a job to the queue with caller-controlled cancellation.
-// It behaves like EnqueueOrError in blocking mode, but if ctx is done while waiting
-// for queue space, it aborts and returns ctx.Err().
-func (q *Queue) EnqueueContext(ctx context.Context, job Job) error {
+// Submit accepts one job and returns a handle that tracks its execution.
+// ctx controls waiting for queue acceptance only; it does not cancel the running job.
+func (q *Queue) Submit(ctx context.Context, job Job, opts ...SubmitOption) (*JobHandle, error) {
 	if ctx == nil {
-		ctx = context.Background() // Default to background context.
+		ctx = context.Background()
 	}
-	_, err := q.doEnqueueWithErr(job, enqueueOptions{blocking: true, enqueueCtx: ctx})
-	return err
+	cfg := resolveSubmitConfig(opts)
+	meta := q.newSubmissionMeta(cfg)
+	handle := newJobHandle(meta)
+	ok, err := q.acceptSubmission(job, submissionOptions{
+		blocking:  !cfg.nonBlocking,
+		acceptCtx: ctx,
+		meta:      meta,
+		handle:    handle,
+	})
+	if !ok {
+		return nil, err
+	}
+	return handle, nil
 }
 
-// TryEnqueue attempts to submit a job without blocking.
-// It returns true if accepted, or false if no worker can be started and the
-// jobs channel is full.
-func (q *Queue) TryEnqueue(job Job) bool {
-	ok, _ := q.doEnqueueWithErr(job, enqueueOptions{blocking: false})
-	return ok
-}
+// SubmitAfter accepts responsibility for submitting job after delay.
+// The returned handle remains pending during the delay and tracks eventual execution.
+// When the delay elapses, submission is non-blocking and may resolve with ErrQueueFull.
+func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, opts ...SubmitOption) (*JobHandle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 
-// TryEnqueueOrError attempts to submit a job without blocking.
-// It returns typed rejection errors (for example ErrQueuePaused, ErrQueueStopped, ErrQueueFull).
-func (q *Queue) TryEnqueueOrError(job Job) (bool, error) {
-	return q.doEnqueueWithErr(job, enqueueOptions{blocking: false})
-}
+	q.acceptMut.RLock()
+	if q.IsStopped() {
+		q.acceptMut.RUnlock()
+		return nil, ErrQueueStopped
+	}
+	cfg := resolveSubmitConfig(opts)
+	meta := q.newSubmissionMeta(cfg)
+	handle := newJobHandle(meta)
+	q.trackSubmission(handle)
+	q.acceptMut.RUnlock()
 
-// DelayEnqueue submits a job after the given delay.
-// The delay runs in its own goroutine so the caller is not blocked.
-func (q *Queue) DelayEnqueue(job Job, delay time.Duration) {
-	q.doDelayEnqueue(job, delay, enqueueOptions{blocking: true})
-}
-
-// doDelayEnqueue submits a job after the given delay.
-// The delay runs in its own goroutine so the caller is not blocked.
-func (q *Queue) doDelayEnqueue(job Job, delay time.Duration, opts enqueueOptions) {
+	if delay < 0 {
+		delay = 0
+	}
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
-
 		select {
 		case <-q.ctx.Done():
-			return // Context is done, stop the timer.
+			if handle.reject(ErrQueueStopped) {
+				q.untrackSubmission(handle)
+			}
 		case <-timer.C:
-			q.doEnqueue(job, opts) // Job can be submitted now.
-		}
-	}()
-}
-
-// EnqueueBatch accepts a slice of jobs and enqueues each one.
-func (q *Queue) EnqueueBatch(jobs []Job) {
-	for _, job := range jobs {
-		q.doEnqueue(job, enqueueOptions{blocking: true})
-	}
-}
-
-// DelayEnqueueBatch submits a slice of jobs after the given delay.
-func (q *Queue) DelayEnqueueBatch(jobs []Job, delay time.Duration) {
-	timer := time.NewTimer(delay)
-	go func() {
-		defer timer.Stop()
-
-		select {
-		case <-q.ctx.Done():
-			return // Context is done, stop the timer.
-		case <-timer.C:
-			for _, job := range jobs {
-				q.doEnqueue(job, enqueueOptions{blocking: true}) // Jobs can be submitted now.
+			ok, err := q.acceptSubmission(job, submissionOptions{
+				blocking:  false,
+				acceptCtx: q.ctx,
+				meta:      meta,
+				handle:    handle,
+			})
+			if !ok && handle.reject(err) {
+				q.untrackSubmission(handle)
 			}
 		}
 	}()
+	return handle, nil
+}
+
+// SubmitBatch submits jobs in order and returns handles for accepted jobs.
+// If submission stops partway through, accepted handles and the rejection error are returned.
+func (q *Queue) SubmitBatch(ctx context.Context, jobs []Job, opts ...SubmitOption) ([]*JobHandle, error) {
+	handles := make([]*JobHandle, 0, len(jobs))
+	for _, job := range jobs {
+		handle, err := q.Submit(ctx, job, opts...)
+		if err != nil {
+			return handles, err
+		}
+		handles = append(handles, handle)
+	}
+	return handles, nil
+}
+
+// SubmitBatchAfter schedules jobs in order after delay.
+// If scheduling stops partway through, accepted handles and the rejection error are returned.
+func (q *Queue) SubmitBatchAfter(ctx context.Context, jobs []Job, delay time.Duration, opts ...SubmitOption) ([]*JobHandle, error) {
+	handles := make([]*JobHandle, 0, len(jobs))
+	for _, job := range jobs {
+		handle, err := q.SubmitAfter(ctx, job, delay, opts...)
+		if err != nil {
+			return handles, err
+		}
+		handles = append(handles, handle)
+	}
+	return handles, nil
+}
+
+// newSubmissionMeta creates metadata for a newly accepted submission.
+func (q *Queue) newSubmissionMeta(cfg submitConfig) JobMeta {
+	id := cfg.id
+	if id == "" {
+		id = q.nextJobID()
+	}
+	return JobMeta{
+		ID:         id,
+		Name:       cfg.name,
+		Attributes: cloneStringMap(cfg.attributes),
+		EnqueuedAt: time.Now(),
+	}
 }
 
 // reserveWorkerSlot checks limits under lock and reserves one running-worker slot.
@@ -551,6 +596,31 @@ func (q *Queue) markWorkerIdle() {
 	q.workersIdleTally.Add(1)
 }
 
+// trackSubmission records a submission that has not reached a terminal state.
+func (q *Queue) trackSubmission(handle *JobHandle) {
+	q.submissionsMut.Lock()
+	q.submissions[handle] = struct{}{}
+	q.submissionsMut.Unlock()
+}
+
+// untrackSubmission removes a terminal submission from queue tracking.
+func (q *Queue) untrackSubmission(handle *JobHandle) {
+	q.submissionsMut.Lock()
+	delete(q.submissions, handle)
+	q.submissionsMut.Unlock()
+}
+
+// abandonPendingSubmissions completes every tracked pending submission as abandoned.
+func (q *Queue) abandonPendingSubmissions() {
+	q.submissionsMut.Lock()
+	defer q.submissionsMut.Unlock()
+	for handle := range q.submissions {
+		if handle.abandon() {
+			delete(q.submissions, handle)
+		}
+	}
+}
+
 // unmarkWorkerIdle records a worker leaving idle state.
 func (q *Queue) unmarkWorkerIdle() {
 	q.workersIdleTally.Add(-1)
@@ -568,48 +638,40 @@ func (q *Queue) nextJobID() string {
 	return strconv.FormatInt(q.jobIDCounter.Add(1), 10)
 }
 
-// doEnqueue submits a job to the queue internals.
+// acceptSubmission accepts a submission into the queue internals.
 // It first tries to start a dedicated worker for the job when scaling limits allow.
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
-func (q *Queue) doEnqueue(job Job, opts enqueueOptions) (ok bool) {
-	ok, _ = q.doEnqueueWithErr(job, opts)
-	return ok
-}
-
-// doEnqueueWithErr submits a job to the queue internals.
-// It first tries to start a dedicated worker for the job when scaling limits allow.
-// If no worker can be started, it falls back to pushing the job onto `q.jobs`.
-// When `blocking` is false, the fallback channel send is non-blocking.
-func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err error) {
-	if opts.enqueueCtx != nil {
+func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err error) {
+	if opts.acceptCtx != nil {
 		select {
-		case <-opts.enqueueCtx.Done():
-			return false, opts.enqueueCtx.Err()
+		case <-opts.acceptCtx.Done():
+			return false, opts.acceptCtx.Err()
 		default:
 		}
 	}
 
-	q.enqueueMut.RLock()
+	q.acceptMut.RLock()
 	if q.IsStopped() {
-		q.enqueueMut.RUnlock()
+		q.acceptMut.RUnlock()
 		return false, ErrQueueStopped
 	}
 	if q.IsPaused() && q.pauseBehavior == PauseReject {
-		q.enqueueMut.RUnlock()
+		q.acceptMut.RUnlock()
 		return false, ErrQueuePaused
 	}
 
 	// Create job metadata.
-	if opts.id == "" {
+	if opts.handle == nil {
+		opts.handle = newJobHandle(opts.meta)
+	}
+	if opts.meta.ID == "" {
 		// Generate a new job ID.
-		opts.id = q.nextJobID()
+		opts.meta.ID = q.nextJobID()
 	}
-	meta := JobMeta{
-		ID:         opts.id,
-		EnqueuedAt: time.Now(),
-		Attempt:    0,
-	}
+	opts.meta.EnqueuedAt = time.Now()
+	opts.handle.setMeta(opts.meta)
+	meta := cloneJobMeta(opts.meta)
 
 	// Apply queue-level middleware.
 	job = q.applyMiddleware(job)
@@ -617,21 +679,40 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 	// Wrap the job with a job metadata context.
 	// Additionally, dispatch the start and result of the job.
 	wrappedJob := func(ctx context.Context) error {
+		// Immediate shutdown may abandon a buffered submission before a worker starts it.
+		if !opts.handle.start(time.Now()) {
+			return ErrJobAbandoned
+		}
+		defer q.untrackSubmission(opts.handle)
+
 		// Create a new context with the job metadata.
 		jobCtx := contextWithMeta(ctx, meta)
 
 		q.dispatchStart(meta)
 
-		// Run the job and dispatch the result.
-		err := job(jobCtx)
+		// Convert a job or middleware panic into the submission's terminal result.
+		var err error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = &PanicError{Value: recovered, Origin: PanicOriginJob}
+					if q.panicHandler != nil {
+						q.panicHandler(err)
+					}
+				}
+			}()
+			err = job(jobCtx)
+		}()
 		q.dispatchResult(meta, err)
+		opts.handle.finish(time.Now(), err)
 		return err
 	}
 
-	// Track the job and record enqueue tallies.
+	// Track the job and record acceptance tallies.
 	q.jobWg.Add(1)
 	q.markJobEnqueued()
-	q.enqueueMut.RUnlock()
+	q.trackSubmission(opts.handle)
+	q.acceptMut.RUnlock()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -640,13 +721,14 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 				q.panicHandler(r)
 			}
 			if err == nil {
-				err = fmt.Errorf("queue: enqueue panic: %v", r)
+				err = fmt.Errorf("queue: submission acceptance panic: %v", r)
 			}
 		}
 		if !ok {
-			// Job could not be enqueued, rollback tallies.
+			// Job could not be accepted, rollback tallies.
 			q.rollbackJobEnqueued()
 			q.jobWg.Done()
+			q.untrackSubmission(opts.handle)
 		}
 	}()
 
@@ -659,18 +741,18 @@ func (q *Queue) doEnqueueWithErr(job Job, opts enqueueOptions) (ok bool, err err
 		// Either no worker slot was available or queue is paused.
 		// Fallback is to buffer the job in q.jobs.
 		if opts.blocking {
-			if opts.enqueueCtx == nil {
-				// No enqueue context provided, so block until the job is enqueued.
+			if opts.acceptCtx == nil {
+				// No acceptance context provided, so block until the job is accepted.
 				q.jobs <- wrappedJob
 				ok = true
 			} else {
-				// Enqueue context provided, so block until the job is enqueued or the context is done.
+				// Acceptance context provided, so block until the job is accepted or the context is done.
 				select {
 				case q.jobs <- wrappedJob:
 					ok = true
-				case <-opts.enqueueCtx.Done():
+				case <-opts.acceptCtx.Done():
 					ok = false
-					err = opts.enqueueCtx.Err()
+					err = opts.acceptCtx.Err()
 				}
 			}
 		} else {
@@ -715,19 +797,11 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 		return
 	}
 
-	// No matter what, mark job as done and attempt to
-	// recover from a panic in the handler.
+	// Preserve queue accounting if worker or wrapped-job infrastructure panics.
+	// User job and middleware panics are normally converted to errors by wrappedJob.
 	defer func() {
 		if r := recover(); r != nil {
-			var err error
-			switch x := r.(type) {
-			case string:
-				err = fmt.Errorf("queue: work job panic: %s", x)
-			case error:
-				err = fmt.Errorf("queue: work job panic: %w", x)
-			default:
-				err = fmt.Errorf("queue: work job panic: %v", x)
-			}
+			err := &PanicError{Value: r, Origin: PanicOriginWorker}
 
 			// Update job tallies and run panic handler if set.
 			q.markJobFailed()
@@ -920,7 +994,7 @@ func WithPanicHandler(handler func(any)) QueueOption {
 	}
 }
 
-// WithIDGenerator sets a custom generator for enqueue job IDs.
+// WithIDGenerator sets a custom generator for submission job IDs.
 // Returning an empty ID falls back to the default atomic counter.
 func WithIDGenerator(gen IDGenerator) QueueOption {
 	return func(q *Queue) {
@@ -965,4 +1039,15 @@ func WithHooks(hooks Hooks) QueueOption {
 	return func(q *Queue) {
 		q.hooks = append(q.hooks, hooks)
 	}
+}
+
+// resolveSubmitConfig applies submission options.
+func resolveSubmitConfig(opts []SubmitOption) submitConfig {
+	cfg := submitConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
 }

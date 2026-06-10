@@ -60,7 +60,7 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		pq.Enqueue(job, PriorityHigh)
+		mustPrioritySubmit(t, pq, job, PriorityHigh)
 
 		// Wait for job to process.
 		time.Sleep(50 * time.Millisecond)
@@ -90,12 +90,12 @@ func TestPriorityQueue(t *testing.T) {
 			}
 		}
 
-		// Enqueue in reverse priority order.
-		pq.Enqueue(makeJob(5), PriorityLowest)
-		pq.Enqueue(makeJob(4), PriorityLow)
-		pq.Enqueue(makeJob(3), PriorityMedium)
-		pq.Enqueue(makeJob(2), PriorityHigh)
-		pq.Enqueue(makeJob(1), PriorityHighest)
+		// Submit in reverse priority order.
+		mustPrioritySubmit(t, pq, makeJob(5), PriorityLowest)
+		mustPrioritySubmit(t, pq, makeJob(4), PriorityLow)
+		mustPrioritySubmit(t, pq, makeJob(3), PriorityMedium)
+		mustPrioritySubmit(t, pq, makeJob(2), PriorityHigh)
+		mustPrioritySubmit(t, pq, makeJob(1), PriorityHighest)
 
 		// Wait for all jobs to process.
 		time.Sleep(100 * time.Millisecond)
@@ -242,15 +242,15 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		// Should succeed as channel has capacity.
-		if ok := pq.TryEnqueue(job, PriorityHigh); !ok {
-			t.Error("TryEnqueue(): should succeed on non-full channel")
+		if _, err := pq.Submit(context.Background(), job, PriorityHigh, WithNonBlocking()); err != nil {
+			t.Fatalf("Submit(non-blocking): unexpected err: %v", err)
 		}
 
 		// Wait for job to process.
 		time.Sleep(50 * time.Millisecond)
 
 		if !executed.Load() {
-			t.Error("TryEnqueue(): job should have executed")
+			t.Error("Submit(non-blocking): job should have executed")
 		}
 	})
 
@@ -268,14 +268,8 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		// Invalid priority maps to medium in EnqueueOrError for backward compatibility.
-		if err := pq.EnqueueOrError(job, Priority(999)); err != nil {
-			t.Fatalf("EnqueueOrError(): unexpected err: %v", err)
-		}
-
-		time.Sleep(50 * time.Millisecond)
-		if !executed.Load() {
-			t.Error("EnqueueOrError(): job should have executed via medium fallback")
+		if handle, err := pq.Submit(context.Background(), job, Priority(999)); handle != nil || !errors.Is(err, ErrPriorityInvalid) {
+			t.Fatalf("Submit(invalid): got (%v, %v), want (nil, %v)", handle, err, ErrPriorityInvalid)
 		}
 	})
 
@@ -287,12 +281,12 @@ func TestPriorityQueue(t *testing.T) {
 		pq := NewPriorityQueue(queue, 10)
 		defer pq.Stop(false)
 
-		ok, err := pq.TryEnqueueOrError(func(ctx context.Context) error { return nil }, Priority(999))
-		if ok {
-			t.Error("TryEnqueueOrError(): got ok=true, want false")
+		handle, err := pq.Submit(context.Background(), func(ctx context.Context) error { return nil }, Priority(999), WithNonBlocking())
+		if handle != nil {
+			t.Error("Submit(invalid): got handle, want nil")
 		}
 		if !errors.Is(err, ErrPriorityInvalid) {
-			t.Fatalf("TryEnqueueOrError(): got err=%v, want %v", err, ErrPriorityInvalid)
+			t.Fatalf("Submit(invalid): got err=%v, want %v", err, ErrPriorityInvalid)
 		}
 	})
 
@@ -305,16 +299,16 @@ func TestPriorityQueue(t *testing.T) {
 		defer pq.Stop(false)
 
 		job := func(ctx context.Context) error { return nil }
-		if ok, err := pq.TryEnqueueOrError(job, PriorityHigh); !ok || err != nil {
-			t.Fatalf("TryEnqueueOrError(): first enqueue got (%v,%v), want (true,nil)", ok, err)
+		if handle, err := pq.Submit(context.Background(), job, PriorityHigh, WithNonBlocking()); handle == nil || err != nil {
+			t.Fatalf("Submit(non-blocking): first submission got (%v,%v), want (handle,nil)", handle, err)
 		}
 
-		ok, err := pq.TryEnqueueOrError(job, PriorityHigh)
-		if ok {
-			t.Error("TryEnqueueOrError(): got ok=true on full channel, want false")
+		handle, err := pq.Submit(context.Background(), job, PriorityHigh, WithNonBlocking())
+		if handle != nil {
+			t.Error("Submit(non-blocking): got handle on full channel, want nil")
 		}
 		if !errors.Is(err, ErrPriorityQueueFull) {
-			t.Fatalf("TryEnqueueOrError(): got err=%v, want %v", err, ErrPriorityQueueFull)
+			t.Fatalf("Submit(non-blocking): got err=%v, want %v", err, ErrPriorityQueueFull)
 		}
 	})
 
@@ -326,9 +320,9 @@ func TestPriorityQueue(t *testing.T) {
 		pq := NewPriorityQueue(queue, 10)
 		pq.Stop(false)
 
-		err := pq.EnqueueOrError(func(ctx context.Context) error { return nil }, PriorityHigh)
+		_, err := pq.Submit(context.Background(), func(ctx context.Context) error { return nil }, PriorityHigh)
 		if !errors.Is(err, ErrPriorityQueueStopped) {
-			t.Fatalf("EnqueueOrError(): got err=%v, want %v", err, ErrPriorityQueueStopped)
+			t.Fatalf("Submit(): got err=%v, want %v", err, ErrPriorityQueueStopped)
 		}
 	})
 
@@ -346,12 +340,12 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		pq.Enqueue(blockingJob, PriorityHigh)
-		pq.Enqueue(blockingJob, PriorityHigh)
+		mustPrioritySubmit(t, pq, blockingJob, PriorityHigh)
+		mustPrioritySubmit(t, pq, blockingJob, PriorityHigh)
 
 		// Channel should now be full.
-		if ok := pq.TryEnqueue(blockingJob, PriorityHigh); ok {
-			t.Error("TryEnqueue(): should fail on full channel")
+		if handle, err := pq.Submit(context.Background(), blockingJob, PriorityHigh, WithNonBlocking()); handle != nil || !errors.Is(err, ErrPriorityQueueFull) {
+			t.Fatalf("Submit(non-blocking): got (%v, %v), want (nil, %v)", handle, err, ErrPriorityQueueFull)
 		}
 	})
 
@@ -370,18 +364,20 @@ func TestPriorityQueue(t *testing.T) {
 		}
 
 		delay := 100 * time.Millisecond
-		pq.DelayEnqueue(job, PriorityHigh, delay)
+		if _, err := pq.SubmitAfter(context.Background(), job, PriorityHigh, delay); err != nil {
+			t.Fatalf("SubmitAfter(): unexpected err: %v", err)
+		}
 
 		// Should not be executed immediately.
 		time.Sleep(50 * time.Millisecond)
 		if executed.Load() {
-			t.Error("DelayEnqueue(): job should not have executed yet")
+			t.Error("SubmitAfter(): job should not have executed yet")
 		}
 
 		// Should be executed after delay.
 		time.Sleep(100 * time.Millisecond)
 		if !executed.Load() {
-			t.Error("DelayEnqueue(): job should have executed after delay")
+			t.Error("SubmitAfter(): job should have executed after delay")
 		}
 	})
 
@@ -398,11 +394,11 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		// Enqueue jobs at different priorities.
-		pq.Enqueue(slowJob, PriorityHighest)
-		pq.Enqueue(slowJob, PriorityHighest)
-		pq.Enqueue(slowJob, PriorityHigh)
-		pq.Enqueue(slowJob, PriorityMedium)
+		// Submit jobs at different priorities.
+		mustPrioritySubmit(t, pq, slowJob, PriorityHighest)
+		mustPrioritySubmit(t, pq, slowJob, PriorityHighest)
+		mustPrioritySubmit(t, pq, slowJob, PriorityHigh)
+		mustPrioritySubmit(t, pq, slowJob, PriorityMedium)
 
 		// Allow jobs to queue up before dispatcher pulls them.
 		time.Sleep(10 * time.Millisecond)
@@ -431,10 +427,10 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		// Enqueue jobs at different priorities.
-		pq.Enqueue(slowJob, PriorityHighest)
-		pq.Enqueue(slowJob, PriorityHigh)
-		pq.Enqueue(slowJob, PriorityMedium)
+		// Submit jobs at different priorities.
+		mustPrioritySubmit(t, pq, slowJob, PriorityHighest)
+		mustPrioritySubmit(t, pq, slowJob, PriorityHigh)
+		mustPrioritySubmit(t, pq, slowJob, PriorityMedium)
 
 		time.Sleep(10 * time.Millisecond)
 
@@ -468,12 +464,12 @@ func TestPriorityQueue(t *testing.T) {
 			return nil
 		}
 
-		// Enqueue jobs at different priorities.
-		pq.Enqueue(job, PriorityHighest)
-		pq.Enqueue(job, PriorityHighest)
-		pq.Enqueue(job, PriorityHigh)
-		pq.Enqueue(job, PriorityMedium)
-		pq.Enqueue(job, PriorityLow)
+		// Submit jobs at different priorities.
+		mustPrioritySubmit(t, pq, job, PriorityHighest)
+		mustPrioritySubmit(t, pq, job, PriorityHighest)
+		mustPrioritySubmit(t, pq, job, PriorityHigh)
+		mustPrioritySubmit(t, pq, job, PriorityMedium)
+		mustPrioritySubmit(t, pq, job, PriorityLow)
 
 		// Drain all buffered jobs.
 		drained := pq.Drain()
@@ -506,4 +502,78 @@ func TestPriorityQueue(t *testing.T) {
 			t.Errorf("Drain(): got %d drained from empty queue, want 0", drained)
 		}
 	})
+}
+
+func TestPriorityQueueSubmit_PreservesHandleThroughPriorityBuffer(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	pq := NewPriorityQueue(queue, 10, WithPriorityTick(time.Millisecond))
+	defer pq.Stop(false)
+
+	handle, err := pq.Submit(
+		context.Background(),
+		func(context.Context) error { return nil },
+		PriorityHigh,
+		WithJobID("priority-job"),
+		WithJobAttribute("source", "priority"),
+	)
+	if err != nil {
+		t.Fatalf("Submit(): %v", err)
+	}
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(): %v", err)
+	}
+	result, ok := handle.Result()
+	if !ok {
+		t.Fatal("Result(): submission should be complete")
+	}
+	if result.Meta.ID != "priority-job" || result.Meta.Attributes["source"] != "priority" {
+		t.Fatalf("Result().Meta: got %+v", result.Meta)
+	}
+}
+
+func TestPriorityQueueStop_RejectsBufferedSubmission(t *testing.T) {
+	queue := NewQueue(0, 0, 0)
+	queue.Start()
+	defer queue.Stop(false)
+
+	pq := NewPriorityQueue(queue, 1, WithPriorityTick(time.Hour))
+	handle := mustPrioritySubmit(t, pq, func(context.Context) error { return nil }, PriorityHigh)
+
+	pq.Stop(false)
+
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrPriorityQueueStopped) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrPriorityQueueStopped)
+	}
+}
+
+func TestPriorityQueueSubmit_ContextCancelsBufferAcceptance(t *testing.T) {
+	queue := NewQueue(0, 0, 0)
+	queue.Start()
+	defer queue.Stop(false)
+
+	pq := NewPriorityQueue(queue, 1, WithPriorityTick(time.Hour))
+	defer pq.Stop(false)
+	mustPrioritySubmit(t, pq, func(context.Context) error { return nil }, PriorityHigh)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	handle, err := pq.Submit(ctx, func(context.Context) error { return nil }, PriorityHigh)
+	if handle != nil {
+		t.Fatal("Submit(): got handle, want nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Submit(): got %v, want %v", err, context.DeadlineExceeded)
+	}
+}
+
+func mustPrioritySubmit(t *testing.T, pq *PriorityQueue, job Job, priority Priority, opts ...SubmitOption) *JobHandle {
+	t.Helper()
+	handle, err := pq.Submit(context.Background(), job, priority, opts...)
+	if err != nil {
+		t.Fatalf("PriorityQueue.Submit(): %v", err)
+	}
+	return handle
 }

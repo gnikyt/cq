@@ -26,7 +26,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", 5, 0, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		wg.Wait()
@@ -48,7 +48,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 		var wg sync.WaitGroup
 		barrier := make(chan struct{})
 
-		// Enqueue max jobs that hold at the barrier.
+		// Submit max jobs that hold at the barrier.
 		for range max {
 			wg.Add(1)
 			job := WithConcurrencyLimit(func(ctx context.Context) error {
@@ -57,20 +57,20 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", max, 30*time.Millisecond, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		// Give barrier-holding jobs time to start.
 		time.Sleep(50 * time.Millisecond)
 
-		// Enqueue one more — should be at limit and get re-enqueued.
+		// Submit one more — should be at limit and get re-submitted.
 		wg.Add(1)
 		extra := WithConcurrencyLimit(func(ctx context.Context) error {
 			count.Add(1)
 			wg.Done()
 			return nil
 		}, "key", max, 30*time.Millisecond, limiter, queue)
-		queue.Enqueue(extra)
+		mustSubmit(t, queue, extra)
 
 		// Release the barrier so all jobs can finish.
 		close(barrier)
@@ -159,7 +159,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", max, 20*time.Millisecond, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		done := make(chan struct{})
@@ -193,7 +193,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			<-holding
 			return nil
 		}, "key", 1, 0, limiter, queue)
-		queue.Enqueue(holderJob)
+		mustSubmit(t, queue, holderJob)
 
 		time.Sleep(30 * time.Millisecond)
 
@@ -205,7 +205,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			}
 			return nil
 		}, "key", 1, 0, limiter, queue)
-		queue.Enqueue(secondJob)
+		mustSubmit(t, queue, secondJob)
 
 		// Release the holder.
 		close(holding)

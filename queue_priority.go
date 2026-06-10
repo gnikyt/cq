@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,6 +44,13 @@ type weightConfig struct {
 	lowest  int // Attempts for lowest priority per tick.
 }
 
+// prioritySubmission preserves a submission while it waits in a priority buffer.
+type prioritySubmission struct {
+	job    Job
+	meta   JobMeta
+	handle *JobHandle
+}
+
 // PriorityQueueOption configures a PriorityQueue.
 type PriorityQueueOption func(*PriorityQueue)
 
@@ -64,11 +72,11 @@ func (p Priority) String() string {
 
 // PriorityQueue wraps a Queue with weighted priority dispatching.
 type PriorityQueue struct {
-	highest chan Job // Highest priority buffer.
-	high    chan Job // High priority buffer.
-	medium  chan Job // Medium priority buffer.
-	low     chan Job // Low priority buffer.
-	lowest  chan Job // Lowest priority buffer.
+	highest chan prioritySubmission // Highest priority buffer.
+	high    chan prioritySubmission // High priority buffer.
+	medium  chan prioritySubmission // Medium priority buffer.
+	low     chan prioritySubmission // Low priority buffer.
+	lowest  chan prioritySubmission // Lowest priority buffer.
 
 	queue        *Queue        // Underlying queue where work is executed.
 	priorityTick time.Duration // Dispatcher tick interval.
@@ -76,8 +84,12 @@ type PriorityQueue struct {
 
 	ctx       context.Context    // Priority queue lifecycle context.
 	ctxCancel context.CancelFunc // Cancels lifecycle context.
+	stopped   atomic.Bool        // Indicates priority queue shutdown has started.
 
-	wg sync.WaitGroup // Waits for dispatcher shutdown.
+	wg             sync.WaitGroup          // Waits for dispatcher shutdown.
+	acceptMut      sync.RWMutex            // Synchronizes acceptance with Stop.
+	submissionsMut sync.Mutex              // Guards unresolved priority submissions.
+	submissions    map[*JobHandle]struct{} // Submissions not yet forwarded or terminal.
 }
 
 // NewPriorityQueue creates a PriorityQueue around an existing Queue.
@@ -85,11 +97,11 @@ type PriorityQueue struct {
 func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *PriorityQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 	pq := &PriorityQueue{
-		highest:      make(chan Job, capacity),
-		high:         make(chan Job, capacity),
-		medium:       make(chan Job, capacity),
-		low:          make(chan Job, capacity),
-		lowest:       make(chan Job, capacity),
+		highest:      make(chan prioritySubmission, capacity),
+		high:         make(chan prioritySubmission, capacity),
+		medium:       make(chan prioritySubmission, capacity),
+		low:          make(chan prioritySubmission, capacity),
+		lowest:       make(chan prioritySubmission, capacity),
 		queue:        queue,
 		priorityTick: defaultPriorityTick,
 		weights: weightConfig{
@@ -99,8 +111,9 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 			low:     defaultWeightLow,
 			lowest:  defaultWeightLowest,
 		},
-		ctx:       ctx,
-		ctxCancel: cancel,
+		ctx:         ctx,
+		ctxCancel:   cancel,
+		submissions: make(map[*JobHandle]struct{}),
 	}
 	for _, opt := range opts {
 		opt(pq)
@@ -111,83 +124,128 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 	return pq
 }
 
-// Enqueue blocks until the job is accepted or queue stops.
-// Invalid priorities fallback to medium priority channel.
-func (pq *PriorityQueue) Enqueue(job Job, priority Priority) {
-	_ = pq.EnqueueOrError(job, priority)
-}
-
-// EnqueueOrError blocks until accepted or stopped.
-// Invalid priorities fallback to medium priority channel.
-func (pq *PriorityQueue) EnqueueOrError(job Job, priority Priority) error {
-	ch, ok := pq.channelForPriority(priority, true)
+// Submit accepts one job into a priority buffer and returns its completion handle.
+// ctx controls waiting for priority-buffer acceptance only; it does not cancel an accepted job.
+func (pq *PriorityQueue) Submit(ctx context.Context, job Job, priority Priority, opts ...SubmitOption) (*JobHandle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ch, ok := pq.channelForPriority(priority)
 	if !ok {
-		return ErrPriorityInvalid // Invalid priority.
+		return nil, ErrPriorityInvalid
 	}
-
+	pq.acceptMut.RLock()
+	if pq.stopped.Load() {
+		pq.acceptMut.RUnlock()
+		return nil, ErrPriorityQueueStopped
+	}
 	select {
+	case <-ctx.Done():
+		pq.acceptMut.RUnlock()
+		return nil, ctx.Err()
 	case <-pq.ctx.Done():
-		return ErrPriorityQueueStopped // Queue is stopped.
+		pq.acceptMut.RUnlock()
+		return nil, ErrPriorityQueueStopped
 	default:
 	}
 
+	cfg := resolveSubmitConfig(opts)
+	meta := pq.queue.newSubmissionMeta(cfg)
+	handle := newJobHandle(meta)
+	submission := prioritySubmission{job: job, meta: meta, handle: handle}
+	pq.trackSubmission(handle)
+	pq.acceptMut.RUnlock()
+
+	if cfg.nonBlocking {
+		select {
+		case ch <- submission:
+			return handle, nil
+		case <-ctx.Done():
+			pq.untrackSubmission(handle)
+			return nil, ctx.Err()
+		case <-pq.ctx.Done():
+			pq.untrackSubmission(handle)
+			return nil, ErrPriorityQueueStopped
+		default:
+			pq.untrackSubmission(handle)
+			return nil, ErrPriorityQueueFull
+		}
+	}
+
 	select {
-	case ch <- job:
-		return nil // Job added to priority channel.
+	case ch <- submission:
+		return handle, nil
+	case <-ctx.Done():
+		pq.untrackSubmission(handle)
+		return nil, ctx.Err()
 	case <-pq.ctx.Done():
-		return ErrPriorityQueueStopped // Queue is stopped.
+		pq.untrackSubmission(handle)
+		return nil, ErrPriorityQueueStopped
 	}
 }
 
-// TryEnqueue attempts to enqueue without blocking.
-// It returns false when priority is invalid, queue is stopped, or channel is full.
-func (pq *PriorityQueue) TryEnqueue(job Job, priority Priority) bool {
-	ok, _ := pq.TryEnqueueOrError(job, priority)
-	return ok
-}
-
-// TryEnqueueOrError attempts to enqueue without blocking.
-// It returns typed errors for invalid priority, stopped queue, and full channel.
-func (pq *PriorityQueue) TryEnqueueOrError(job Job, priority Priority) (bool, error) {
-	ch, ok := pq.channelForPriority(priority, false)
+// SubmitAfter accepts responsibility for submitting a priority job after delay.
+// When the delay elapses, priority-buffer acceptance is non-blocking.
+func (pq *PriorityQueue) SubmitAfter(ctx context.Context, job Job, priority Priority, delay time.Duration, opts ...SubmitOption) (*JobHandle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ch, ok := pq.channelForPriority(priority)
 	if !ok {
-		return false, ErrPriorityInvalid // Invalid priority.
+		return nil, ErrPriorityInvalid
 	}
-
+	pq.acceptMut.RLock()
+	if pq.stopped.Load() {
+		pq.acceptMut.RUnlock()
+		return nil, ErrPriorityQueueStopped
+	}
 	select {
+	case <-ctx.Done():
+		pq.acceptMut.RUnlock()
+		return nil, ctx.Err()
 	case <-pq.ctx.Done():
-		return false, ErrPriorityQueueStopped // Queue is stopped.
+		pq.acceptMut.RUnlock()
+		return nil, ErrPriorityQueueStopped
 	default:
 	}
-
-	select {
-	case ch <- job:
-		return true, nil // Job added to priority channel.
-	case <-pq.ctx.Done():
-		return false, ErrPriorityQueueStopped // Queue is stopped.
-	default:
-		return false, ErrPriorityQueueFull // Channel is full.
+	cfg := resolveSubmitConfig(opts)
+	meta := pq.queue.newSubmissionMeta(cfg)
+	handle := newJobHandle(meta)
+	submission := prioritySubmission{job: job, meta: meta, handle: handle}
+	pq.trackSubmission(handle)
+	pq.acceptMut.RUnlock()
+	if delay < 0 {
+		delay = 0
 	}
-}
-
-// DelayEnqueue enqueues a job after delay in a separate goroutine.
-func (pq *PriorityQueue) DelayEnqueue(job Job, priority Priority, delay time.Duration) {
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
 		select {
 		case <-pq.ctx.Done():
-			return // Context is done, stop the timer.
+			if handle.reject(ErrPriorityQueueStopped) {
+				pq.untrackSubmission(handle)
+			}
 		case <-timer.C:
-			pq.Enqueue(job, priority)
+			select {
+			case ch <- submission:
+			case <-pq.ctx.Done():
+				if handle.reject(ErrPriorityQueueStopped) {
+					pq.untrackSubmission(handle)
+				}
+			default:
+				if handle.reject(ErrPriorityQueueFull) {
+					pq.untrackSubmission(handle)
+				}
+			}
 		}
 	}()
+	return handle, nil
 }
 
 // CountByPriority returns queued count for one priority level.
 // It returns 0 for invalid priorities.
 func (pq *PriorityQueue) CountByPriority(priority Priority) int {
-	ch, ok := pq.channelForPriority(priority, false)
+	ch, ok := pq.channelForPriority(priority)
 	if !ok {
 		return 0 // Invalid priority.
 	}
@@ -218,47 +276,61 @@ func (pq *PriorityQueue) dispatcher() {
 			return // Context is done, stop the dispatcher.
 		case <-ticker.C:
 			for i := 0; i < pq.weights.highest; i++ {
-				pq.tryEnqueue(pq.highest)
+				pq.trySubmit(pq.highest)
 			}
 			for i := 0; i < pq.weights.high; i++ {
-				pq.tryEnqueue(pq.high)
+				pq.trySubmit(pq.high)
 			}
 			for i := 0; i < pq.weights.medium; i++ {
-				pq.tryEnqueue(pq.medium)
+				pq.trySubmit(pq.medium)
 			}
 			for i := 0; i < pq.weights.low; i++ {
-				pq.tryEnqueue(pq.low)
+				pq.trySubmit(pq.low)
 			}
 			for i := 0; i < pq.weights.lowest; i++ {
-				pq.tryEnqueue(pq.lowest)
+				pq.trySubmit(pq.lowest)
 			}
 		}
 	}
 }
 
-// tryEnqueue forwards a single job from one priority channel to base queue.
+// trySubmit forwards a single submission from one priority channel to the base queue.
 // On forward rejection, it best-effort requeues into the same channel.
-func (pq *PriorityQueue) tryEnqueue(ch chan Job) bool {
+func (pq *PriorityQueue) trySubmit(ch chan prioritySubmission) bool {
 	select {
-	case job := <-ch:
-		ok, err := pq.queue.TryEnqueueOrError(job)
-		if ok && err == nil {
-			return true // Job forwarded to base queue.
+	case submission := <-ch:
+		ok, err := pq.queue.acceptSubmission(submission.job, submissionOptions{
+			blocking:  false,
+			acceptCtx: pq.ctx,
+			meta:      submission.meta,
+			handle:    submission.handle,
+		})
+		if ok {
+			pq.untrackSubmission(submission.handle)
+			return true
+		}
+		if errors.Is(err, ErrQueueStopped) || errors.Is(err, context.Canceled) {
+			if submission.handle.reject(err) {
+				pq.untrackSubmission(submission.handle)
+			}
+			return false
 		}
 
 		select {
-		case ch <- job:
+		case ch <- submission:
 		default:
+			if submission.handle.reject(ErrPriorityQueueFull) {
+				pq.untrackSubmission(submission.handle)
+			}
 		}
-		return false // Job not forwarded to base queue.
+		return false
 	default:
-		return false // Channel is empty.
+		return false
 	}
 }
 
 // channelForPriority resolves the channel for a priority.
-// If fallbackMedium is true, invalid priorities map to medium.
-func (pq *PriorityQueue) channelForPriority(priority Priority, fallbackMedium bool) (chan Job, bool) {
+func (pq *PriorityQueue) channelForPriority(priority Priority) (chan prioritySubmission, bool) {
 	switch priority {
 	case PriorityHighest:
 		return pq.highest, true
@@ -271,18 +343,20 @@ func (pq *PriorityQueue) channelForPriority(priority Priority, fallbackMedium bo
 	case PriorityLowest:
 		return pq.lowest, true
 	default:
-		if fallbackMedium {
-			return pq.medium, true
-		}
 		return nil, false
 	}
 }
 
 // Stop stops the dispatcher and optionally stops the underlying queue.
-// Buffered priority jobs are dropped unless Drain is called first.
+// Buffered and delayed priority submissions resolve with ErrPriorityQueueStopped.
 func (pq *PriorityQueue) Stop(stopQueue bool) {
+	pq.acceptMut.Lock()
+	defer pq.acceptMut.Unlock()
+
+	pq.stopped.Store(true)
 	pq.ctxCancel()
 	pq.wg.Wait()
+	pq.rejectPendingSubmissions(ErrPriorityQueueStopped)
 	if stopQueue {
 		pq.queue.Stop(true)
 	}
@@ -292,14 +366,24 @@ func (pq *PriorityQueue) Stop(stopQueue bool) {
 // It returns the number of jobs forwarded.
 func (pq *PriorityQueue) Drain() int {
 	drained := 0
-	channels := []chan Job{pq.highest, pq.high, pq.medium, pq.low, pq.lowest}
+	channels := []chan prioritySubmission{pq.highest, pq.high, pq.medium, pq.low, pq.lowest}
 
 	for _, ch := range channels {
 		for {
 			select {
-			case job := <-ch:
-				pq.queue.Enqueue(job)
-				drained++
+			case submission := <-ch:
+				ok, err := pq.queue.acceptSubmission(submission.job, submissionOptions{
+					blocking:  true,
+					acceptCtx: context.Background(),
+					meta:      submission.meta,
+					handle:    submission.handle,
+				})
+				if ok {
+					pq.untrackSubmission(submission.handle)
+					drained++
+				} else if submission.handle.reject(err) {
+					pq.untrackSubmission(submission.handle)
+				}
 			default:
 				goto nextChannel
 			}
@@ -308,6 +392,31 @@ func (pq *PriorityQueue) Drain() int {
 	}
 
 	return drained
+}
+
+// trackSubmission records a submission waiting in a priority buffer or delay.
+func (pq *PriorityQueue) trackSubmission(handle *JobHandle) {
+	pq.submissionsMut.Lock()
+	pq.submissions[handle] = struct{}{}
+	pq.submissionsMut.Unlock()
+}
+
+// untrackSubmission removes a submission forwarded to the underlying queue or made terminal.
+func (pq *PriorityQueue) untrackSubmission(handle *JobHandle) {
+	pq.submissionsMut.Lock()
+	delete(pq.submissions, handle)
+	pq.submissionsMut.Unlock()
+}
+
+// rejectPendingSubmissions resolves every submission still owned by the priority queue.
+func (pq *PriorityQueue) rejectPendingSubmissions(err error) {
+	pq.submissionsMut.Lock()
+	defer pq.submissionsMut.Unlock()
+	for handle := range pq.submissions {
+		if handle.reject(err) {
+			delete(pq.submissions, handle)
+		}
+	}
 }
 
 // WithPriorityTick sets dispatcher tick interval.

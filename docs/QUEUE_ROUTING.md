@@ -15,9 +15,9 @@ _ = mgr.Register("low", lowQ)
 mgr.StartAll()
 defer mgr.StopAll(true)
 
-_ = mgr.Enqueue("high", criticalJob)
-_ = mgr.Enqueue("low", bulkJob)
-_ = mgr.DelayEnqueue("low", bulkJob, 30*time.Second)
+_, _ = mgr.Submit(context.Background(), "high", criticalJob)
+_, _ = mgr.Submit(context.Background(), "low", bulkJob)
+_, _ = mgr.SubmitAfter(context.Background(), "low", bulkJob, 30*time.Second)
 ```
 
 ## Why use this?
@@ -32,4 +32,4 @@ _ = mgr.DelayEnqueue("low", bulkJob, 30*time.Second)
 
 - `QueueManager` is orchestration-only... each queue still keeps its own options and hooks.
 - Unknown queue names return `cq.ErrQueueManagerNotFound`.
-- `DelayEnqueue` is a convenience wrapper over the named queue's `DelayEnqueue`.
+- `SubmitAfter` returns the delayed job's eventual execution handle.

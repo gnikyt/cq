@@ -31,7 +31,7 @@ func NewQueueJobDispatcher(queue *Queue) JobDispatcher {
 				Err:  ErrJobDispatcherNilQueue,
 			}
 		}
-		if err := queue.EnqueueOrError(req.Job); err != nil {
+		if _, err := queue.Submit(ctx, req.Job); err != nil {
 			return &DispatchError{
 				Kind: DispatchErrorKindRejected,
 				Err:  err,
@@ -70,7 +70,7 @@ func NewQueueManagerJobDispatcher(mgr *QueueManager, route QueueDispatchRouteFun
 				Err:  ErrJobDispatcherEmptyQueueName,
 			}
 		}
-		if err := mgr.Enqueue(name, req.Job); err != nil {
+		if _, err := mgr.Submit(ctx, name, req.Job); err != nil {
 			return &DispatchError{
 				Kind: DispatchErrorKindRejected,
 				Err:  err,
@@ -90,7 +90,7 @@ func NewPriorityQueueJobDispatcher(queue *PriorityQueue, priority Priority) JobD
 				Err:  ErrJobDispatcherNilPriorityQueue,
 			}
 		}
-		if err := queue.EnqueueOrError(req.Job, priority); err != nil {
+		if _, err := queue.Submit(ctx, req.Job, priority); err != nil {
 			return &DispatchError{
 				Kind: DispatchErrorKindRejected,
 				Err:  err,
@@ -129,7 +129,7 @@ func NewPriorityQueueManagerJobDispatcher(mgr *PriorityQueueManager, route Prior
 				Err:  ErrJobDispatcherEmptyQueueName,
 			}
 		}
-		if err := mgr.Enqueue(name, req.Job, priority); err != nil {
+		if _, err := mgr.Submit(ctx, name, req.Job, priority); err != nil {
 			return &DispatchError{
 				Kind: DispatchErrorKindRejected,
 				Err:  err,

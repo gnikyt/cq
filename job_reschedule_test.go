@@ -55,7 +55,7 @@ func TestReschedule_EmitsHookAndReenqueues(t *testing.T) {
 		return nil
 	}
 
-	q.Enqueue(first)
+	mustSubmit(t, q, first)
 
 	select {
 	case <-done:

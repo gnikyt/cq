@@ -43,9 +43,9 @@ Behavior:
   Interval for polling distributed pause state. Default is `1*time.Second`.
 
 - `cq.WithPauseBehavior(mode)`  
-  Controls enqueue behavior while paused:
-  - `cq.PauseBuffer` (default): accept enqueue and buffer until resume
-  - `cq.PauseReject`: reject enqueue while paused
+  Controls submission behavior while paused:
+  - `cq.PauseBuffer` (default): accept submissions and buffer until resume
+  - `cq.PauseReject`: reject submissions while paused
 
 - `cq.WithMiddleware(mw...)`  
   Applies queue-level wrappers to every job accepted by the queue.
@@ -70,7 +70,7 @@ queue := cq.NewQueue(1, 10, 100,
 	}),
 )
 
-queue.Enqueue(func(ctx context.Context) error {
+_, _ = queue.Submit(context.Background(), func(ctx context.Context) error {
 	meta := cq.MetaFromContext(ctx)
 	log.Printf("job_id=%s", meta.ID)
 	return nil
@@ -122,14 +122,14 @@ You can implement time-window pauses by either, for example:
 ### Pause Behavior Notes
 
 When paused:
-- `PauseBuffer` keeps accepting enqueue and defers execution until resume.
-- `PauseReject` rejects enqueue.
+- `PauseBuffer` keeps accepting submissions and defers execution until resume.
+- `PauseReject` rejects submissions.
 
-- For rejection-awareness, use `TryEnqueue` since it returns if enqueue happened.
-- For typed rejection reasons, use `EnqueueOrError` / `TryEnqueueOrError` and check:
+- For rejection-awareness, use `Submit` to receive a handle only when accepted.
+- For non-blocking submission, add `WithNonBlocking()`.
+- For typed rejection reasons, check:
 `cq.ErrQueuePaused`, `cq.ErrQueueStopped`, `cq.ErrQueueFull`.
-- For blocking enqueue with caller-controlled timeout/cancel, use:
-`EnqueueContext(ctx, job)` (returns `ctx.Err()` if context ends first).
+- `Submit(ctx, job)` returns `ctx.Err()` if its context ends before acceptance.
 
 ## Context-Aware Shutdown
 

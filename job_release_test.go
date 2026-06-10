@@ -140,8 +140,8 @@ func TestWithRelease(t *testing.T) {
 			},
 		)
 
-		// Enqueue the wrapped job (not calling directly).
-		queue.Enqueue(job)
+		// Submit the wrapped job (not calling directly).
+		mustSubmit(t, queue, job)
 
 		// Wait for all releases to process through the queue.
 		// Should be: initial call + 2 releases = 3 total calls.
@@ -189,7 +189,7 @@ func TestWithReleaseSelf(t *testing.T) {
 			return nil
 		}, queue, 1)
 
-		queue.Enqueue(job)
+		mustSubmit(t, queue, job)
 
 		select {
 		case <-done:
@@ -244,7 +244,7 @@ func TestWithReleaseSelf(t *testing.T) {
 			return nil
 		}, queue, 1) // Only one release allowed.
 
-		queue.Enqueue(job)
+		mustSubmit(t, queue, job)
 		time.Sleep(120 * time.Millisecond)
 
 		if got := calls.Load(); got != 2 {
@@ -280,7 +280,7 @@ func TestWithReleaseSelf(t *testing.T) {
 			return nil
 		}, queue, 1)
 
-		queue.Enqueue(job)
+		mustSubmit(t, queue, job)
 
 		select {
 		case <-done:
@@ -312,7 +312,7 @@ func TestWithReleaseSelf(t *testing.T) {
 			return nil
 		}, queue, -1) // Should behave as unlimited (0).
 
-		queue.Enqueue(job)
+		mustSubmit(t, queue, job)
 		select {
 		case <-done:
 		case <-time.After(300 * time.Millisecond):

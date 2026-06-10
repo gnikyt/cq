@@ -86,8 +86,8 @@ func orderHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to parse body", http.StatusBadRequest)
 	}
 
-	// Enqueue job with a random ID (as a random int) and the body.
-	queue.Enqueue(job(rand.Int(), bb))
+	// Submit job with a random ID (as a random int) and the body.
+	_, _ = queue.Submit(context.Background(), job(rand.Int(), bb))
 }
 
 // Metrics display.

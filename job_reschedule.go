@@ -26,6 +26,6 @@ func Reschedule(ctx context.Context, queue *Queue, job Job, delay time.Duration,
 
 	meta := MetaFromContext(ctx)
 	queue.dispatchReschedule(meta, delay, reason)
-	queue.DelayEnqueue(job, delay)
+	_, _ = queue.SubmitAfter(context.Background(), job, delay)
 	return true
 }

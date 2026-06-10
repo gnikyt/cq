@@ -114,7 +114,7 @@ func TestWithRateLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, limiter)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		wg.Wait()

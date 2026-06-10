@@ -17,13 +17,15 @@ const (
 
 // JobEvent is a structured queue lifecycle event for observability integrations.
 type JobEvent struct {
-	ID                 string
-	EnqueuedAt         time.Time
-	Attempt            int
-	State              JobState
-	Err                error
-	Delay              time.Duration
-	RescheduleReason   string
+	ID               string
+	Name             string
+	Attributes       map[string]string
+	EnqueuedAt       time.Time
+	Attempt          int
+	State            JobState
+	Err              error
+	Delay            time.Duration
+	RescheduleReason string
 }
 
 // Hooks defines optional lifecycle callbacks for queue transitions.
@@ -39,6 +41,8 @@ type Hooks struct {
 func eventFromMeta(meta JobMeta, state JobState, err error) JobEvent {
 	event := JobEvent{
 		ID:         meta.ID,
+		Name:       meta.Name,
+		Attributes: cloneStringMap(meta.Attributes),
 		EnqueuedAt: meta.EnqueuedAt,
 		Attempt:    meta.Attempt,
 		State:      state,
@@ -52,6 +56,7 @@ func (q *Queue) emitHook(name hookName, fn func(JobEvent), event JobEvent) {
 	if fn == nil {
 		return
 	}
+	event.Attributes = cloneStringMap(event.Attributes)
 
 	defer func() {
 		if r := recover(); r != nil && q.panicHandler != nil {

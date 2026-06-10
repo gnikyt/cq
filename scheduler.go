@@ -177,7 +177,7 @@ func (s *Scheduler) runRecurring(ctx context.Context, sj *scheduledJob) {
 		case <-ctx.Done():
 			return // Context cancelled, stop the job.
 		case <-ticker.C:
-			s.queue.Enqueue(sj.job) // Enqueue the job.
+			_, _ = s.queue.Submit(ctx, sj.job) // Submit the job.
 		}
 	}
 }
@@ -194,7 +194,7 @@ func (s *Scheduler) runOnce(ctx context.Context, sj *scheduledJob) {
 	case <-ctx.Done():
 		return // Context cancelled, stop the job.
 	case <-timer.C:
-		s.queue.Enqueue(sj.job)
+		_, _ = s.queue.Submit(ctx, sj.job)
 		s.Remove(sj.id)
 	}
 }

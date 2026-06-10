@@ -34,7 +34,7 @@ func TestPriorityQueueManager_RegisterAndNames(t *testing.T) {
 	}
 }
 
-func TestPriorityQueueManager_EnqueueAndTryEnqueue(t *testing.T) {
+func TestPriorityQueueManager_Submit(t *testing.T) {
 	mgr := NewPriorityQueueManager()
 	highQ := newPriorityManagerTestQueue(t)
 	lowQ := newPriorityManagerTestQueue(t)
@@ -50,17 +50,17 @@ func TestPriorityQueueManager_EnqueueAndTryEnqueue(t *testing.T) {
 
 	doneHigh := make(chan struct{}, 1)
 	doneLow := make(chan struct{}, 1)
-	if err := mgr.Enqueue("high", func(ctx context.Context) error {
+	if _, err := mgr.Submit(context.Background(), "high", func(ctx context.Context) error {
 		doneHigh <- struct{}{}
 		return nil
 	}, PriorityHighest); err != nil {
-		t.Fatalf("Enqueue(high): unexpected err: %v", err)
+		t.Fatalf("Submit(high): unexpected err: %v", err)
 	}
-	if err := mgr.Enqueue("low", func(ctx context.Context) error {
+	if _, err := mgr.Submit(context.Background(), "low", func(ctx context.Context) error {
 		doneLow <- struct{}{}
 		return nil
 	}, PriorityLow); err != nil {
-		t.Fatalf("Enqueue(low): unexpected err: %v", err)
+		t.Fatalf("Submit(low): unexpected err: %v", err)
 	}
 
 	select {
@@ -74,13 +74,13 @@ func TestPriorityQueueManager_EnqueueAndTryEnqueue(t *testing.T) {
 		t.Fatal("low priority queue job did not execute")
 	}
 
-	ok, err := mgr.TryEnqueue("high", func(ctx context.Context) error { return nil }, PriorityHigh)
-	if err != nil || !ok {
-		t.Fatalf("TryEnqueue(high): got (%v, %v), want (true, nil)", ok, err)
+	handle, err := mgr.Submit(context.Background(), "high", func(ctx context.Context) error { return nil }, PriorityHigh, WithNonBlocking())
+	if err != nil || handle == nil {
+		t.Fatalf("Submit(non-blocking): got (%v, %v), want (handle, nil)", handle, err)
 	}
 }
 
-func TestPriorityQueueManager_DelayEnqueue(t *testing.T) {
+func TestPriorityQueueManager_SubmitAfter(t *testing.T) {
 	mgr := NewPriorityQueueManager()
 	pq := newPriorityManagerTestQueue(t)
 
@@ -91,11 +91,11 @@ func TestPriorityQueueManager_DelayEnqueue(t *testing.T) {
 	defer mgr.StopAll(true)
 
 	done := make(chan struct{}, 1)
-	if err := mgr.DelayEnqueue("delayed", func(ctx context.Context) error {
+	if _, err := mgr.SubmitAfter(context.Background(), "delayed", func(ctx context.Context) error {
 		done <- struct{}{}
 		return nil
 	}, PriorityHigh, 100*time.Millisecond); err != nil {
-		t.Fatalf("DelayEnqueue(delayed): unexpected err: %v", err)
+		t.Fatalf("SubmitAfter(delayed): unexpected err: %v", err)
 	}
 
 	select {
@@ -130,14 +130,11 @@ func TestPriorityQueueManager_StopAndNotFound(t *testing.T) {
 	if err := mgr.Stop("missing", true); !errors.Is(err, ErrPriorityQueueManagerNotFound) {
 		t.Fatalf("Stop(missing): got %v, want %v", err, ErrPriorityQueueManagerNotFound)
 	}
-	if err := mgr.Enqueue("missing", func(ctx context.Context) error { return nil }, PriorityHigh); !errors.Is(err, ErrPriorityQueueManagerNotFound) {
-		t.Fatalf("Enqueue(missing): got %v, want %v", err, ErrPriorityQueueManagerNotFound)
+	if _, err := mgr.Submit(context.Background(), "missing", func(ctx context.Context) error { return nil }, PriorityHigh); !errors.Is(err, ErrPriorityQueueManagerNotFound) {
+		t.Fatalf("Submit(missing): got %v, want %v", err, ErrPriorityQueueManagerNotFound)
 	}
-	if ok, err := mgr.TryEnqueue("missing", func(ctx context.Context) error { return nil }, PriorityHigh); ok || !errors.Is(err, ErrPriorityQueueManagerNotFound) {
-		t.Fatalf("TryEnqueue(missing): got (%v, %v), want (false, %v)", ok, err, ErrPriorityQueueManagerNotFound)
-	}
-	if err := mgr.DelayEnqueue("missing", func(ctx context.Context) error { return nil }, PriorityHigh, time.Millisecond); !errors.Is(err, ErrPriorityQueueManagerNotFound) {
-		t.Fatalf("DelayEnqueue(missing): got %v, want %v", err, ErrPriorityQueueManagerNotFound)
+	if _, err := mgr.SubmitAfter(context.Background(), "missing", func(ctx context.Context) error { return nil }, PriorityHigh, time.Millisecond); !errors.Is(err, ErrPriorityQueueManagerNotFound) {
+		t.Fatalf("SubmitAfter(missing): got %v, want %v", err, ErrPriorityQueueManagerNotFound)
 	}
 }
 

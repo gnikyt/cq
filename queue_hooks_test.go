@@ -42,8 +42,8 @@ func TestQueueHooks_EnqueueStartResult(t *testing.T) {
 	q.Start()
 	defer q.Stop(true)
 
-	q.Enqueue(func(ctx context.Context) error { return nil })
-	q.Enqueue(func(ctx context.Context) error { return errors.New("boom") })
+	mustSubmit(t, q, func(ctx context.Context) error { return nil })
+	mustSubmit(t, q, func(ctx context.Context) error { return errors.New("boom") })
 
 	waitDeadline := time.After(2 * time.Second)
 	for i := 0; i < 2; i++ {
@@ -90,7 +90,7 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 		return nil
 	}, q, 1)
 
-	q.Enqueue(job)
+	mustSubmit(t, q, job)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -121,7 +121,7 @@ func TestQueueHooks_PanicInHookReportedAndJobContinues(t *testing.T) {
 	q.Start()
 	defer q.Stop(true)
 
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		ran.Store(true)
 		return nil
 	})
@@ -162,7 +162,7 @@ func TestQueueHooks_MultipleWithHooksAppend(t *testing.T) {
 	q.Start()
 	defer q.Stop(true)
 
-	q.Enqueue(func(ctx context.Context) error { return nil })
+	mustSubmit(t, q, func(ctx context.Context) error { return nil })
 
 	deadline := time.Now().Add(1 * time.Second)
 	for {

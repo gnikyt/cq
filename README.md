@@ -32,17 +32,17 @@ Use this as a quick guide before diving into detailed sections.
 
 | Capability | Primary APIs | What it solves |
 | --- | --- | --- |
-| Queueing and workers | `NewQueue`, `Enqueue`, `Stop` | Run background jobs with auto-scaling workers |
+| Queueing and workers | `NewQueue`, `Submit`, `Stop` | Run background jobs with auto-scaling workers |
 | Reliability | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
-| Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
+| Time control | `WithTimeout`, `WithDeadline`, `SubmitAfter` | Bound execution and schedule delayed runs |
 | Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn`, `WithCheckpoint` | Build multi-step and grouped workflows with configurable dependency failure modes |
 | Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyByKey` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
-| Multi-queue routing | `NewQueueManager`, `NewPriorityQueueManager`, `Register`, `Enqueue`, `DelayEnqueue`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
-| Prioritization and scheduling | `NewPriorityQueue`, `NewPriorityQueueManager`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed enqueue outcomes |
+| Multi-queue routing | `NewQueueManager`, `QueueManager.Submit`, `QueueManager.SubmitAfter`, `NewPriorityQueueManager`, `Register`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
+| Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.Submit`, `PriorityQueue.SubmitAfter`, `NewPriorityQueueManager`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed submission outcomes |
 
 ## When to Use
 
@@ -83,8 +83,8 @@ func main() {
 	queue := cq.NewQueue(1, 10, 100, cq.WithContext(ctx))
 	queue.Start()
 
-	// Enqueue work...
-	queue.Enqueue(func(ctx context.Context) error {
+	// Submit work...
+	_, _ = queue.Submit(context.Background(), func(ctx context.Context) error {
 		return doWork(ctx)
 	})
 
@@ -113,14 +113,14 @@ if err := mgr.Register("low", lowQ); err != nil {
 mgr.StartAll()
 defer mgr.StopAll(true)
 
-if err := mgr.Enqueue("high", processCritical); err != nil {
+if _, err := mgr.Submit(ctx, "high", processCritical); err != nil {
 	log.Fatal(err)
 }
-if err := mgr.Enqueue("low", processBulk); err != nil {
+if _, err := mgr.Submit(ctx, "low", processBulk); err != nil {
 	log.Fatal(err)
 }
 
-if err := mgr.DelayEnqueue("low", processLater, 30*time.Second); err != nil {
+if _, err := mgr.SubmitAfter(ctx, "low", processLater, 30*time.Second); err != nil {
 	log.Fatal(err)
 }
 ```
@@ -144,10 +144,10 @@ if err := pmgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200)); err != nil 
 
 defer pmgr.StopAll(true)
 
-if err := pmgr.Enqueue("critical", processNow, cq.PriorityHighest); err != nil {
+if _, err := pmgr.Submit(ctx, "critical", processNow, cq.PriorityHighest); err != nil {
 	log.Fatal(err)
 }
-if err := pmgr.DelayEnqueue("bulk", processLater, cq.PriorityLow, time.Minute); err != nil {
+if _, err := pmgr.SubmitAfter(ctx, "bulk", processLater, cq.PriorityLow, time.Minute); err != nil {
 	log.Fatal(err)
 }
 ```
@@ -198,7 +198,7 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 ### Retry-safe chain step (checkpoint)
@@ -217,7 +217,7 @@ job := cq.WithChain(
 	step, // Will be skipped on retry after first success.
 	notifyCustomer,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 ### Idempotent Work (unique + timeout)
@@ -230,7 +230,7 @@ job := cq.WithUnique(
 	5*time.Minute,
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 ### Long-Running Unique Locks (optional touch renewal)
@@ -275,22 +275,48 @@ defer queue.Stop(true)
 
 Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`.
 
-### Enqueue Methods
+### Submission
 
 ```go
-// For normal jobs.
-queue.Enqueue(job)                            // Blocking.
-queue.EnqueueOrError(job)                     // Blocking, returns typed rejection error.
-queue.EnqueueContext(ctx, job)                // Blocking, cancelable via context.
-queue.TryEnqueue(job)                         // Non-blocking, returns bool.
-queue.TryEnqueueOrError(job)                  // Non-blocking, returns typed (accepted, error).
-queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
-queue.EnqueueBatch(jobs)                      // Multiple jobs.
-queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
+// Recommended v2 submission API.
+handle, err := queue.Submit(ctx, job,
+	cq.WithJobID("message-123"),
+	cq.WithJobName("process-message"),
+	cq.WithJobAttribute("source", "sqs"),
+)
+if err != nil {
+	log.Fatal(err) // Job was not accepted.
+}
+
+// Waiting is optional. A wait timeout does not cancel the running job.
+if err := handle.Wait(ctx); err != nil {
+	log.Printf("job failed or wait ended: %v", err)
+}
+
+// Blocks until accepted or ctx ends.
+handle, err := queue.Submit(ctx, job)
+
+// Returns ErrQueueFull instead of waiting for capacity.
+handle, err = queue.Submit(ctx, job, cq.WithNonBlocking())
+
+scheduled, err := queue.SubmitAfter(ctx, job, 2*time.Minute)
+handles, err := queue.SubmitBatch(ctx, jobs)
+scheduledHandles, err := queue.SubmitBatchAfter(ctx, jobs, 30*time.Second)
 
 ```
 
-Typed enqueue rejection errors:
+`Submit` distinguishes submission failure from execution failure. It returns an
+error only when the queue does not accept the job. After acceptance, `JobHandle`
+tracks completion through `Done`, `Wait`, and `Result`. Custom IDs are visible
+through `MetaFromContext`, lifecycle hooks, and default checkpoint keys.
+
+`SubmitAfter` accepts scheduling responsibility immediately. Its handle remains
+pending during the delay, then reports the eventual execution result or a future
+rejection such as `ErrQueueStopped`, `ErrQueuePaused`, or `ErrQueueFull`.
+Batch methods return handles for accepted jobs and preserve partial-acceptance
+errors.
+
+Typed submission rejection errors:
 - `cq.ErrQueueStopped`
 - `cq.ErrQueuePaused`
 - `cq.ErrQueueFull`

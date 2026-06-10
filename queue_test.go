@@ -170,11 +170,11 @@ func TestQueueStats(t *testing.T) {
 		}
 
 		block := make(chan struct{})
-		q.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, q, func(ctx context.Context) error {
 			<-block
 			return nil
 		})
-		q.Enqueue(func(ctx context.Context) error { return nil })
+		mustSubmit(t, q, func(ctx context.Context) error { return nil })
 
 		waitFor(t, 500*time.Millisecond, func() bool {
 			s := q.Stats()
@@ -215,46 +215,50 @@ func TestQueueStats(t *testing.T) {
 	})
 }
 
-func TestQueueEnqueue(t *testing.T) {
+func TestQueueSubmit(t *testing.T) {
 	var called atomic.Bool // Was job called?
 	q := NewQueue(1, 1, 1)
 	q.Start()
 
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		called.Store(true)
 		return nil
 	})
 	q.Stop(true)
 
 	if !called.Load() {
-		t.Error("Enqueue(): expected job to enqueued and executed")
+		t.Error("Submit(): expected job to be submitted and executed")
 	}
 }
 
-func TestQueueDelayEnqueue(t *testing.T) {
+func TestQueueSubmitAfter(t *testing.T) {
 	delay := time.Duration(500 * time.Millisecond)
-	sleep := time.Duration(600 * time.Millisecond)
 
 	q := NewQueue(1, 1, 1)
 	q.Start()
 	defer q.Stop(true)
-	q.DelayEnqueue(
+	handle, err := q.SubmitAfter(context.Background(),
 		func(ctx context.Context) error {
 			return nil
 		},
 		delay,
 	)
+	if err != nil {
+		t.Fatalf("SubmitAfter(): unexpected error: %v", err)
+	}
 
 	if njc := q.TallyOf(JobStateCreated); njc != 0 {
-		t.Errorf("DelayQueue(): TallyOf(JobStateCreated): got %v, want 0 (job not created yet)", njc)
+		t.Errorf("SubmitAfter(): TallyOf(JobStateCreated): got %v, want 0 (job not created yet)", njc)
 	}
-	time.Sleep(sleep) // Give job time to enqueue and run.
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("SubmitAfter().Wait(): unexpected error: %v", err)
+	}
 	if njc := q.TallyOf(JobStateCreated); njc != 1 {
-		t.Errorf("DelayQueue(): TallyOf(JobStateCreated): got %v, want 1", njc)
+		t.Errorf("SubmitAfter(): TallyOf(JobStateCreated): got %v, want 1", njc)
 	}
 }
 
-func TestQueueEnqueueBatch(t *testing.T) {
+func TestQueueSubmitBatch(t *testing.T) {
 	q := NewQueue(2, 5, 10)
 	q.Start()
 	defer q.Stop(true)
@@ -278,30 +282,34 @@ func TestQueueEnqueueBatch(t *testing.T) {
 		},
 	}
 
-	q.EnqueueBatch(jobs)
-
-	// Wait for all jobs to complete.
-	time.Sleep(100 * time.Millisecond)
+	handles, err := q.SubmitBatch(context.Background(), jobs)
+	if err != nil {
+		t.Fatalf("SubmitBatch(): unexpected error: %v", err)
+	}
+	for _, handle := range handles {
+		if err := handle.Wait(context.Background()); err != nil {
+			t.Fatalf("SubmitBatch().Wait(): unexpected error: %v", err)
+		}
+	}
 
 	if !called1.Load() || !called2.Load() || !called3.Load() {
 		t.Errorf(
-			"EnqueueBatch(): jobs not all executed: called1=%v, called2=%v, called3=%v",
+			"SubmitBatch(): jobs not all executed: called1=%v, called2=%v, called3=%v",
 			called1.Load(), called2.Load(), called3.Load(),
 		)
 	}
 
 	// Check tallies.
 	if created := q.TallyOf(JobStateCreated); created != 3 {
-		t.Errorf("EnqueueBatch(): TallyOf(JobStateCreated): got %d, want 3", created)
+		t.Errorf("SubmitBatch(): TallyOf(JobStateCreated): got %d, want 3", created)
 	}
-	if completed := q.TallyOf(JobStateCompleted); completed != 3 {
-		t.Errorf("EnqueueBatch(): TallyOf(JobStateCompleted): got %d, want 3", completed)
-	}
+	waitFor(t, time.Second, func() bool {
+		return q.TallyOf(JobStateCompleted) == 3
+	})
 }
 
-func TestQueueDelayEnqueueBatch(t *testing.T) {
+func TestQueueSubmitBatchAfter(t *testing.T) {
 	delay := time.Duration(500 * time.Millisecond)
-	sleep := time.Duration(600 * time.Millisecond)
 
 	q := NewQueue(2, 5, 10)
 	q.Start()
@@ -313,45 +321,51 @@ func TestQueueDelayEnqueueBatch(t *testing.T) {
 		func(ctx context.Context) error { return nil },
 	}
 
-	q.DelayEnqueueBatch(jobs, delay)
+	handles, err := q.SubmitBatchAfter(context.Background(), jobs, delay)
+	if err != nil {
+		t.Fatalf("SubmitBatchAfter(): unexpected error: %v", err)
+	}
 
 	// Jobs should not be created yet.
 	if njc := q.TallyOf(JobStateCreated); njc != 0 {
-		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCreated): got %v, want 0 (jobs not created yet)", njc)
+		t.Errorf("SubmitBatchAfter(): TallyOf(JobStateCreated): got %v, want 0 (jobs not created yet)", njc)
 	}
 
-	// Wait for jobs to enqueue and run.
-	time.Sleep(sleep)
+	for _, handle := range handles {
+		if err := handle.Wait(context.Background()); err != nil {
+			t.Fatalf("SubmitBatchAfter().Wait(): unexpected error: %v", err)
+		}
+	}
 
 	// All jobs should now be created.
 	if njc := q.TallyOf(JobStateCreated); njc != 3 {
-		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCreated): got %v, want 3", njc)
+		t.Errorf("SubmitBatchAfter(): TallyOf(JobStateCreated): got %v, want 3", njc)
 	}
-	if completed := q.TallyOf(JobStateCompleted); completed != 3 {
-		t.Errorf("DelayEnqueueBatch(): TallyOf(JobStateCompleted): got %d, want 3", completed)
-	}
+	waitFor(t, time.Second, func() bool {
+		return q.TallyOf(JobStateCompleted) == 3
+	})
 }
 
-func TestQueueEnqueueIfStopped(t *testing.T) {
+func TestQueueSubmitIfStopped(t *testing.T) {
 	q := NewQueue(1, 1, 1)
 	q.Start()
 	q.Stop(true)
 
 	job := func(ctx context.Context) error { return nil }
-	if ok := q.TryEnqueue(job); ok {
-		t.Error("TryEnqueue(): got true, want false")
+	if handle, err := q.Submit(context.Background(), job, WithNonBlocking()); handle != nil || !errors.Is(err, ErrQueueStopped) {
+		t.Fatalf("Submit(): got (%v, %v), want (nil, %v)", handle, err, ErrQueueStopped)
 	}
 }
 
-func TestQueueEnqueueOrError(t *testing.T) {
+func TestQueueSubmitRejection(t *testing.T) {
 	t.Run("stopped", func(t *testing.T) {
 		q := NewQueue(1, 1, 1)
 		q.Start()
 		q.Stop(true)
 
-		err := q.EnqueueOrError(func(ctx context.Context) error { return nil })
+		_, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil })
 		if !errors.Is(err, ErrQueueStopped) {
-			t.Fatalf("EnqueueOrError(): got %v, want %v", err, ErrQueueStopped)
+			t.Fatalf("Submit(): got %v, want %v", err, ErrQueueStopped)
 		}
 	})
 
@@ -364,30 +378,30 @@ func TestQueueEnqueueOrError(t *testing.T) {
 			t.Fatalf("Pause(): unexpected error: %v", err)
 		}
 
-		err := q.EnqueueOrError(func(ctx context.Context) error { return nil })
+		_, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil })
 		if !errors.Is(err, ErrQueuePaused) {
-			t.Fatalf("EnqueueOrError(): got %v, want %v", err, ErrQueuePaused)
+			t.Fatalf("Submit(): got %v, want %v", err, ErrQueuePaused)
 		}
 	})
 }
 
-func TestQueueEnqueueContext(t *testing.T) {
+func TestQueueSubmitContext(t *testing.T) {
 	t.Run("returns_context_error_when_full", func(t *testing.T) {
 		// No workers: first job fills the queue; second blocks until context timeout.
 		q := NewQueue(0, 0, 1)
 		q.Start()
 		defer q.Stop(false)
 
-		if err := q.EnqueueOrError(func(ctx context.Context) error { return nil }); err != nil {
-			t.Fatalf("EnqueueOrError(): unexpected error: %v", err)
+		if _, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil }); err != nil {
+			t.Fatalf("Submit(): unexpected error: %v", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 		defer cancel()
 
-		err := q.EnqueueContext(ctx, func(ctx context.Context) error { return nil })
+		_, err := q.Submit(ctx, func(ctx context.Context) error { return nil })
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("EnqueueContext(): got %v, want %v", err, context.DeadlineExceeded)
+			t.Fatalf("Submit(): got %v, want %v", err, context.DeadlineExceeded)
 		}
 	})
 
@@ -400,28 +414,29 @@ func TestQueueEnqueueContext(t *testing.T) {
 		var ranThird atomic.Bool
 
 		// Job 1 occupies the single worker.
-		q.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, q, func(ctx context.Context) error {
 			<-block
 			return nil
 		})
 		// Job 2 occupies the single buffer slot.
-		q.Enqueue(func(ctx context.Context) error { return nil })
+		mustSubmit(t, q, func(ctx context.Context) error { return nil })
 
 		errCh := make(chan error, 1)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
-			errCh <- q.EnqueueContext(ctx, func(ctx context.Context) error {
+			_, err := q.Submit(ctx, func(ctx context.Context) error {
 				ranThird.Store(true)
 				return nil
 			})
+			errCh <- err
 		}()
 
 		time.Sleep(25 * time.Millisecond)
 		close(block) // Frees worker and then queue slot for the EnqueueContext call.
 
 		if err := <-errCh; err != nil {
-			t.Fatalf("EnqueueContext(): got %v, want nil", err)
+			t.Fatalf("Submit(): got %v, want nil", err)
 		}
 
 		waitFor(t, 500*time.Millisecond, func() bool {
@@ -430,24 +445,24 @@ func TestQueueEnqueueContext(t *testing.T) {
 	})
 }
 
-func TestQueueTryEnqueueOrError(t *testing.T) {
+func TestQueueSubmitNonBlocking(t *testing.T) {
 	t.Run("full", func(t *testing.T) {
 		// No workers: jobs only occupy channel capacity.
 		q := NewQueue(0, 0, 1)
 		q.Start()
 		defer q.Stop(false)
 
-		ok, err := q.TryEnqueueOrError(func(ctx context.Context) error { return nil })
-		if !ok || err != nil {
-			t.Fatalf("TryEnqueueOrError(): first enqueue got (%v, %v), want (true, nil)", ok, err)
+		handle, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil }, WithNonBlocking())
+		if handle == nil || err != nil {
+			t.Fatalf("Submit(): first submit got (%v, %v), want (handle, nil)", handle, err)
 		}
 
-		ok, err = q.TryEnqueueOrError(func(ctx context.Context) error { return nil })
-		if ok {
-			t.Fatal("TryEnqueueOrError(): got ok=true on full queue, want false")
+		handle, err = q.Submit(context.Background(), func(ctx context.Context) error { return nil }, WithNonBlocking())
+		if handle != nil {
+			t.Fatal("Submit(): got handle on full queue, want nil")
 		}
 		if !errors.Is(err, ErrQueueFull) {
-			t.Fatalf("TryEnqueueOrError(): got %v, want %v", err, ErrQueueFull)
+			t.Fatalf("Submit(): got %v, want %v", err, ErrQueueFull)
 		}
 	})
 }
@@ -458,7 +473,7 @@ func TestQueueStopContext(t *testing.T) {
 		q.Start()
 
 		var called atomic.Bool
-		q.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, q, func(ctx context.Context) error {
 			called.Store(true)
 			return nil
 		})
@@ -479,7 +494,7 @@ func TestQueueStopContext(t *testing.T) {
 		q.Start()
 
 		release := make(chan struct{})
-		q.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, q, func(ctx context.Context) error {
 			<-release
 			return nil
 		})
@@ -517,7 +532,7 @@ func TestQueueStopTimeout(t *testing.T) {
 	q.Start()
 
 	release := make(chan struct{})
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		<-release
 		return nil
 	})
@@ -573,7 +588,7 @@ func TestQueueTallies(t *testing.T) {
 		t.Run(tt.state.String(), func(t *testing.T) {
 			q := NewQueue(1, 1, 1)
 			q.Start()
-			q.Enqueue(tt.job)
+			mustSubmit(t, q, tt.job)
 			q.Stop(true)
 			if err := tt.want(q); err != nil {
 				t.Errorf("%T: %v", tt.state, err)
@@ -583,19 +598,46 @@ func TestQueueTallies(t *testing.T) {
 }
 
 func TestQueuePanic(t *testing.T) {
-	var called atomic.Bool
+	var got atomic.Value
 
 	q := NewQueue(1, 1, 1, WithPanicHandler(func(err any) {
-		called.Store(true)
+		got.Store(err)
 	}))
 	q.Start()
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		panic("panic")
 	})
 	q.Stop(true)
 
-	if !called.Load() {
+	if got.Load() == nil {
 		t.Error("WithPanicHandler(): should have executed")
+	}
+	panicErr, ok := got.Load().(*PanicError)
+	if !ok {
+		t.Fatalf("WithPanicHandler(): got %T, want *PanicError", got.Load())
+	}
+	if panicErr.Origin != PanicOriginJob {
+		t.Fatalf("WithPanicHandler(): got origin=%q, want %q", panicErr.Origin, PanicOriginJob)
+	}
+}
+
+func TestQueueWorkerPanicUsesPanicError(t *testing.T) {
+	var got atomic.Value
+	q := NewQueue(0, 0, 0, WithPanicHandler(func(err any) {
+		got.Store(err)
+	}))
+
+	q.jobWg.Add(1)
+	q.workJob(func(context.Context) error {
+		panic("worker boundary")
+	}, true)
+
+	panicErr, ok := got.Load().(*PanicError)
+	if !ok {
+		t.Fatalf("WithPanicHandler(): got %T, want *PanicError", got.Load())
+	}
+	if panicErr.Origin != PanicOriginWorker {
+		t.Fatalf("WithPanicHandler(): got origin=%q, want %q", panicErr.Origin, PanicOriginWorker)
 	}
 }
 
@@ -612,7 +654,7 @@ func TestIdleWorkerTick(t *testing.T) {
 	defer q.Stop(true)
 
 	for i := 0; i < jobs; i++ {
-		q.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, q, func(ctx context.Context) error {
 			time.Sleep(delay)
 			return nil
 		})
@@ -682,9 +724,9 @@ func TestQueueSetWorkerRangeScaleDownMaxDoesNotPreemptActive(t *testing.T) {
 		return nil
 	}
 
-	q.Enqueue(job)
-	q.Enqueue(job)
-	q.Enqueue(job)
+	mustSubmit(t, q, job)
+	mustSubmit(t, q, job)
+	mustSubmit(t, q, job)
 
 	waitFor(t, 1*time.Second, func() bool {
 		return started.Load() == 3 && q.RunningWorkers() == 3

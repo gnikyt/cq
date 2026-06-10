@@ -30,7 +30,7 @@ job := func(ctx context.Context) error {
 	}
 	return doWork(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Job Metadata
@@ -50,7 +50,7 @@ job := func(ctx context.Context) error {
 	)
 	return doWork(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 The `JobMeta` struct contains:
@@ -138,7 +138,7 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 `WithRetry`, `WithRetryIf`, and `WithBackoff` remain available for manual composition when you need finer control.
@@ -187,14 +187,14 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 You can still use explicit wrapper composition:
 
 ```go
 job := cq.WithRetry(cq.WithBackoff(actualJob, cq.ExponentialBackoff), 3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBackoff`
@@ -219,7 +219,7 @@ job := cq.WithOutcome(
 	},
 	nil, // onDiscarded.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To handle discarded jobs (for example, idempotent duplicates), pass `onDiscarded`:
@@ -238,7 +238,7 @@ job := cq.WithOutcome(
 		log.Printf("discarded: %v", err)
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To access job metadata in handlers, capture it inside the job:
@@ -257,7 +257,7 @@ job := func(ctx context.Context) error {
 		nil, // onDiscarded.
 	)(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Outcome Markers
@@ -295,7 +295,7 @@ job := cq.WithRetryIf(
 		return errors.Is(err, cq.ErrRetryable)
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Available outcome markers:
@@ -328,7 +328,7 @@ func (h myHook) Failure(ctx context.Context, err error, d time.Duration) {
 }
 
 job := cq.WithTracing(actualJob, "sync-products", myHook{})
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Place tracing as the outermost wrapper to capture total execution time including retries:
@@ -359,7 +359,7 @@ To trace each retry attempt individually, place tracing inside the retry instead
 job := cq.WithSkipIf(actualJob, func(ctx context.Context) bool {
 	return !shouldProcess()
 })
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Timeout
@@ -372,7 +372,7 @@ queue.Enqueue(job)
 
 ```go
 job := cq.WithTimeout(actualJob, 5*time.Minute)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Deadline
@@ -386,7 +386,7 @@ queue.Enqueue(job)
 ```go
 deadline := time.Date(2025, 12, 25, 16, 0, 0, 0, time.Local)
 job := cq.WithDeadline(actualJob, deadline)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Overlap Prevention
@@ -400,7 +400,7 @@ queue.Enqueue(job)
 ```go
 locker := cq.NewOverlapMemoryLocker()
 job := cq.WithoutOverlap(actualJob, "account-123", locker)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To cap how long the overlap lock is held, wrap the inner job with `WithTimeout`:
@@ -412,7 +412,7 @@ job := cq.WithoutOverlap(
 	"account-123",
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
@@ -445,7 +445,7 @@ job := cq.WithConcurrencyByKey(
 	"customer:123",
 	limiter,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 When the key limit is already reached, the wrapper returns `cq.ErrConcurrencyByKeyLimited`.
@@ -466,7 +466,7 @@ For distributed implementations (for example Redis or SQLite), see [Custom Key C
 ```go
 locker := cq.NewUniqueMemoryLocker()
 job := cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Duplicate runs while the lock is active **do not execute** the inner job... by default the wrapper **returns nil** (discard the job). For `WithUniqueWindow`, the lock covers the full window even after the job finishes.
@@ -483,7 +483,7 @@ job := cq.WithRelease(
 	0,
 	cq.IsContentionError,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To route duplicates to a side queue or different dispatcher, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
@@ -498,7 +498,7 @@ job := cq.WithUnique(
 	1*time.Hour,
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Chains
@@ -511,7 +511,7 @@ queue.Enqueue(job)
 
 ```go
 job := cq.WithChain(step1, step2, step3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Checkpoint
@@ -533,7 +533,7 @@ step := cq.WithCheckpoint(
 )
 
 job := cq.WithChain(validateOrder, step, notifyCustomer)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To persist resume data from a failed run and load it on retry:
@@ -599,7 +599,7 @@ step2 := func(ch chan int) cq.Job {
 }
 
 job := cq.WithPipeline(step1, step2)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Batch
@@ -624,7 +624,7 @@ batchJobs, state := cq.WithBatch(
 		)
 	}),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 
 // Optionally wait for completion in-process:
 <-state.Done()
@@ -641,7 +641,7 @@ batchJobs, state := cq.WithBatch(
 	cq.WithBatchID("import-42"),
 	cq.WithBatchStore(myPostgresStore),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 ```
 
 `state.Done()` only fires in the process that ran the jobs. Cross-process consumers should poll `Snapshot` (or query the store directly).
@@ -692,7 +692,7 @@ batchJobs, _ := cq.WithBatch(
 		}
 	}),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 ```
 
 #### Dependencies
@@ -709,7 +709,7 @@ job := cq.WithDependsOn(
     cq.Dep(dep1, cq.DependencyFailCancel),    // If dep1 fails, stop and return error.
     cq.Dep(dep2, cq.DependencyFailContinue),  // If dep2 fails, ignore and continue.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Three failure modes control what happens when a dependency fails:
@@ -728,7 +728,7 @@ job := cq.WithDependsOn(
     cq.Dep(validatePayment, cq.DependencyFailCancel),    // Must succeed.
     cq.Dep(logAttempt, cq.DependencyFailContinue),       // Ignore if fails.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 **Example: Compose with retry**
@@ -739,7 +739,7 @@ job := cq.WithDependsOn(
     cq.Dep(cq.WithRetry(validatePayment, 2), cq.DependencyFailCancel),
     cq.Dep(updateInventory, cq.DependencyFailSkip),
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 **Example: Group dependencies with `WithChain`**
@@ -751,7 +751,7 @@ job := cq.WithDependsOn(
     cq.Dep(cq.WithChain(checkInventory, reserveItems), cq.DependencyFailCancel),
     cq.Dep(notifyWarehouse, cq.DependencyFailContinue),
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Release
@@ -772,7 +772,7 @@ job := cq.WithRelease(
 		return errors.Is(err, ErrRateLimited)
 	}, // Predicate: which errors trigger release.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Release Self
@@ -794,7 +794,7 @@ job := cq.WithReleaseSelf(func(ctx context.Context) error {
 	return doWork(ctx)
 }, queue, 3) // maxReleases (0 = unlimited).
 
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 You can call `RequestRelease` multiple times in a single run to refine the delay. Only one release is scheduled for that run, and the last request wins:
@@ -808,7 +808,7 @@ job := cq.WithReleaseSelf(func(ctx context.Context) error {
 	return nil
 }, queue, 3)
 
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Logic:
@@ -830,7 +830,7 @@ Logic:
 job := cq.WithRecover(func(ctx context.Context) error {
 	panic("oops")
 })
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Tagged
@@ -844,7 +844,7 @@ queue.Enqueue(job)
 ```go
 registry := cq.NewJobRegistry()
 job := cq.WithTagged(actualJob, registry, "user:123", "export")
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 
 registry.CancelForTag("user:123")
 // or:
@@ -862,7 +862,7 @@ registry.CancelForTag("export")
 ```go
 limiter := rate.NewLimiter(10, 5) // 10 per second, burst of 5.
 job := cq.WithRateLimit(actualJob, limiter)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Use `WithRateLimitRelease` when you want to free workers instead of blocking them while waiting for limiter tokens:
@@ -870,7 +870,7 @@ Use `WithRateLimitRelease` when you want to free workers instead of blocking the
 ```go
 limiter := rate.NewLimiter(10, 5)
 job := cq.WithRateLimitRelease(actualJob, limiter, queue, 3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 `WithRateLimitRelease` re-enqueues the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. `maxReleases` controls how many times this defer/re-enqueue can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
@@ -894,7 +894,7 @@ job := cq.WithConcurrencyLimit(
 	limiter,
 	queue,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Multiple jobs sharing the same key are serialized or limited to the `max` count. If all slots are occupied, a new job requesting the same key is immediately released (returns `nil`) and re-enqueued after the retry delay. A single `ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
@@ -922,8 +922,8 @@ dbJob := cq.WithConcurrencyLimit(
 	queue,
 )
 
-queue.Enqueue(paymentJob)
-queue.Enqueue(dbJob)
+_, _ = queue.Submit(context.Background(), paymentJob)
+_, _ = queue.Submit(context.Background(), dbJob)
 ```
 
 Check current concurrency for a key:
@@ -956,7 +956,7 @@ for _, orderID := range orderIDs {
 	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
 		return processPayment(orderID)
 	}, paymentCB)
-	queue.Enqueue(job)
+	_, _ = queue.Submit(context.Background(), job)
 }
 
 // If 5 consecutive jobs fail, the circuit opens.
@@ -992,7 +992,7 @@ for _, orderID := range orderIDs {
 	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
 		return processPayment(orderID)
 	}, paymentCB)
-	route().Enqueue(job)
+	route().Submit(context.Background(), job)
 }
 ```
 
@@ -1033,7 +1033,8 @@ dispatcher := cq.JobDispatcherFunc(func(ctx context.Context, req cq.DispatchRequ
 		byKeyQ[req.Key] = q
 	}
 	mu.Unlock()
-	return q.EnqueueOrError(req.Job)
+	_, err := q.Submit(ctx, req.Job)
+	return err
 })
 
 job := cq.WithDispatchOnContention(
@@ -1068,5 +1069,5 @@ func withLogging(job cq.Job) cq.Job {
 }
 
 job := withLogging(actualJob)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```

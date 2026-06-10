@@ -9,20 +9,19 @@ queue.Start()
 pq := cq.NewPriorityQueue(queue, 50)
 defer pq.Stop(true)
 
-pq.Enqueue(criticalJob, cq.PriorityHighest)
-pq.Enqueue(normalJob, cq.PriorityMedium)
-pq.Enqueue(cleanupJob, cq.PriorityLowest)
+critical, err := pq.Submit(ctx, criticalJob, cq.PriorityHighest)
+normal, err := pq.Submit(ctx, normalJob, cq.PriorityMedium)
+cleanup, err := pq.Submit(ctx, cleanupJob, cq.PriorityLowest)
 
-// Explicit result variants.
-_ = pq.EnqueueOrError(criticalJob, cq.PriorityHighest)
-ok, err := pq.TryEnqueueOrError(normalJob, cq.PriorityMedium)
+// Non-blocking priority-buffer acceptance.
+handle, err := pq.Submit(ctx, normalJob, cq.PriorityMedium, cq.WithNonBlocking())
 ```
 
 Priority levels: `PriorityHighest`, `PriorityHigh`, `PriorityMedium`, `PriorityLow`, `PriorityLowest`
 
 Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle, the highest priority queue gets 5 job attempts, then the next gets 3, then 2, then 1, then 1 for the lowest.
 
-Typed priority enqueue errors:
+Typed priority submission errors:
 - `cq.ErrPriorityInvalid`
 - `cq.ErrPriorityQueueStopped`
 - `cq.ErrPriorityQueueFull`
@@ -48,8 +47,8 @@ _ = mgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200))
 
 defer mgr.StopAll(true)
 
-_ = mgr.Enqueue("critical", criticalJob, cq.PriorityHighest)
-_ = mgr.DelayEnqueue("bulk", cleanupJob, cq.PriorityLow, time.Minute)
+_, _ = mgr.Submit(ctx, "critical", criticalJob, cq.PriorityHighest)
+_, _ = mgr.SubmitAfter(ctx, "bulk", cleanupJob, cq.PriorityLow, time.Minute)
 ```
 
 #### Custom Weights

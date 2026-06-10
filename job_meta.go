@@ -34,23 +34,25 @@ type lastErrorKey struct{}
 
 // JobMeta contains metadata about the current job execution.
 type JobMeta struct {
-	ID         string    // Unique job identifier.
-	EnqueuedAt time.Time // When the job was enqueued.
-	Attempt    int       // Current attempt (0-indexed, externally incremented).
+	ID         string            // Unique job identifier.
+	Name       string            // Optional human-readable job name.
+	Attributes map[string]string // Optional string attributes for correlation and observability.
+	EnqueuedAt time.Time         // When the job was enqueued.
+	Attempt    int               // Current attempt (0-indexed, externally incremented).
 }
 
 // MetaFromContext extracts job metadata from the context.
 // Returns an empty JobMeta if no metadata is present.
 func MetaFromContext(ctx context.Context) JobMeta {
 	if meta, ok := ctx.Value(jobMetaKey{}).(JobMeta); ok {
-		return meta
+		return cloneJobMeta(meta)
 	}
 	return JobMeta{}
 }
 
 // contextWithMeta returns a new context with the given job metadata.
 func contextWithMeta(ctx context.Context, meta JobMeta) context.Context {
-	return context.WithValue(ctx, jobMetaKey{}, meta)
+	return context.WithValue(ctx, jobMetaKey{}, cloneJobMeta(meta))
 }
 
 // LastErrorFromContext extracts the previous attempt error from context.
@@ -95,4 +97,10 @@ func TouchLock(ctx context.Context, ttl time.Duration) error {
 // contextWithLockTouchRequester returns a new context with unique lock touch requester.
 func contextWithLockTouchRequester(ctx context.Context, fn lockTouchRequester) context.Context {
 	return context.WithValue(ctx, lockTouchRequesterKey{}, fn)
+}
+
+// cloneJobMeta returns JobMeta with an independent Attributes map.
+func cloneJobMeta(meta JobMeta) JobMeta {
+	meta.Attributes = cloneStringMap(meta.Attributes)
+	return meta
 }
