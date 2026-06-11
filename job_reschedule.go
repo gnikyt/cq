@@ -70,6 +70,6 @@ func Reschedule(ctx context.Context, queue *Queue, job Job, delay time.Duration,
 	if err != nil {
 		return nil, err
 	}
-	queue.dispatchReschedule(meta, delay, reason)
+	queue.dispatchReschedule(ctx, meta, delay, reason)
 	return handle, nil
 }

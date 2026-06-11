@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -29,13 +30,14 @@ type JobEvent struct {
 	RescheduleReason string
 }
 
-// Hooks defines optional lifecycle callbacks for queue transitions.
+// Hooks defines observational lifecycle callbacks for queue transitions.
+// Callbacks receive the relevant acceptance, execution, or reschedule context.
 type Hooks struct {
-	OnEnqueue    func(JobEvent)
-	OnStart      func(JobEvent)
-	OnSuccess    func(JobEvent)
-	OnFailure    func(JobEvent)
-	OnReschedule func(JobEvent)
+	OnEnqueue    func(context.Context, JobEvent)
+	OnStart      func(context.Context, JobEvent)
+	OnSuccess    func(context.Context, JobEvent)
+	OnFailure    func(context.Context, JobEvent)
+	OnReschedule func(context.Context, JobEvent)
 }
 
 // eventFromMeta creates a JobEvent from the given metadata, state, and error.
@@ -53,7 +55,7 @@ func eventFromMeta(meta JobMeta, state JobState, err error) JobEvent {
 }
 
 // emitHook emits a hook event to the given function.
-func (q *Queue) emitHook(name hookName, fn func(JobEvent), event JobEvent) {
+func (q *Queue) emitHook(ctx context.Context, name hookName, fn func(context.Context, JobEvent), event JobEvent) {
 	if fn == nil {
 		return
 	}
@@ -65,27 +67,27 @@ func (q *Queue) emitHook(name hookName, fn func(JobEvent), event JobEvent) {
 		}
 	}()
 
-	fn(event)
+	fn(ctx, event)
 }
 
 // dispatchEnqueue dispatches the enqueue hook event when a job is enqueued.
-func (q *Queue) dispatchEnqueue(meta JobMeta) {
+func (q *Queue) dispatchEnqueue(ctx context.Context, meta JobMeta) {
 	event := eventFromMeta(meta, JobStateCreated, nil)
 	for _, hooks := range q.hooks {
-		q.emitHook(hookEnqueue, hooks.OnEnqueue, event)
+		q.emitHook(ctx, hookEnqueue, hooks.OnEnqueue, event)
 	}
 }
 
 // dispatchStart dispatches the start hook event when a worker starts processing a job.
-func (q *Queue) dispatchStart(meta JobMeta) {
+func (q *Queue) dispatchStart(ctx context.Context, meta JobMeta) {
 	event := eventFromMeta(meta, JobStateActive, nil)
 	for _, hooks := range q.hooks {
-		q.emitHook(hookStart, hooks.OnStart, event)
+		q.emitHook(ctx, hookStart, hooks.OnStart, event)
 	}
 }
 
 // dispatchResult dispatches the result hook event when a job completes.
-func (q *Queue) dispatchResult(meta JobMeta, err error) {
+func (q *Queue) dispatchResult(ctx context.Context, meta JobMeta, err error) {
 	if err != nil {
 		state := JobStateFailed
 		if errors.Is(err, ErrJobCancelled) {
@@ -93,23 +95,23 @@ func (q *Queue) dispatchResult(meta JobMeta, err error) {
 		}
 		event := eventFromMeta(meta, state, err)
 		for _, hooks := range q.hooks {
-			q.emitHook(hookFailure, hooks.OnFailure, event)
+			q.emitHook(ctx, hookFailure, hooks.OnFailure, event)
 		}
 		return
 	}
 
 	event := eventFromMeta(meta, JobStateCompleted, nil)
 	for _, hooks := range q.hooks {
-		q.emitHook(hookSuccess, hooks.OnSuccess, event)
+		q.emitHook(ctx, hookSuccess, hooks.OnSuccess, event)
 	}
 }
 
 // dispatchReschedule dispatches the reschedule hook event when a job is rescheduled.
-func (q *Queue) dispatchReschedule(meta JobMeta, delay time.Duration, reason string) {
+func (q *Queue) dispatchReschedule(ctx context.Context, meta JobMeta, delay time.Duration, reason string) {
 	event := eventFromMeta(meta, JobStatePending, nil)
 	event.Delay = delay
 	event.RescheduleReason = reason
 	for _, hooks := range q.hooks {
-		q.emitHook(hookReschedule, hooks.OnReschedule, event)
+		q.emitHook(ctx, hookReschedule, hooks.OnReschedule, event)
 	}
 }

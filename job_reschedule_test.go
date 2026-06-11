@@ -29,7 +29,7 @@ func TestReschedule_EmitsHookAndReenqueues(t *testing.T) {
 	done := make(chan struct{}, 1)
 
 	q := NewQueue(1, 1, 10, WithHooks(Hooks{
-		OnReschedule: func(event JobEvent) {
+		OnReschedule: func(_ context.Context, event JobEvent) {
 			gotReason.Store(event.RescheduleReason)
 			if event.Delay < 0 {
 				negDelay.Store(true)

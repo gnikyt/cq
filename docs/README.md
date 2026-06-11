@@ -48,8 +48,13 @@ Recurring and one-time job scheduling:
 
 ### [Custom Locker](CUSTOM_LOCKER.md)
 Distributed lock implementations for `WithUnique` and `WithoutOverlap`:
-- Locker interface specification
+- Context-aware capability interfaces
+- Core, renewable, cleanup, and managed locker contracts
 - Redis implementation example
+
+### [Custom Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md)
+Distributed limits for `WithConcurrencyByKey`:
+- Context-aware acquire and release operations
 - SQLite implementation example
 
 ### [Custom Checkpoint Store](CUSTOM_CHECKPOINT_STORE.md)

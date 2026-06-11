@@ -12,12 +12,12 @@ import (
 func TestMemoryKeyConcurrencyLimiter(t *testing.T) {
 	t.Run("invalid_limit_rejected", func(t *testing.T) {
 		limiterZero := NewMemoryKeyConcurrencyLimiter(0)
-		if err := limiterZero.Acquire("customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
+		if err := limiterZero.Acquire(context.Background(), "customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
 			t.Fatalf("Acquire(): limit=0 got err=%v, want %v", err, ErrConcurrencyByKeyInvalidLimit)
 		}
 
 		limiterNegative := NewMemoryKeyConcurrencyLimiter(-1)
-		if err := limiterNegative.Acquire("customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
+		if err := limiterNegative.Acquire(context.Background(), "customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
 			t.Fatalf("Acquire(): limit<0 got err=%v, want %v", err, ErrConcurrencyByKeyInvalidLimit)
 		}
 	})
@@ -86,7 +86,7 @@ func TestWithConcurrencyByKey(t *testing.T) {
 		}()
 
 		// Slot should be available again because defer Release ran.
-		if err := limiter.Acquire(key); err != nil {
+		if err := limiter.Acquire(context.Background(), key); err != nil {
 			t.Fatalf("Acquire(): expected slot to be released after panic, got err=%v", err)
 		}
 	})

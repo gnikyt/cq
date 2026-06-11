@@ -15,8 +15,8 @@ var (
 // KeyConcurrencyLimiter controls concurrent execution caps per key.
 // Implementations may be in-memory or distributed.
 type KeyConcurrencyLimiter interface {
-	Acquire(key string) error
-	Release(key string)
+	Acquire(ctx context.Context, key string) error
+	Release(ctx context.Context, key string) error
 }
 
 // MemoryKeyConcurrencyLimiter limits in-flight executions per key in-process.
@@ -35,7 +35,10 @@ func NewMemoryKeyConcurrencyLimiter(limit int) *MemoryKeyConcurrencyLimiter {
 }
 
 // Acquire attempts to reserve one slot for key up to limit.
-func (l *MemoryKeyConcurrencyLimiter) Acquire(key string) error {
+func (l *MemoryKeyConcurrencyLimiter) Acquire(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if l.limit <= 0 {
 		return ErrConcurrencyByKeyInvalidLimit
 	}
@@ -52,36 +55,42 @@ func (l *MemoryKeyConcurrencyLimiter) Acquire(key string) error {
 }
 
 // Release frees one reserved slot for key.
-func (l *MemoryKeyConcurrencyLimiter) Release(key string) {
+func (l *MemoryKeyConcurrencyLimiter) Release(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	current, ok := l.counts[key]
 	if !ok || current <= 0 {
-		return // Nothing to release.
+		return nil // Nothing to release.
 	}
 
 	next := current - 1
 	if next == 0 {
 		delete(l.counts, key) // Cleanup entries.
-		return
+		return nil
 	}
 	l.counts[key] = next
+	return nil
 }
 
 // WithConcurrencyByKey caps concurrent executions for a key using limiter.
 // When the limit is reached, Acquire returns ErrConcurrencyByKeyLimited and this wrapper returns it.
 // Compose with WithDispatchOnContention to hand off contended runs to a JobDispatcher.
 func WithConcurrencyByKey(job Job, key string, limiter KeyConcurrencyLimiter) Job {
-	return func(ctx context.Context) error {
+	return func(ctx context.Context) (err error) {
 		if limiter == nil {
 			return job(ctx)
 		}
 
-		if err := limiter.Acquire(key); err != nil {
+		if err := limiter.Acquire(ctx, key); err != nil {
 			return err
 		}
-		defer limiter.Release(key)
+		defer func() {
+			err = errors.Join(err, limiter.Release(context.WithoutCancel(ctx), key))
+		}()
 		return job(ctx)
 	}
 }

@@ -391,16 +391,34 @@ _, _ = queue.Submit(context.Background(), job)
 
 #### Overlap Prevention
 
-**What it does:** `WithoutOverlap` runs jobs for the same key **one after another**. Waits on a mutex until the previous run finishes, then executes. Workers block while queued on that key.
+**What it does:** `WithoutOverlap` runs jobs for the same key **one after another**. It retries atomic lock acquisition until the previous run finishes, then executes. Workers block while queued on that key.
 
 **When to use:** Non-overlapping work such as account sync or balance mutation.
 
-**Caveat:** Hot keys can occupy workers while others wait. That differs from `WithUnique`, which deduplicates by key/window and often drops duplicates instead of forming a queue behind the mutex.
+**Caveat:** Hot keys can occupy workers while others wait. That differs from `WithUnique`, which deduplicates by key/window and often drops duplicates instead of forming a queue behind the lock.
+
+`WithoutOverlap` holds its lock until the job returns. Normal cancellation and
+shutdown still run deferred lock release. An abrupt process crash cannot run
+cleanup; in-memory locks disappear with the process, while distributed lockers
+must define how orphaned locks are handled. Use `WithUnique` when lease expiry
+and renewal are part of the intended behavior.
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
 job := cq.WithoutOverlap(actualJob, "account-123", locker)
 _, _ = queue.Submit(context.Background(), job)
+```
+
+Use `WithOverlapRetryInterval` to control how often normal blocking execution
+retries acquisition, especially for external lockers:
+
+```go
+job := cq.WithoutOverlap(
+	actualJob,
+	"account-123",
+	locker,
+	cq.WithOverlapRetryInterval(250*time.Millisecond),
+)
 ```
 
 To cap how long the overlap lock is held, wrap the inner job with `WithTimeout`:
@@ -417,7 +435,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
 
-For **overlap contention** (dispatch to a side queue instead of blocking on the mutex), see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+For **overlap contention** (dispatch to a side queue instead of waiting on the lock), see [Dispatch on contention or error](#dispatch-on-contention-or-error).
 
 #### Dispatching Contract
 
@@ -1028,7 +1046,7 @@ This pattern isolates failing dependency traffic from the main queue. Use with y
 
 **`WithDispatchOnContention(job, key, dispatcher)`** runs the inner job with `ContextWithContentionTry`. When the inner job returns a contention error (`ErrWithoutOverlapContended`, `ErrUniqueContended`, or `ErrConcurrencyByKeyLimited`), it forwards the **same** inner `Job` to `dispatcher` with `DispatchReasonContention`. Other errors are returned unchanged. A nil `dispatcher` yields `ErrDispatchRequired`.
 
-Bare `WithoutOverlap` uses `Lock()` (blocks until the key is free). Under contention-try, it uses `TryLock` and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
+Bare `WithoutOverlap` retries atomic acquisition until the key is free. Under contention-try, it makes one acquisition attempt and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
 
 **`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to resubmit duplicates, or with custom retry logic.
 

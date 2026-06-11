@@ -31,7 +31,7 @@ Behavior:
   Handles recovered panics from job execution and internal queue reporting.
 
 - `cq.WithHooks(hooks)`  
-  Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`, `OnSuccess`, `OnFailure`, `OnReschedule`) for observability integrations. You can pass `WithHooks` multiple times; callbacks are appended and all are executed.
+  Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`, `OnSuccess`, `OnFailure`, `OnReschedule`) for observability integrations. `OnEnqueue` receives the acceptance context; the execution hooks receive the job context; and `OnReschedule` receives the rescheduling job context. Result-hook contexts may already be cancelled. Use `context.WithoutCancel(ctx)` when reporting must outlive job cancellation. You can pass `WithHooks` multiple times. Callbacks are appended and all are executed.
 
 - `cq.WithIDGenerator(fn)`  
   Overrides fallback job ID generation. If the generator returns an empty string, the queue falls back to its atomic counter.
@@ -61,7 +61,7 @@ queue := cq.NewQueue(1, 10, 100,
 		log.Printf("panic: %v", err)
 	}),
 	cq.WithHooks(cq.Hooks{
-		OnFailure: func(event cq.JobEvent) {
+		OnFailure: func(_ context.Context, event cq.JobEvent) {
 			log.Printf("job failed (id=%s): %v", event.ID, event.Err)
 		},
 	}),

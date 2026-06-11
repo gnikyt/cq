@@ -453,7 +453,7 @@ For detailed usage and advanced features, see the following guides:
 - **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
 - **[Queue Routing](docs/QUEUE_ROUTING.md)** - Register named queues and route jobs to isolated worker pools
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
-- **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
+- **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Capability interfaces and a Redis example for distributed `WithUnique` and `WithoutOverlap` locks
 - **[Custom Checkpoint Store](docs/CUSTOM_CHECKPOINT_STORE.md)** - Distributed checkpoint implementations for `WithCheckpoint` with Redis and SQLite examples
 - **[Custom Key Concurrency Limiter](docs/CUSTOM_CONCURRENCY_LIMITER.md)** - Distributed limiter implementations for `WithConcurrencyByKey` with Redis and SQLite examples
 

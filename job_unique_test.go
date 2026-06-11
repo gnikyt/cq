@@ -13,6 +13,11 @@ type acquireFailLocker struct {
 	acquireCalls atomic.Int32
 }
 
+type overlapRetryLocker struct {
+	acquireTimes chan time.Time
+	attempts     atomic.Int32
+}
+
 type nonRenewableLocker struct {
 	mu    sync.Mutex
 	locks map[string]LockValue[struct{}]
@@ -24,69 +29,57 @@ func newNonRenewableLocker() *nonRenewableLocker {
 	}
 }
 
-func (l *nonRenewableLocker) Exists(key string) bool {
-	_, ok := l.Get(key)
-	return ok
-}
-
-func (l *nonRenewableLocker) Get(key string) (LockValue[struct{}], bool) {
+func (l *nonRenewableLocker) Get(_ context.Context, key string) (LockValue[struct{}], bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	lock, ok := l.locks[key]
-	return lock, ok
+	return lock, ok, nil
 }
 
-func (l *nonRenewableLocker) Acquire(key string, lock LockValue[struct{}]) bool {
+func (l *nonRenewableLocker) Acquire(_ context.Context, key string, lock LockValue[struct{}]) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if existing, ok := l.locks[key]; ok && !existing.IsExpired() {
-		return false
+		return false, nil
 	}
 	l.locks[key] = lock
-	return true
+	return true, nil
 }
 
-func (l *nonRenewableLocker) Release(key string) bool {
+func (l *nonRenewableLocker) Release(_ context.Context, key string) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if _, ok := l.locks[key]; !ok {
-		return false
+		return false, nil
 	}
 	delete(l.locks, key)
-	return true
+	return true, nil
 }
 
-func (l *nonRenewableLocker) ForceRelease(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.locks, key)
+func (l *acquireFailLocker) Get(_ context.Context, _ string) (LockValue[struct{}], bool, error) {
+	return LockValue[struct{}]{}, false, nil
 }
 
-func (l *nonRenewableLocker) Aquire(key string, lock LockValue[struct{}]) bool {
-	return l.Acquire(key, lock)
-}
-
-func (l *acquireFailLocker) Exists(key string) bool {
-	return false
-}
-
-func (l *acquireFailLocker) Get(key string) (LockValue[struct{}], bool) {
-	return LockValue[struct{}]{}, false
-}
-
-func (l *acquireFailLocker) Acquire(key string, lock LockValue[struct{}]) bool {
+func (l *acquireFailLocker) Acquire(_ context.Context, _ string, _ LockValue[struct{}]) (bool, error) {
 	l.acquireCalls.Add(1)
-	return false
+	return false, nil
 }
 
-func (l *acquireFailLocker) Release(key string) bool {
-	return false
+func (l *acquireFailLocker) Release(_ context.Context, _ string) (bool, error) {
+	return false, nil
 }
 
-func (l *acquireFailLocker) ForceRelease(key string) {}
+func (l *overlapRetryLocker) Get(_ context.Context, _ string) (LockValue[struct{}], bool, error) {
+	return LockValue[struct{}]{}, false, nil
+}
 
-func (l *acquireFailLocker) Aquire(key string, lock LockValue[struct{}]) bool {
-	return l.Acquire(key, lock)
+func (l *overlapRetryLocker) Acquire(_ context.Context, _ string, _ LockValue[struct{}]) (bool, error) {
+	l.acquireTimes <- time.Now()
+	return l.attempts.Add(1) >= 2, nil
+}
+
+func (l *overlapRetryLocker) Release(_ context.Context, _ string) (bool, error) {
+	return true, nil
 }
 
 type stubContentionDispatcher struct {
@@ -203,6 +196,63 @@ func TestWithoutOverlap(t *testing.T) {
 		close(release)
 		if err := <-firstErr; err != nil {
 			t.Fatalf("WithoutOverlap(): first run got %v, want nil", err)
+		}
+	})
+
+	t.Run("waiting_respects_context_cancellation", func(t *testing.T) {
+		locker := NewOverlapMemoryLocker()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+		first := WithoutOverlap(func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		}, "jobo", locker)
+		go func() {
+			done <- first(context.Background())
+		}()
+		<-started
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := WithoutOverlap(func(context.Context) error {
+			t.Fatal("cancelled waiting job executed")
+			return nil
+		}, "jobo", locker)(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WithoutOverlap(): got %v, want %v", err, context.Canceled)
+		}
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("first WithoutOverlap(): %v", err)
+		}
+	})
+
+	t.Run("retry_interval_option_controls_wait", func(t *testing.T) {
+		locker := &overlapRetryLocker{acquireTimes: make(chan time.Time, 2)}
+		interval := 40 * time.Millisecond
+		job := WithoutOverlap(
+			func(context.Context) error { return nil },
+			"jobo",
+			locker,
+			WithOverlapRetryInterval(interval),
+		)
+
+		if err := job(context.Background()); err != nil {
+			t.Fatalf("WithoutOverlap(): %v", err)
+		}
+		first := <-locker.acquireTimes
+		second := <-locker.acquireTimes
+		if elapsed := second.Sub(first); elapsed < interval {
+			t.Fatalf("retry interval: got %v, want at least %v", elapsed, interval)
+		}
+	})
+
+	t.Run("non_positive_retry_interval_uses_default", func(t *testing.T) {
+		cfg := resolveOverlapOptions([]OverlapOption{WithOverlapRetryInterval(0)})
+		if cfg.retryInterval != defaultOverlapRetryTick {
+			t.Fatalf("retry interval: got %v, want %v", cfg.retryInterval, defaultOverlapRetryTick)
 		}
 	})
 
@@ -544,7 +594,10 @@ func TestWithUniqueWindow(t *testing.T) {
 		}()
 
 		<-started
-		lock, ok := locker.Get("test-custom-token")
+		lock, ok, err := locker.Get(context.Background(), "test-custom-token")
+		if err != nil {
+			t.Fatalf("Get(): %v", err)
+		}
 		if !ok {
 			t.Fatal("WithUniqueWindow(): expected lock to exist while job is running")
 		}
@@ -576,7 +629,10 @@ func TestWithUniqueWindow(t *testing.T) {
 		}()
 
 		<-started
-		lock, ok := locker.Get("test-empty-token-fallback")
+		lock, ok, err := locker.Get(context.Background(), "test-empty-token-fallback")
+		if err != nil {
+			t.Fatalf("Get(): %v", err)
+		}
 		if !ok {
 			t.Fatal("WithUniqueWindow(): expected lock to exist while job is running")
 		}

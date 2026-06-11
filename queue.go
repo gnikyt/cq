@@ -710,7 +710,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		// Create a new context with the job metadata.
 		jobCtx := contextWithMeta(executionCtx, meta)
 
-		q.dispatchStart(meta)
+		q.dispatchStart(jobCtx, meta)
 
 		// Convert a job or middleware panic into the submission's terminal result.
 		var err error
@@ -729,7 +729,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 			err = ErrJobCancelled
 		}
 		err = opts.handle.finish(time.Now(), err)
-		q.dispatchResult(meta, err)
+		q.dispatchResult(jobCtx, meta, err)
 		return err
 	}
 
@@ -791,7 +791,11 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		}
 	}
 	if ok {
-		q.dispatchEnqueue(meta)
+		hookCtx := opts.acceptCtx
+		if hookCtx == nil {
+			hookCtx = q.ctx
+		}
+		q.dispatchEnqueue(hookCtx, meta)
 		err = nil
 	}
 	return ok, err

@@ -345,7 +345,7 @@ func TestQueueSubmitBatch_PartialAcceptance(t *testing.T) {
 func TestQueueSubmit_HooksReceiveSubmissionAttributes(t *testing.T) {
 	events := make(chan JobEvent, 1)
 	q := NewQueue(1, 1, 1, WithHooks(Hooks{
-		OnSuccess: func(event JobEvent) {
+		OnSuccess: func(_ context.Context, event JobEvent) {
 			events <- event
 		},
 	}))

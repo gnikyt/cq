@@ -18,20 +18,20 @@ func TestQueueHooks_EnqueueStartResult(t *testing.T) {
 	done := make(chan struct{}, 2)
 
 	q := NewQueue(1, 2, 10, WithHooks(Hooks{
-		OnEnqueue: func(event JobEvent) {
+		OnEnqueue: func(_ context.Context, event JobEvent) {
 			enqueued.Add(1)
 			if event.ID == "" {
 				t.Error("expected enqueue event to include job ID")
 			}
 		},
-		OnStart: func(event JobEvent) {
+		OnStart: func(_ context.Context, event JobEvent) {
 			started.Add(1)
 		},
-		OnSuccess: func(event JobEvent) {
+		OnSuccess: func(_ context.Context, event JobEvent) {
 			success.Add(1)
 			done <- struct{}{}
 		},
-		OnFailure: func(event JobEvent) {
+		OnFailure: func(_ context.Context, event JobEvent) {
 			failed.Add(1)
 			if event.Err == nil {
 				t.Error("expected failure event error to be set")
@@ -72,7 +72,7 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 	var reschedules atomic.Int32
 
 	q := NewQueue(1, 1, 10, WithHooks(Hooks{
-		OnReschedule: func(event JobEvent) {
+		OnReschedule: func(_ context.Context, event JobEvent) {
 			reschedules.Add(1)
 			if event.RescheduleReason != RescheduleReasonReleaseSelf {
 				t.Fatalf("got reason=%q, want %q", event.RescheduleReason, RescheduleReasonReleaseSelf)
@@ -107,7 +107,7 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 func TestQueueHooks_CancelledJobUsesCancelledState(t *testing.T) {
 	events := make(chan JobEvent, 1)
 	q := NewQueue(1, 1, 1, WithHooks(Hooks{
-		OnFailure: func(event JobEvent) {
+		OnFailure: func(_ context.Context, event JobEvent) {
 			events <- event
 		},
 	}))
@@ -141,7 +141,7 @@ func TestQueueHooks_PanicInHookReportedAndJobContinues(t *testing.T) {
 			panicCalls.Add(1)
 		}),
 		WithHooks(Hooks{
-			OnStart: func(event JobEvent) {
+			OnStart: func(_ context.Context, event JobEvent) {
 				panic("hook boom")
 			},
 		}),
@@ -181,10 +181,10 @@ func TestQueueHooks_MultipleWithHooksAppend(t *testing.T) {
 
 	q := NewQueue(1, 1, 10,
 		WithHooks(Hooks{
-			OnSuccess: func(event JobEvent) { first.Add(1) },
+			OnSuccess: func(_ context.Context, event JobEvent) { first.Add(1) },
 		}),
 		WithHooks(Hooks{
-			OnSuccess: func(event JobEvent) { second.Add(1) },
+			OnSuccess: func(_ context.Context, event JobEvent) { second.Add(1) },
 		}),
 	)
 	q.Start()

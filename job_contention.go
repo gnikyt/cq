@@ -6,7 +6,7 @@ import (
 )
 
 // contentionTryKey marks contexts where wrappers should use try/report semantics instead of block/discard:
-// WithoutOverlap uses TryLock.
+// WithoutOverlap makes one acquisition attempt.
 // WithUnique / WithUniqueWindow return ErrUniqueContended on duplicate.
 type contentionTryKey struct{}
 
@@ -14,7 +14,7 @@ type contentionTryKey struct{}
 //
 // Propagation: this flag travels with ctx, so every nested WithoutOverlap,
 // WithUnique, and WithUniqueWindow under this ctx switches to try semantics
-// (TryLock / return ErrUniqueContended) instead of their default
+// (one acquisition attempt / return ErrUniqueContended) instead of their default
 // block / discard behavior. WithDispatchOnContention and WithErrorOnContention
 // set this automatically.
 func ContextWithContentionTry(ctx context.Context) context.Context {

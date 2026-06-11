@@ -9,10 +9,17 @@ Implement the `KeyConcurrencyLimiter` interface:
 
 ```go
 type KeyConcurrencyLimiter interface {
-	Acquire(key string) error
-	Release(key string)
+	Acquire(ctx context.Context, key string) error
+	Release(ctx context.Context, key string) error
 }
 ```
+
+Return `cq.ErrConcurrencyByKeyLimited` for ordinary contention and preserve
+backend errors. Both methods should respect context cancellation. Deferred
+release receives a non-cancelled cleanup context, and release failures are
+joined with the job result instead of being discarded. The cleanup context has
+no deadline, so external implementations should enforce an appropriate backend
+or client timeout.
 
 ## SQLite Example
 
@@ -34,19 +41,19 @@ func NewSQLiteKeyConcurrencyLimiter(db *sql.DB, limit int) *SQLiteKeyConcurrency
 	return &SQLiteKeyConcurrencyLimiter{db: db, limit: limit}
 }
 
-func (l *SQLiteKeyConcurrencyLimiter) Acquire(key string) error {
+func (l *SQLiteKeyConcurrencyLimiter) Acquire(ctx context.Context, key string) error {
 	if l.limit <= 0 {
 		return cq.ErrConcurrencyByKeyInvalidLimit
 	}
 
-	tx, err := l.db.Begin()
+	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
 	var current int
-	err = tx.QueryRow("SELECT count FROM key_concurrency WHERE key = ?", key).Scan(&current)
+	err = tx.QueryRowContext(ctx, "SELECT count FROM key_concurrency WHERE key = ?", key).Scan(&current)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -55,9 +62,9 @@ func (l *SQLiteKeyConcurrencyLimiter) Acquire(key string) error {
 	}
 
 	if err == sql.ErrNoRows {
-		_, err = tx.Exec("INSERT INTO key_concurrency (key, count) VALUES (?, 1)", key)
+		_, err = tx.ExecContext(ctx, "INSERT INTO key_concurrency (key, count) VALUES (?, 1)", key)
 	} else {
-		_, err = tx.Exec("UPDATE key_concurrency SET count = count + 1 WHERE key = ?", key)
+		_, err = tx.ExecContext(ctx, "UPDATE key_concurrency SET count = count + 1 WHERE key = ?", key)
 	}
 	if err != nil {
 		return err
@@ -66,24 +73,26 @@ func (l *SQLiteKeyConcurrencyLimiter) Acquire(key string) error {
 	return tx.Commit()
 }
 
-func (l *SQLiteKeyConcurrencyLimiter) Release(key string) {
-	tx, err := l.db.Begin()
+func (l *SQLiteKeyConcurrencyLimiter) Release(ctx context.Context, key string) error {
+	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return
+		return err
 	}
 	defer tx.Rollback()
 
 	var current int
-	if err := tx.QueryRow("SELECT count FROM key_concurrency WHERE key = ?", key).Scan(&current); err != nil {
-		return
+	if err := tx.QueryRowContext(ctx, "SELECT count FROM key_concurrency WHERE key = ?", key).Scan(&current); err != nil {
+		return err
 	}
 	if current <= 1 {
-		_, _ = tx.Exec("DELETE FROM key_concurrency WHERE key = ?", key)
+		_, err = tx.ExecContext(ctx, "DELETE FROM key_concurrency WHERE key = ?", key)
 	} else {
-		_, _ = tx.Exec("UPDATE key_concurrency SET count = count - 1 WHERE key = ?", key)
+		_, err = tx.ExecContext(ctx, "UPDATE key_concurrency SET count = count - 1 WHERE key = ?", key)
 	}
-
-	_ = tx.Commit()
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Usage with WithConcurrencyByKey.
