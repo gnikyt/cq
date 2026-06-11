@@ -8,7 +8,7 @@ Use this quick wrapper index to choose the right building block:
 | --- | --- |
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
-| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`; contention handoff: [`WithDispatchOnContention`](#dispatch-on-contention-or-error), [`WithErrorOnContention`](#dispatch-on-contention-or-error), [`WithDispatchOnError`](#dispatch-on-contention-or-error) (classify with `IsContentionError`) |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`; surface contention with [`WithErrorOnContention`](#handling-contention) and classify it with `IsContentionError` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
@@ -435,17 +435,8 @@ _, _ = queue.Submit(context.Background(), job)
 
 This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
 
-For **overlap contention** (dispatch to a side queue instead of waiting on the lock), see [Dispatch on contention or error](#dispatch-on-contention-or-error).
-
-#### Dispatching Contract
-
-* `DispatchRequest.Key`: Routing key for the dispatched job.
-* `DispatchRequest.Job`: Job to hand off (may execute asynchronously).
-* `DispatchRequest.Reason`: Why dispatch occurred (`DispatchReasonContention` from `WithDispatchOnContention`, or `DispatchReasonError` from `WithDispatchOnError`).
-* `DispatchRequest.Err`: Set when `Reason` is `DispatchReasonError` (the inner error that triggered dispatch).
-* `DispatchError.Kind`: Classify failures (`rejected` vs `unavailable`) for retry policy decisions.
-* Built-in adapters: `NewQueueJobDispatcher`, `NewQueueManagerJobDispatcher`,
-  `NewPriorityQueueJobDispatcher`, `NewPriorityQueueManagerJobDispatcher`.
+For **overlap contention** that should be routed elsewhere instead of waiting,
+see [Handling contention](#handling-contention).
 
 #### Concurrency By Key
 
@@ -471,7 +462,7 @@ Invalid limits (`<= 0`) return `cq.ErrConcurrencyByKeyInvalidLimit`.
 
 For distributed implementations (for example Redis or SQLite), see [Custom Key Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md).
 
-`WithConcurrencyByKey` does not provide a built-in "block until a slot frees" mode... `MemoryKeyConcurrencyLimiter.Acquire` returns `ErrConcurrencyByKeyLimited` immediately. If you want to wait for a slot, implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a semaphore per key). To route contended runs elsewhere, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+`WithConcurrencyByKey` does not provide a built-in "block until a slot frees" mode... `MemoryKeyConcurrencyLimiter.Acquire` returns `ErrConcurrencyByKeyLimited` immediately. If you want to wait for a slot, implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a semaphore per key). To route contended runs elsewhere, see [Handling contention](#handling-contention).
 
 #### Unique Jobs
 
@@ -504,7 +495,7 @@ job := cq.WithRelease(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-To route duplicates to a side queue or different dispatcher, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+To route duplicates to a side queue or external system, see [Handling contention](#handling-contention).
 
 Combine with timeout to limit both uniqueness and execution time:
 
@@ -1042,57 +1033,62 @@ for _, orderID := range orderIDs {
 
 This pattern isolates failing dependency traffic from the main queue. Use with your normal replay/DLQ strategy for long-term failed work handling.
 
-#### Dispatch on contention or error
+#### Handling contention
 
-**`WithDispatchOnContention(job, key, dispatcher)`** runs the inner job with `ContextWithContentionTry`. When the inner job returns a contention error (`ErrWithoutOverlapContended`, `ErrUniqueContended`, or `ErrConcurrencyByKeyLimited`), it forwards the **same** inner `Job` to `dispatcher` with `DispatchReasonContention`. Other errors are returned unchanged. A nil `dispatcher` yields `ErrDispatchRequired`.
+Bare `WithoutOverlap` retries atomic acquisition until the key is free. Bare
+`WithUnique` and `WithUniqueWindow` quietly discard duplicates. Wrap them with
+`WithErrorOnContention` to make one acquisition attempt and surface contention
+as `ErrWithoutOverlapContended` or `ErrUniqueContended`.
 
-Bare `WithoutOverlap` retries atomic acquisition until the key is free. Under contention-try, it makes one acquisition attempt and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
+`WithConcurrencyByKey` already returns `ErrConcurrencyByKeyLimited` when its
+limit is reached. `IsContentionError(err)` identifies all three contention
+errors.
 
-**`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to resubmit duplicates, or with custom retry logic.
-
-**`WithDispatchOnError(job, key, dispatcher)`** does **not** inject contention-try; any non-nil error from the inner job triggers dispatch with `DispatchReasonError`, and `DispatchRequest.Err` carries that error. Pick `WithDispatchOnContention` when you specifically want to route contended runs (and let other errors propagate); pick `WithDispatchOnError` when you want a generic "send all failures somewhere else" handoff.
-
-**`IsContentionError(err)`** reports whether `err` is any of the three contention sentinels. Use it as the predicate for `WithRelease`, custom routing, or logging classification.
-
-> **Context propagation note:** `ContextWithContentionTry` (set by `WithDispatchOnContention` and `WithErrorOnContention`) propagates through ctx, so every nested `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` deeper in the chain switches to try semantics too. Usually that's what you want; if you compose multiple of these, only the outermost needs the wrapper.
-
-Use the **same routing `key`** as the inner wrapper where applicable.
-
-##### Example: hand off contended overlap work
-
-Dispatch contended runs to a **per-key side queue** so this worker returns immediately:
+Use `WithRelease` for automatic delayed local retry:
 
 ```go
-var (
-	mu     sync.Mutex
-	byKeyQ = map[string]*cq.Queue{}
-)
-
-dispatcher := cq.JobDispatcherFunc(func(ctx context.Context, req cq.DispatchRequest) error {
-	mu.Lock()
-	q, ok := byKeyQ[req.Key]
-	if !ok {
-		q = cq.NewQueue(1, 1, 100)
-		q.Start()
-		byKeyQ[req.Key] = q
-	}
-	mu.Unlock()
-	_, err := q.Submit(ctx, req.Job)
-	return err
-})
-
-job := cq.WithDispatchOnContention(
-	cq.WithoutOverlap(actualJob, "account-123", locker),
-	"account-123",
-	dispatcher,
+job := cq.WithRelease(
+	cq.WithErrorOnContention(
+		cq.WithoutOverlap(actualJob, "account-123", locker),
+	),
+	queue,
+	30*time.Second,
+	3,
+	cq.IsContentionError,
 )
 ```
 
-This is intentionally minimal to show routing only. In production, **stop or remove idle per-key queues** so the map does not grow without bound—for example **TTL-based eviction** together with checks on **pending vs active** work before tearing down a queue.
+Applications that need custom routing can observe the job result and submit to
+another queue or publish their own serializable domain payload externally:
 
-##### Dispatch errors
+```go
+job := cq.WithErrorOnContention(
+	cq.WithoutOverlap(actualJob, "account-123", locker),
+)
 
-Typed `DispatchError` and adapters are described under [Dispatching Contract](#dispatching-contract).
+handle, err := queue.Submit(ctx, job)
+if err != nil {
+	return err // The original queue rejected submission.
+}
+
+select {
+case <-handle.Done():
+	result, _ := handle.Result()
+	if cq.IsContentionError(result.Err) {
+		_, err = overflowQueue.Submit(ctx, job)
+		// Or publish an account-sync payload to SQS, Redis, or another broker.
+		return err
+	}
+	return result.Err
+case <-ctx.Done():
+	return ctx.Err() // Stops waiting; it does not cancel the submitted job.
+}
+```
+
+> **Context propagation note:** `ContextWithContentionTry`, set by
+> `WithErrorOnContention`, propagates through ctx. Every nested
+> `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` switches to try
+> semantics. Usually only the outermost wrapper needs `WithErrorOnContention`.
 
 #### Custom Wrapper
 

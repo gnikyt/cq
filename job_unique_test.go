@@ -82,18 +82,6 @@ func (l *overlapRetryLocker) Release(_ context.Context, _ string) (bool, error) 
 	return true, nil
 }
 
-type stubContentionDispatcher struct {
-	calls atomic.Int32
-	err   error
-	last  DispatchRequest
-}
-
-func (d *stubContentionDispatcher) Dispatch(ctx context.Context, req DispatchRequest) error {
-	d.calls.Add(1)
-	d.last = req
-	return d.err
-}
-
 func TestWithoutOverlap(t *testing.T) {
 	var wg sync.WaitGroup
 	locker := NewOverlapMemoryLocker()
@@ -127,77 +115,6 @@ func TestWithoutOverlap(t *testing.T) {
 	if got := maxConcurrent.Load(); got != 1 {
 		t.Errorf("WithoutOverlap: max concurrent got %d, want 1", got)
 	}
-
-	t.Run("dispatch_on_contention", func(t *testing.T) {
-		locker := NewOverlapMemoryLocker()
-		dispatcher := &stubContentionDispatcher{}
-		var calls atomic.Int32
-		started := make(chan struct{}, 1)
-		release := make(chan struct{})
-
-		job := WithDispatchOnContention(WithoutOverlap(func(ctx context.Context) error {
-			if calls.Add(1) == 1 {
-				started <- struct{}{}
-				<-release
-			}
-			return nil
-		}, "jobo", locker), "jobo", dispatcher)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-started
-		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithoutOverlap(): got %v, want nil for dispatched contention", err)
-		}
-		if got := calls.Load(); got != 1 {
-			t.Fatalf("WithoutOverlap(): calls got %d, want 1 while first run active", got)
-		}
-		if got := dispatcher.calls.Load(); got != 1 {
-			t.Fatalf("WithoutOverlap(): dispatcher calls got %d, want 1", got)
-		}
-		if dispatcher.last.Key != "jobo" {
-			t.Fatalf("WithoutOverlap(): dispatch key got %q, want %q", dispatcher.last.Key, "jobo")
-		}
-		if dispatcher.last.Reason != DispatchReasonContention {
-			t.Fatalf("WithoutOverlap(): dispatch reason got %v, want %v", dispatcher.last.Reason, DispatchReasonContention)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithoutOverlap(): first run got %v, want nil", err)
-		}
-	})
-
-	t.Run("dispatch_requires_dispatcher", func(t *testing.T) {
-		locker := NewOverlapMemoryLocker()
-		started := make(chan struct{}, 1)
-		release := make(chan struct{})
-
-		job := WithDispatchOnContention(WithoutOverlap(func(ctx context.Context) error {
-			started <- struct{}{}
-			<-release
-			return nil
-		}, "jobo", locker), "jobo", nil)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-started
-		err := job(context.Background())
-		if !errors.Is(err, ErrDispatchRequired) {
-			t.Fatalf("WithoutOverlap(): got %v, want %v", err, ErrDispatchRequired)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithoutOverlap(): first run got %v, want nil", err)
-		}
-	})
 
 	t.Run("waiting_respects_context_cancellation", func(t *testing.T) {
 		locker := NewOverlapMemoryLocker()
@@ -503,76 +420,6 @@ func TestWithUnique(t *testing.T) {
 		}
 	})
 
-	t.Run("dispatch_on_contention", func(t *testing.T) {
-		dispatcher := &stubContentionDispatcher{}
-		locker := NewUniqueMemoryLocker()
-		started := make(chan struct{}, 1)
-		release := make(chan struct{})
-		var calls atomic.Int32
-
-		job := WithDispatchOnContention(WithUnique(func(ctx context.Context) error {
-			if calls.Add(1) == 1 {
-				started <- struct{}{}
-				<-release
-			}
-			return nil
-		}, "test", 0, locker), "test", dispatcher)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-started
-		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithUnique(): got %v, want nil for dispatched duplicate", err)
-		}
-		if got := calls.Load(); got != 1 {
-			t.Fatalf("WithUnique(): calls got %d, want 1 while first run active", got)
-		}
-		if got := dispatcher.calls.Load(); got != 1 {
-			t.Fatalf("WithUnique(): dispatcher calls got %d, want 1", got)
-		}
-		if dispatcher.last.Key != "test" {
-			t.Fatalf("WithUnique(): dispatch key got %q, want %q", dispatcher.last.Key, "test")
-		}
-		if dispatcher.last.Reason != DispatchReasonContention {
-			t.Fatalf("WithUnique(): dispatch reason got %v, want %v", dispatcher.last.Reason, DispatchReasonContention)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithUnique(): first run got %v, want nil", err)
-		}
-	})
-
-	t.Run("dispatch_requires_dispatcher", func(t *testing.T) {
-		locker := NewUniqueMemoryLocker()
-		started := make(chan struct{}, 1)
-		release := make(chan struct{})
-
-		job := WithDispatchOnContention(WithUnique(func(ctx context.Context) error {
-			started <- struct{}{}
-			<-release
-			return nil
-		}, "test", 0, locker), "test", nil)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-started
-		err := job(context.Background())
-		if !errors.Is(err, ErrDispatchRequired) {
-			t.Fatalf("WithUnique(): got %v, want %v", err, ErrDispatchRequired)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithUnique(): first run got %v, want nil", err)
-		}
-	})
 }
 
 func TestWithUniqueWindow(t *testing.T) {
@@ -899,33 +746,4 @@ func TestWithUniqueWindow(t *testing.T) {
 		}
 	})
 
-	t.Run("dispatch_on_contention", func(t *testing.T) {
-		dispatcher := &stubContentionDispatcher{}
-		locker := NewUniqueMemoryLocker()
-		window := 5 * time.Second
-
-		// First run acquires the window lock.
-		if err := WithUniqueWindow(func(ctx context.Context) error {
-			return nil
-		}, "test", window, locker)(context.Background()); err != nil {
-			t.Fatalf("WithUniqueWindow(): got %v, want nil", err)
-		}
-
-		err := WithDispatchOnContention(WithUniqueWindow(func(ctx context.Context) error {
-			t.Error("WithUniqueWindow(): duplicate should dispatch, not run")
-			return nil
-		}, "test", window, locker), "test", dispatcher)(context.Background())
-		if err != nil {
-			t.Fatalf("WithUniqueWindow(): got %v, want nil for dispatched duplicate", err)
-		}
-		if got := dispatcher.calls.Load(); got != 1 {
-			t.Fatalf("WithUniqueWindow(): dispatcher calls got %d, want 1", got)
-		}
-		if dispatcher.last.Key != "test" {
-			t.Fatalf("WithUniqueWindow(): dispatch key got %q, want %q", dispatcher.last.Key, "test")
-		}
-		if dispatcher.last.Reason != DispatchReasonContention {
-			t.Fatalf("WithUniqueWindow(): dispatch reason got %v, want %v", dispatcher.last.Reason, DispatchReasonContention)
-		}
-	})
 }

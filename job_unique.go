@@ -128,7 +128,7 @@ func releaseLockByToken(ctx context.Context, locker Locker[struct{}], key string
 // When ctx carries contention-try mode (see ContextWithContentionTry),
 // WithoutOverlap makes one acquisition attempt and returns
 // ErrWithoutOverlapContended when the key is already locked.
-// WithDispatchOnContention/WithDispatchOnError sets this automatically when invoking the job.
+// WithErrorOnContention sets this automatically when invoking the job.
 func WithoutOverlap(job Job, key string, locker Locker[struct{}], opts ...OverlapOption) Job {
 	cfg := resolveOverlapOptions(opts)
 	return func(ctx context.Context) (err error) {
@@ -177,8 +177,8 @@ func acquireOverlap(ctx context.Context, locker Locker[struct{}], key string, tr
 // one instance can run at a time without any time-based constraint.
 // For enforcing a fixed minimum time between executions regardless of job
 // completion time, use WithUniqueWindow instead.
-// Under WithDispatchOnContention/WithDispatchOnError, duplicate runs return
-// ErrUniqueContended so the outer wrapper can apply drop, error, dispatch, or block policy.
+// Under WithErrorOnContention, duplicate runs return ErrUniqueContended so the
+// caller can apply its own retry or routing policy.
 func WithUnique(job Job, key string, ut time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
 	return func(ctx context.Context) (err error) {
@@ -251,8 +251,8 @@ func WithUnique(job Job, key string, ut time.Duration, locker ReadLocker[struct{
 // regardless of how quickly the job completes. Unlike WithUnique, the lock is
 // not released when the job completes... instead, it persists for the full duration.
 // This guarantees a minimum time gap between executions.
-// Under WithDispatchOnContention, duplicate runs return ErrUniqueContended so the outer
-// wrapper can apply policy.
+// Under WithErrorOnContention, duplicate runs return ErrUniqueContended so the
+// caller can apply its own retry or routing policy.
 func WithUniqueWindow(job Job, key string, window time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
 	return func(ctx context.Context) error {
