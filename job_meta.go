@@ -61,6 +61,12 @@ func contextWithMeta(ctx context.Context, meta JobMeta) context.Context {
 	return context.WithValue(ctx, jobMetaKey{}, cloneJobMeta(meta))
 }
 
+// contextWithMetaOwned returns a new context with metadata already owned
+// by queue internals.
+func contextWithMetaOwned(ctx context.Context, meta JobMeta) context.Context {
+	return context.WithValue(ctx, jobMetaKey{}, meta)
+}
+
 // LastErrorFromContext extracts the previous attempt error from context.
 // Returns nil when no previous attempt error is present.
 func LastErrorFromContext(ctx context.Context) error {

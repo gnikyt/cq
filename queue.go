@@ -97,9 +97,10 @@ type Queue struct {
 	submissionsMut sync.Mutex              // Guards unresolved submissions.
 	submissions    map[*JobHandle]struct{} // Accepted submissions that are not terminal.
 
-	panicHandler func(any)    // Optional panic handler for job panics.
-	middleware   []Middleware // Optional queue-level middleware chain.
-	hooks        []Hooks      // Optional lifecycle hooks for queue transitions.
+	panicHandler    func(any)    // Optional panic handler for job panics.
+	middleware      []Middleware // Optional queue-level middleware chain.
+	hooks           []Hooks      // Optional lifecycle hooks for queue transitions.
+	hasAttemptHooks bool         // Whether any registered hook listens for attempt events.
 
 	paused        atomic.Bool   // Local pause state.
 	distPaused    atomic.Bool   // Distributed pause state from store polling.
@@ -733,7 +734,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 	}
 	opts.meta.EnqueuedAt = time.Now()
 	opts.handle.setMeta(opts.meta)
-	meta := cloneJobMeta(opts.meta)
+	meta := opts.meta
 
 	// Apply queue-level middleware.
 	job = q.applyMiddleware(job)
@@ -755,17 +756,19 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		defer q.untrackSubmission(opts.handle)
 
 		// Create a new context with the job metadata.
-		jobCtx := contextWithMeta(executionCtx, meta)
+		jobCtx := contextWithMetaOwned(executionCtx, meta)
 
-		// Create a new context with the retry attempt emitter.
-		jobCtx = contextWithRetryAttemptEmitter(jobCtx, retryAttemptEmitter{
-			start: func(hookCtx context.Context, hookMeta JobMeta, startedAt time.Time) {
-				q.dispatchAttemptStart(hookCtx, hookMeta, startedAt)
-			},
-			result: func(hookCtx context.Context, hookMeta JobMeta, hookErr error, startedAt, finishedAt time.Time) {
-				q.dispatchAttemptResult(hookCtx, hookMeta, hookErr, startedAt, finishedAt)
-			},
-		})
+		// Create a new context with the retry attempt emitter only when needed.
+		if q.hasAttemptHooks {
+			jobCtx = contextWithRetryAttemptEmitter(jobCtx, retryAttemptEmitter{
+				start: func(hookCtx context.Context, hookMeta JobMeta, startedAt time.Time) {
+					q.dispatchAttemptStart(hookCtx, hookMeta, startedAt)
+				},
+				result: func(hookCtx context.Context, hookMeta JobMeta, hookErr error, startedAt, finishedAt time.Time) {
+					q.dispatchAttemptResult(hookCtx, hookMeta, hookErr, startedAt, finishedAt)
+				},
+			})
+		}
 
 		// Create a new context with the discard marker.
 		discarded := false
@@ -1170,6 +1173,9 @@ func WithMiddleware(mw ...Middleware) QueueOption {
 func WithHooks(hooks Hooks) QueueOption {
 	return func(q *Queue) {
 		q.hooks = append(q.hooks, hooks)
+		if hooks.OnAttemptStart != nil || hooks.OnAttemptSuccess != nil || hooks.OnAttemptFailure != nil {
+			q.hasAttemptHooks = true
+		}
 	}
 }
 

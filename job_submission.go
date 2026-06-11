@@ -59,7 +59,6 @@ type JobHandle struct {
 
 // newJobHandle creates a pending handle for one submission.
 func newJobHandle(meta JobMeta) *JobHandle {
-	meta = cloneJobMeta(meta)
 	return &JobHandle{
 		meta: meta,
 		done: make(chan struct{}),
@@ -159,7 +158,7 @@ func (h *JobHandle) start(at time.Time, cancel context.CancelCauseFunc) bool {
 // setMeta updates metadata while the submission is pending.
 func (h *JobHandle) setMeta(meta JobMeta) {
 	h.mu.Lock()
-	h.meta = cloneJobMeta(meta)
+	h.meta = meta
 	h.mu.Unlock()
 }
 
