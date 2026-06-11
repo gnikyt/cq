@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -159,7 +160,7 @@ func TestWithRateLimitRelease(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(300 * time.Millisecond):
-			t.Fatal("WithRateLimitRelease(): expected re-enqueued execution")
+			t.Fatal("WithRateLimitRelease(): expected resubmitted execution")
 		}
 		if got := count.Load(); got != 1 {
 			t.Fatalf("WithRateLimitRelease(): got count=%d, want 1", got)
@@ -226,6 +227,20 @@ func TestWithRateLimitRelease(t *testing.T) {
 		case <-done:
 		case <-time.After(200 * time.Millisecond):
 			t.Fatal("WithRateLimitRelease(): expected release with negative maxReleases")
+		}
+	})
+
+	t.Run("returns_reschedule_failure", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		queue.Stop(false)
+
+		limiter := rate.NewLimiter(rate.Every(time.Hour), 1)
+		_ = limiter.Allow()
+		job := WithRateLimitRelease(func(context.Context) error { return nil }, limiter, queue, 1)
+
+		if err := job(context.Background()); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("WithRateLimitRelease(): got %v, want %v", err, ErrQueueStopped)
 		}
 	})
 }

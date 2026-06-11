@@ -38,7 +38,7 @@ func IsContentionError(err error) bool {
 // WithErrorOnContention runs the inner job with ContextWithContentionTry and
 // returns any contention error (ErrUniqueContended, ErrWithoutOverlapContended,
 // ErrConcurrencyByKeyLimited) unchanged so it can be classified by callers.
-// Compose with WithRelease and IsContentionError to re-enqueue duplicates
+// Compose with WithRelease and IsContentionError to resubmit duplicates
 // instead of discarding or dispatching them.
 func WithErrorOnContention(job Job) Job {
 	return func(ctx context.Context) error {

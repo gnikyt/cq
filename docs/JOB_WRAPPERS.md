@@ -471,7 +471,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 Duplicate runs while the lock is active **do not execute** the inner job... by default the wrapper **returns nil** (discard the job). For `WithUniqueWindow`, the lock covers the full window even after the job finishes.
 
-To re-enqueue duplicates instead of discarding them, wrap with `WithErrorOnContention` so the duplicate surfaces as `ErrUniqueContended`, and pair with `WithRelease` using `IsContentionError` as the predicate:
+To resubmit duplicates instead of discarding them, wrap with `WithErrorOnContention` so the duplicate surfaces as `ErrUniqueContended`, and pair with `WithRelease` using `IsContentionError` as the predicate:
 
 ```go
 job := cq.WithRelease(
@@ -756,17 +756,17 @@ _, _ = queue.Submit(context.Background(), job)
 
 #### Release
 
-**What it does:** Re-enqueues jobs after delay when a predicate-matched error occurs.
+**What it does:** Resubmits jobs after delay when a predicate-matched error occurs.
 
 **When to use:** Retry-later semantics such as rate limits or temporary upstream failures.
 
-**Caveat:** Operationally, releases can run indefinitely without `maxReleases` bounds.
+**Caveat:** Operationally, releases can run indefinitely without `maxReleases` bounds. If delayed submission is rejected, the wrapper returns that rejection error.
 
 ```go
 job := cq.WithRelease(
 	actualJob,
-	queue,             // Queue to re-enqueue into.
-	30*time.Second,    // Delay before re-enqueue.
+	queue,             // Queue to resubmit into.
+	30*time.Second,    // Delay before resubmission.
 	3,                 // Max releases before giving up.
 	func(err error) bool {
 		return errors.Is(err, ErrRateLimited)
@@ -775,9 +775,32 @@ job := cq.WithRelease(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
+For manual control, `Reschedule` returns the delayed submission handle and
+preserves the current job name and attributes:
+
+```go
+handle, err := cq.Reschedule(
+	ctx,
+	queue,
+	job,
+	30*time.Second,
+	cq.RescheduleReasonManualRetry,
+)
+```
+
+The new submission receives a fresh ID and these lineage attributes:
+
+- `cq.RescheduleAttributeParentID`
+- `cq.RescheduleAttributeRootID`
+- `cq.RescheduleAttributeReason`
+
+Keep the returned `JobHandle` when future delayed-handoff failures must be
+observed. Built-in release wrappers return immediate reschedule registration
+errors, but do not block workers waiting for the delayed submission to finish.
+
 #### Release Self
 
-**What it does:** Lets job code request its own delayed re-enqueue.
+**What it does:** Lets job code request its own delayed resubmission.
 
 **When to use:** Jobs that decide at runtime to defer themselves.
 
@@ -813,7 +836,8 @@ _, _ = queue.Submit(context.Background(), job)
 
 Logic:
 
-* If a release request is made and release budget allows, the job is delayed and re-enqueued, and this run returns `nil`.
+* If a release request is made and release budget allows, the job is delayed and resubmitted, and this run returns `nil`.
+* If delayed submission is rejected, this run returns the rejection error.
 * If both an error and release request occur, release wins while budget allows.
 * Multiple requests in one run use last-write-wins delay.
 * `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
@@ -873,7 +897,7 @@ job := cq.WithRateLimitRelease(actualJob, limiter, queue, 3)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-`WithRateLimitRelease` re-enqueues the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. `maxReleases` controls how many times this defer/re-enqueue can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
+`WithRateLimitRelease` resubmits the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. If delayed submission is rejected, the wrapper returns that rejection error. `maxReleases` controls how many times this defer/resubmit can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
 
 #### Concurrency Limit
 
@@ -881,7 +905,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 **When to use:** Restricting parallel access to a shared resource (API with concurrency limits, database connections, file locks, etc).
 
-**Caveat:** Operationally, when a job hits the limit it is re-enqueued after a retry delay; the current worker is freed immediately (non-blocking).
+**Caveat:** Operationally, when a job hits the limit it is resubmitted after a retry delay; the current worker is freed immediately (non-blocking). If delayed submission is rejected, the wrapper returns that rejection error.
 
 ```go
 limiter := cq.NewConcurrencyLimiter()
@@ -897,7 +921,7 @@ job := cq.WithConcurrencyLimit(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-Multiple jobs sharing the same key are serialized or limited to the `max` count. If all slots are occupied, a new job requesting the same key is immediately released (returns `nil`) and re-enqueued after the retry delay. A single `ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
+Multiple jobs sharing the same key are serialized or limited to the `max` count. If all slots are occupied, a new job requesting the same key is immediately released and resubmitted after the retry delay. A single `ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
 
 ```go
 limiter := cq.NewConcurrencyLimiter()
@@ -1004,7 +1028,7 @@ This pattern isolates failing dependency traffic from the main queue. Use with y
 
 Bare `WithoutOverlap` uses `Lock()` (blocks until the key is free). Under contention-try, it uses `TryLock` and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
 
-**`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to re-enqueue duplicates, or with custom retry logic.
+**`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to resubmit duplicates, or with custom retry logic.
 
 **`WithDispatchOnError(job, key, dispatcher)`** does **not** inject contention-try; any non-nil error from the inner job triggers dispatch with `DispatchReasonError`, and `DispatchRequest.Err` carries that error. Pick `WithDispatchOnContention` when you specifically want to route contended runs (and let other errors propagate); pick `WithDispatchOnError` when you want a generic "send all failures somewhere else" handoff.
 

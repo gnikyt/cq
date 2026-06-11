@@ -69,7 +69,7 @@ func (cl *ConcurrencyLimiter) ActiveFor(key string) int {
 }
 
 // WithConcurrencyLimit limits how many jobs sharing key can execute concurrently.
-// When the limit is reached the job is re-enqueued after retryDelay and the
+// When the limit is reached the job is resubmitted after retryDelay and the
 // current worker is freed immediately (returns nil).
 func WithConcurrencyLimit(job Job, key string, max int, retryDelay time.Duration, limiter *ConcurrencyLimiter, queue *Queue) Job {
 	if max < 1 {
@@ -84,8 +84,8 @@ func WithConcurrencyLimit(job Job, key string, max int, retryDelay time.Duration
 		entry, ok := limiter.acquire(key, max)
 		if !ok {
 			// At limit: free this worker, schedule retry.
-			_ = Reschedule(ctx, queue, wrappedJob, retryDelay, RescheduleReasonConcurrencyLimit)
-			return nil
+			_, err := Reschedule(ctx, queue, wrappedJob, retryDelay, RescheduleReasonConcurrencyLimit)
+			return err
 		}
 		defer limiter.release(entry)
 		return job(ctx)

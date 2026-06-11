@@ -310,6 +310,8 @@ scheduled, err := queue.SubmitAfter(ctx, job, 2*time.Minute)
 handles, err := queue.SubmitBatch(ctx, jobs)
 scheduledHandles, err := queue.SubmitBatchAfter(ctx, jobs, 30*time.Second)
 
+// Resubmit a running job later.
+rescheduled, err := cq.Reschedule(ctx, queue, job, time.Minute, cq.RescheduleReasonManualRetry)
 ```
 
 `Submit` distinguishes submission failure from execution failure. It returns an
@@ -322,6 +324,10 @@ pending during the delay, then reports the eventual execution result or a future
 rejection such as `ErrQueueStopped`, `ErrQueuePaused`, or `ErrQueueFull`.
 Batch methods return handles for accepted jobs and preserve partial-acceptance
 errors.
+
+`Reschedule` creates a fresh delayed submission while preserving the current
+job name and attributes. It adds parent ID, root ID, and reason lineage attributes and
+returns the new submission handle.
 
 Typed submission rejection errors:
 - `cq.ErrQueueStopped`

@@ -197,7 +197,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 
 		time.Sleep(30 * time.Millisecond)
 
-		// This one should re-enqueue without panicking (retryDelay=0 defaults to 50ms).
+		// This one should resubmit without panicking (retryDelay=0 defaults to 50ms).
 		secondJob := WithConcurrencyLimit(func(ctx context.Context) error {
 			select {
 			case done <- struct{}{}:
@@ -213,7 +213,25 @@ func TestWithConcurrencyLimit(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(500 * time.Millisecond):
-			t.Fatal("WithConcurrencyLimit(): timed out waiting for re-enqueued job")
+			t.Fatal("WithConcurrencyLimit(): timed out waiting for resubmitted job")
+		}
+	})
+
+	t.Run("returns_reschedule_failure", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		queue.Stop(false)
+
+		limiter := NewConcurrencyLimiter()
+		entry, ok := limiter.acquire("key", 1)
+		if !ok {
+			t.Fatal("acquire(): expected holder slot")
+		}
+		defer limiter.release(entry)
+
+		job := WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, time.Second, limiter, queue)
+		if err := job(context.Background()); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("WithConcurrencyLimit(): got %v, want %v", err, ErrQueueStopped)
 		}
 	})
 }

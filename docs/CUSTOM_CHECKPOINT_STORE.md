@@ -19,7 +19,7 @@ type CheckpointStore interface {
 
 ## Key Design
 
-Use deterministic keys that stay stable across retries/re-enqueues for the same logical workflow step:
+Use deterministic keys that stay stable across retries/resubmissions for the same logical workflow step:
 
 - `tenant:<id>:workflow:<id>:step:<name>`
 - `order:<id>:step:<name>`

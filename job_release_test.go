@@ -38,7 +38,7 @@ func TestWithRelease(t *testing.T) {
 			t.Errorf("WithRelease(): got %v, want nil (on release)", err)
 		}
 
-		// Wait for re-enqueue.
+		// Wait for resubmission.
 		time.Sleep(20 * time.Millisecond)
 
 		// Should have been called twice (initial + 1 release).
@@ -161,6 +161,24 @@ func TestWithRelease(t *testing.T) {
 			t.Errorf("WithRelease(): failed jobs: got %d, want 1", failed)
 		}
 	})
+
+	t.Run("returns_reschedule_failure", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		queue.Stop(false)
+
+		releaseErr := errors.New("release me")
+		job := WithRelease(
+			func(context.Context) error { return releaseErr },
+			queue,
+			time.Second,
+			1,
+			func(err error) bool { return errors.Is(err, releaseErr) },
+		)
+		if err := job(context.Background()); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("WithRelease(): got %v, want %v", err, ErrQueueStopped)
+		}
+	})
 }
 
 func TestWithReleaseSelf(t *testing.T) {
@@ -181,7 +199,7 @@ func TestWithReleaseSelf(t *testing.T) {
 				return nil // First run, return nil to indicate release request was successful.
 			}
 
-			// Second run, signal completion. This tells us it was re-enqueued.
+			// Second run, signal completion. This tells us it was resubmitted.
 			select {
 			case done <- struct{}{}:
 			default:
@@ -194,7 +212,7 @@ func TestWithReleaseSelf(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(200 * time.Millisecond):
-			t.Fatalf("WithReleaseSelf(): timed out waiting for re-enqueued run, calls=%d", calls.Load())
+			t.Fatalf("WithReleaseSelf(): timed out waiting for resubmitted run, calls=%d", calls.Load())
 		}
 	})
 
@@ -228,7 +246,7 @@ func TestWithReleaseSelf(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(200 * time.Millisecond):
-			t.Fatalf("WithReleaseSelf(): timed out waiting for release re-enqueue, calls=%d", calls.Load())
+			t.Fatalf("WithReleaseSelf(): timed out waiting for release resubmission, calls=%d", calls.Load())
 		}
 	})
 
@@ -392,6 +410,22 @@ func TestWithReleaseSelf(t *testing.T) {
 		time.Sleep(40 * time.Millisecond)
 		if got := calls.Load(); got != 2 {
 			t.Fatalf("WithReleaseSelf(): stale async request affected later run: got calls=%d, want 2", got)
+		}
+	})
+
+	t.Run("returns_reschedule_failure", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		queue.Stop(false)
+
+		job := WithReleaseSelf(func(ctx context.Context) error {
+			_ = RequestRelease(ctx, time.Second)
+			return nil
+		}, queue, 1)
+
+		ctx := contextWithMeta(context.Background(), JobMeta{ID: "release-failure"})
+		if err := job(ctx); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("WithReleaseSelf(): got %v, want %v", err, ErrQueueStopped)
 		}
 	})
 }

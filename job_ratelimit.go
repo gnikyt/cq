@@ -21,11 +21,11 @@ func WithRateLimit(job Job, limiter *rate.Limiter) Job {
 }
 
 // WithRateLimitRelease wraps a job with rate limiting using a token bucket
-// algorithm, but releases (re-enqueues) jobs when they would otherwise wait.
+// algorithm, but releases and resubmits jobs when they would otherwise wait.
 //
 // Behavior:
 //   - If a token is immediately available, the job executes now.
-//   - If not, the job is delayed by the limiter reservation delay and re-enqueued,
+//   - If not, the job is delayed by the limiter reservation delay and resubmitted,
 //     returning nil immediately so the worker can process other jobs.
 //   - maxReleases == 0 means unlimited releases.
 //   - If maxReleases is exhausted, it falls back to blocking Wait behavior.
@@ -56,8 +56,8 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 		res.Cancel()
 
 		if maxReleases == 0 {
-			_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
-			return nil // Unlimited releases, delay and re-enqueue.
+			_, err := Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
+			return err // Return any rescheduling failure.
 		}
 
 		for {
@@ -70,8 +70,11 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 				return job(ctx) // Job executed.
 			}
 			if releases.CompareAndSwap(current, current+1) {
-				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
-				return nil // Release budget allows, delay and re-enqueue.
+				_, err := Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRateLimit)
+				if err != nil {
+					releases.Add(-1)
+				}
+				return err // Return any rescheduling failure.
 			}
 		}
 	}

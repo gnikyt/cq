@@ -69,7 +69,7 @@ func contextWithLastError(ctx context.Context, err error) context.Context {
 	return context.WithValue(ctx, lastErrorKey{}, err)
 }
 
-// RequestRelease asks the current wrapper chain to re-enqueue this job after delay.
+// RequestRelease asks the current wrapper chain to resubmit this job after delay.
 // Returns false when no release-self wrapper is present or metadata is unavailable.
 func RequestRelease(ctx context.Context, delay time.Duration) bool {
 	fn, ok := ctx.Value(releaseRequesterKey{}).(releaseRequester)

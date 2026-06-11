@@ -10,7 +10,7 @@ import (
 // releaseRequest is a request to release a job after a delay.
 type releaseRequest struct {
 	token uint64        // The token for the current run.
-	delay time.Duration // The delay to re-enqueue the job.
+	delay time.Duration // The delay before resubmitting the job.
 }
 
 // releaseRequestStore is a store for release requests.
@@ -94,12 +94,12 @@ func (s *releaseRequestStore) pop(id string, token uint64) (time.Duration, bool)
 	return req.delay, true // The request was found.
 }
 
-// WithReleaseSelf allows a running job to request delayed re-enqueue of itself via
+// WithReleaseSelf allows a running job to request delayed resubmission of itself via
 // RequestRelease(ctx, delay). maxReleases == 0 means unlimited releases.
 //
 // Behavior:
 //   - If a release is requested during execution and release budget allows, the job
-//     is re-enqueued after the requested delay and this run returns nil.
+//     is resubmitted after the requested delay and this run returns nil.
 //   - If release budget is exceeded, the wrapper returns the job error (or nil).
 //   - If both error and release request occur, release wins while budget allows.
 func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
@@ -135,9 +135,9 @@ func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
 		}
 
 		if maxReleases == 0 {
-			// Unlimited releases, just delay and re-enqueue.
-			_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
-			return nil
+			// Unlimited releases, just delay and resubmit.
+			_, err = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
+			return err
 		}
 
 		for {
@@ -147,8 +147,11 @@ func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
 			}
 
 			if releases.CompareAndSwap(current, current+1) {
-				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
-				return nil // Release budget allows, delay and re-enqueue.
+				_, err = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonReleaseSelf)
+				if err != nil {
+					releases.Add(-1)
+				}
+				return err // Return any rescheduling failure.
 			}
 		}
 	}
@@ -156,7 +159,7 @@ func WithReleaseSelf(job Job, queue *Queue, maxReleases int) Job {
 	return wrappedJob
 }
 
-// WithRelease re-enqueues a job after a delay when shouldRelease(err) is true.
+// WithRelease resubmits a job after a delay when shouldRelease(err) is true.
 // shouldRelease should match transient errors such as timeouts or rate limits.
 // maxReleases == 0 means unlimited releases.
 // Once maxReleases is exceeded, or shouldRelease returns false, the error is returned.
@@ -168,8 +171,8 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 		err := job(ctx)
 		if err != nil && shouldRelease(err) {
 			if maxReleases == 0 {
-				_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
-				return nil
+				_, rescheduleErr := Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
+				return rescheduleErr
 			}
 
 			for {
@@ -178,8 +181,11 @@ func WithRelease(job Job, queue *Queue, delay time.Duration, maxReleases int, sh
 					break
 				}
 				if releases.CompareAndSwap(current, current+1) {
-					_ = Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
-					return nil
+					_, rescheduleErr := Reschedule(ctx, queue, wrappedJob, delay, RescheduleReasonRelease)
+					if rescheduleErr != nil {
+						releases.Add(-1)
+					}
+					return rescheduleErr
 				}
 			}
 		}
