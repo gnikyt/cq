@@ -260,7 +260,14 @@ For custom ownership token formats, pass `WithUniqueTokenGenerator(...)`.
 scheduler := cq.NewScheduler(context.Background(), queue)
 defer scheduler.Stop()
 
-_ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
+schedule, err := scheduler.Every(
+	"sync-products",
+	10*time.Minute,
+	syncProductsJob,
+	cq.WithJobName("sync-products"),
+)
+
+latest, submitErr, attempted := schedule.Latest()
 ```
 
 ## Queue

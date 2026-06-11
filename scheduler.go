@@ -5,43 +5,113 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Scheduler errors.
 var (
-	ErrJobExists       = errors.New("job with id already exists")
-	ErrInvalidInterval = errors.New("interval must be positive")
-	ErrScheduleInPast  = errors.New("scheduled time is in the past")
+	ErrScheduleExists          = errors.New("schedule with id already exists")
+	ErrScheduleIntervalInvalid = errors.New("schedule interval must be positive")
+	ErrScheduleInPast          = errors.New("scheduled time is in the past")
+	ErrSchedulerStopped        = errors.New("scheduler is stopped")
 )
 
-// Scheduler manages recurring and one-time jobs.
-// Jobs are enqueued into the provided queue when schedules trigger.
+// ScheduleHandle tracks one recurring or one-time schedule.
+type ScheduleHandle struct {
+	id     string      // Schedule identifier.
+	cancel func() bool // Cancels this schedule instance.
+
+	submissionAttempts atomic.Uint64 // Number of queue submission attempts.
+	done               chan struct{} // Closed when the schedule becomes terminal.
+	doneOnce           sync.Once     // Ensures done closes once.
+
+	mu        sync.RWMutex // Guards latest submission data.
+	latest    *JobHandle   // Latest accepted submission.
+	latestErr error        // Latest submission rejection.
+}
+
+// ID returns the schedule ID.
+func (h *ScheduleHandle) ID() string {
+	return h.id
+}
+
+// Cancel removes the schedule and prevents future submission attempts.
+// It does not cancel jobs already accepted by the queue.
+func (h *ScheduleHandle) Cancel() bool {
+	if h.cancel == nil {
+		return false
+	}
+	return h.cancel()
+}
+
+// Done returns a channel closed when the schedule is removed, completes, or stops.
+func (h *ScheduleHandle) Done() <-chan struct{} {
+	return h.done
+}
+
+// SubmissionAttempts returns the number of submission attempts made by the schedule.
+func (h *ScheduleHandle) SubmissionAttempts() uint64 {
+	return h.submissionAttempts.Load()
+}
+
+// Latest returns the latest submission attempt.
+// attempted is false before the first submission attempt.
+func (h *ScheduleHandle) Latest() (handle *JobHandle, err error, attempted bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.submissionAttempts.Load() == 0 {
+		return nil, nil, false
+	}
+	return h.latest, h.latestErr, true
+}
+
+// recordSubmission stores the latest submission attempt.
+func (h *ScheduleHandle) recordSubmission(handle *JobHandle, err error) {
+	h.mu.Lock()
+	h.latest = handle
+	h.latestErr = err
+	h.submissionAttempts.Add(1)
+	h.mu.Unlock()
+}
+
+// finish marks the schedule terminal.
+func (h *ScheduleHandle) finish() {
+	h.doneOnce.Do(func() {
+		close(h.done)
+	})
+}
+
+// Scheduler manages recurring and one-time job submissions.
 type Scheduler struct {
-	queue     *Queue             // Queue to enqueue jobs into.
-	ctx       context.Context    // Context for scheduler lifecycle.
-	ctxCancel context.CancelFunc // Cancel function for explicit Stop().
+	queue     *Queue             // Queue receiving scheduled submissions.
+	ctx       context.Context    // Scheduler lifecycle context.
+	ctxCancel context.CancelFunc // Stops the scheduler without cancelling its parent.
 
-	wg sync.WaitGroup // Wait group.
+	wg sync.WaitGroup // Tracks schedule goroutines.
 
-	mu   sync.RWMutex             // Mutex for scheduler jobs map.
-	jobs map[string]*scheduledJob // Map of job ID to scheduled job.
+	mu      sync.RWMutex             // Guards schedules and stopped.
+	jobs    map[string]*scheduledJob // Registered schedules by ID.
+	stopped bool                     // Indicates explicit scheduler shutdown.
 }
 
-// scheduledJob represents a scheduled job.
+// scheduledJob contains one registered schedule.
 type scheduledJob struct {
-	id        string             // Job ID.
-	job       Job                // Job to execute.
-	interval  time.Duration      // Interval for recurring jobs (0 for one-time).
-	runAt     time.Time          // Run time for one-time jobs.
-	ctxCancel context.CancelFunc // Cancel function for this job.
+	job      Job                // Job submitted when the schedule fires.
+	interval time.Duration      // Recurring interval... zero for one-time schedules.
+	runAt    time.Time          // One-time schedule timestamp.
+	opts     []SubmitOption     // Options applied to each submission.
+	ctx      context.Context    // Per-schedule lifecycle context.
+	cancel   context.CancelFunc // Cancels this schedule only.
+	handle   *ScheduleHandle    // Public schedule lifecycle handle.
 }
 
-// NewScheduler creates a new Scheduler that enqueues jobs into the provided queue.
-// Jobs start immediately when added (no Start() call needed).
-// The scheduler will automatically stop when the provided context is cancelled.
-// Call Stop() for explicit shutdown and to wait for all goroutines to finish.
+// NewScheduler creates a Scheduler that submits jobs into queue.
+// Schedules start immediately when added and stop when ctx is cancelled.
 func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	childCtx, cancel := context.WithCancel(ctx)
 	return &Scheduler{
 		queue:     queue,
@@ -51,113 +121,66 @@ func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
 	}
 }
 
-// Stop stops scheduled jobs and waits for scheduler goroutines to exit.
+// Stop stops all schedules and waits for scheduler goroutines to exit.
+// It does not cancel jobs already accepted by the queue.
 func (s *Scheduler) Stop() {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
 	s.ctxCancel()
+	s.mu.Unlock()
 	s.wg.Wait()
 }
 
-// Every schedules a recurring job at the specified interval.
-// The job is enqueued each time the interval ticks.
-// Returns an error if a job with the same ID already exists.
-func (s *Scheduler) Every(id string, interval time.Duration, job Job) error {
+// Every registers a recurring schedule.
+func (s *Scheduler) Every(id string, interval time.Duration, job Job, opts ...SubmitOption) (*ScheduleHandle, error) {
 	if interval <= 0 {
-		return fmt.Errorf("scheduler: every: %w", ErrInvalidInterval)
+		return nil, fmt.Errorf("scheduler: every: %w", ErrScheduleIntervalInvalid)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("scheduler: every (id=%s): %w", id, ErrJobExists)
-	}
-
-	ctx, cancel := context.WithCancel(s.ctx)
-	sj := &scheduledJob{
-		id:        id,
-		job:       job,
-		interval:  interval,
-		ctxCancel: cancel,
-	}
-
-	s.jobs[id] = sj
-	s.wg.Add(1)
-
-	go s.runRecurring(ctx, sj)
-
-	return nil
+	return s.add(id, job, interval, time.Time{}, opts)
 }
 
-// At schedules a one-time job for the specified time.
-// The job is enqueued once and then removed from the scheduler.
-// Returns an error if a job with the same ID already exists or if the time is in the past.
-func (s *Scheduler) At(id string, t time.Time, job Job) error {
-	if time.Now().After(t) {
-		return fmt.Errorf("scheduler: at: %w", ErrScheduleInPast)
+// At registers a one-time schedule.
+func (s *Scheduler) At(id string, at time.Time, job Job, opts ...SubmitOption) (*ScheduleHandle, error) {
+	if time.Now().After(at) {
+		return nil, fmt.Errorf("scheduler: at: %w", ErrScheduleInPast)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.jobs[id]; exists {
-		return fmt.Errorf("scheduler: at (id=%s): %w", id, ErrJobExists)
-	}
-
-	ctx, cancel := context.WithCancel(s.ctx)
-	sj := &scheduledJob{
-		id:        id,
-		job:       job,
-		runAt:     t,
-		ctxCancel: cancel,
-	}
-
-	s.jobs[id] = sj
-	s.wg.Add(1)
-
-	go s.runOnce(ctx, sj)
-
-	return nil
+	return s.add(id, job, 0, at, opts)
 }
 
-// Remove cancels and removes a scheduled job by ID.
-// Returns true if the job was found and removed, false otherwise.
+// Remove cancels and removes a schedule by ID.
 func (s *Scheduler) Remove(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.mu.RLock()
 	sj, exists := s.jobs[id]
+	s.mu.RUnlock()
 	if !exists {
 		return false
 	}
-
-	sj.ctxCancel()
-	delete(s.jobs, id)
-
-	return true
+	return s.remove(sj)
 }
 
-// Has reports whether a job with ID exists.
+// Has reports whether a schedule with ID exists.
 func (s *Scheduler) Has(id string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	_, exists := s.jobs[id]
 	return exists
 }
 
-// Count returns the number of scheduled jobs.
+// Count returns the number of registered schedules.
 func (s *Scheduler) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	return len(s.jobs)
 }
 
-// List returns all scheduled job IDs.
+// List returns all registered schedule IDs.
 func (s *Scheduler) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	ids := make([]string, 0, len(s.jobs))
 	for id := range s.jobs {
 		ids = append(ids, id)
@@ -165,36 +188,103 @@ func (s *Scheduler) List() []string {
 	return ids
 }
 
-// runRecurring runs the recurring scheduling loop for one job.
-func (s *Scheduler) runRecurring(ctx context.Context, sj *scheduledJob) {
-	defer s.wg.Done()
+// add registers and starts one schedule.
+func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time, opts []SubmitOption) (*ScheduleHandle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return nil, ErrSchedulerStopped
+	}
+	select {
+	case <-s.ctx.Done():
+		return nil, ErrSchedulerStopped
+	default:
+	}
+	if _, exists := s.jobs[id]; exists {
+		return nil, fmt.Errorf("scheduler: add (id=%s): %w", id, ErrScheduleExists)
+	}
 
+	ctx, cancel := context.WithCancel(s.ctx)
+	handle := &ScheduleHandle{id: id, done: make(chan struct{})}
+	sj := &scheduledJob{
+		job:      job,
+		interval: interval,
+		runAt:    at,
+		opts:     append([]SubmitOption(nil), opts...),
+		ctx:      ctx,
+		cancel:   cancel,
+		handle:   handle,
+	}
+	handle.cancel = func() bool { return s.remove(sj) }
+	s.jobs[id] = sj
+	s.wg.Add(1)
+	if interval > 0 {
+		go s.runRecurring(sj)
+	} else {
+		go s.runOnce(sj)
+	}
+	return handle, nil
+}
+
+// remove removes a schedule only if it is still the registered instance.
+func (s *Scheduler) remove(sj *scheduledJob) bool {
+	s.mu.Lock()
+	current, exists := s.jobs[sj.handle.id]
+	if exists && current == sj {
+		delete(s.jobs, sj.handle.id)
+	}
+	s.mu.Unlock()
+	if !exists || current != sj {
+		return false
+	}
+	sj.cancel()
+	sj.handle.finish()
+	return true
+}
+
+// removeCompleted removes a schedule only if it is still the registered instance.
+func (s *Scheduler) removeCompleted(sj *scheduledJob) {
+	s.mu.Lock()
+	if current, exists := s.jobs[sj.handle.id]; exists && current == sj {
+		delete(s.jobs, sj.handle.id)
+	}
+	s.mu.Unlock()
+	sj.cancel()
+	sj.handle.finish()
+}
+
+// submit records one schedule-triggered submission attempt.
+func (s *Scheduler) submit(sj *scheduledJob) {
+	handle, err := s.queue.Submit(sj.ctx, sj.job, sj.opts...)
+	sj.handle.recordSubmission(handle, err)
+}
+
+// runRecurring runs one recurring schedule.
+func (s *Scheduler) runRecurring(sj *scheduledJob) {
+	defer s.wg.Done()
+	defer s.removeCompleted(sj)
 	ticker := time.NewTicker(sj.interval)
 	defer ticker.Stop()
-
 	for {
 		select {
-		case <-ctx.Done():
-			return // Context cancelled, stop the job.
+		case <-sj.ctx.Done():
+			return
 		case <-ticker.C:
-			_, _ = s.queue.Submit(ctx, sj.job) // Submit the job.
+			s.submit(sj)
 		}
 	}
 }
 
-// runOnce waits until runAt, enqueues the job once, then removes it.
-func (s *Scheduler) runOnce(ctx context.Context, sj *scheduledJob) {
+// runOnce waits until runAt, submits once, then removes the schedule.
+func (s *Scheduler) runOnce(sj *scheduledJob) {
 	defer s.wg.Done()
-
-	delay := time.Until(sj.runAt)
-	timer := time.NewTimer(delay)
+	defer s.removeCompleted(sj)
+	timer := time.NewTimer(time.Until(sj.runAt))
 	defer timer.Stop()
-
 	select {
-	case <-ctx.Done():
-		return // Context cancelled, stop the job.
+	case <-sj.ctx.Done():
+		return
 	case <-timer.C:
-		_, _ = s.queue.Submit(ctx, sj.job)
-		s.Remove(sj.id)
+		s.submit(sj)
 	}
 }
