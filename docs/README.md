@@ -9,6 +9,13 @@ Complete reference documentation for cq.
 
 ## Core Features
 
+### [Queue Submissions](QUEUE_SUBMISSIONS.md)
+Understand submission acceptance and `JobHandle` behavior:
+- Acceptance contexts
+- Waiting for completion and reading results
+- Cancelling pending and running jobs
+- Handles returned by delayed, routed, priority, and scheduled submissions
+
 ### [Job Wrappers](JOB_WRAPPERS.md)
 Complete reference for all job wrappers including:
 - Retry logic and policy-based retries

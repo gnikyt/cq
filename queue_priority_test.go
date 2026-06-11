@@ -569,6 +569,66 @@ func TestPriorityQueueSubmit_ContextCancelsBufferAcceptance(t *testing.T) {
 	}
 }
 
+func TestPriorityQueueSubmit_CancelBufferedPreventsExecution(t *testing.T) {
+	queue := NewQueue(1, 1, 1)
+	queue.Start()
+	defer queue.Stop(true)
+
+	pq := NewPriorityQueue(queue, 1, WithPriorityTick(time.Hour))
+	defer pq.Stop(false)
+
+	ran := make(chan struct{}, 1)
+	handle := mustPrioritySubmit(t, pq, func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	}, PriorityHigh)
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+	if pq.trySubmit(pq.high) {
+		t.Fatal("trySubmit(): forwarded cancelled submission")
+	}
+	select {
+	case <-ran:
+		t.Fatal("cancelled priority job executed")
+	default:
+	}
+}
+
+func TestPriorityQueueSubmitAfter_CancelPreventsSubmission(t *testing.T) {
+	queue := NewQueue(1, 1, 1)
+	queue.Start()
+	defer queue.Stop(true)
+
+	pq := NewPriorityQueue(queue, 1, WithPriorityTick(time.Hour))
+	defer pq.Stop(false)
+
+	ran := make(chan struct{}, 1)
+	handle, err := pq.SubmitAfter(context.Background(), func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	}, PriorityHigh, time.Hour)
+	if err != nil {
+		t.Fatalf("SubmitAfter(): got err=%v, want nil", err)
+	}
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+	select {
+	case <-ran:
+		t.Fatal("cancelled delayed priority job executed")
+	default:
+	}
+}
+
 func mustPrioritySubmit(t *testing.T, pq *PriorityQueue, job Job, priority Priority, opts ...SubmitOption) *JobHandle {
 	t.Helper()
 	handle, err := pq.Submit(context.Background(), job, priority, opts...)

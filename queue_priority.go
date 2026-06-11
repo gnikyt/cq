@@ -222,18 +222,20 @@ func (pq *PriorityQueue) SubmitAfter(ctx context.Context, job Job, priority Prio
 		defer timer.Stop()
 		select {
 		case <-pq.ctx.Done():
-			if handle.reject(ErrPriorityQueueStopped) {
+			if handle.rejectPending(ErrPriorityQueueStopped) {
 				pq.untrackSubmission(handle)
 			}
+		case <-handle.Done():
+			pq.untrackSubmission(handle)
 		case <-timer.C:
 			select {
 			case ch <- submission:
 			case <-pq.ctx.Done():
-				if handle.reject(ErrPriorityQueueStopped) {
+				if handle.rejectPending(ErrPriorityQueueStopped) {
 					pq.untrackSubmission(handle)
 				}
 			default:
-				if handle.reject(ErrPriorityQueueFull) {
+				if handle.rejectPending(ErrPriorityQueueFull) {
 					pq.untrackSubmission(handle)
 				}
 			}
@@ -299,6 +301,10 @@ func (pq *PriorityQueue) dispatcher() {
 func (pq *PriorityQueue) trySubmit(ch chan prioritySubmission) bool {
 	select {
 	case submission := <-ch:
+		if submission.handle.state.Load() != submissionPending {
+			pq.untrackSubmission(submission.handle)
+			return false
+		}
 		ok, err := pq.queue.acceptSubmission(submission.job, submissionOptions{
 			blocking:  false,
 			acceptCtx: pq.ctx,
@@ -310,7 +316,7 @@ func (pq *PriorityQueue) trySubmit(ch chan prioritySubmission) bool {
 			return true
 		}
 		if errors.Is(err, ErrQueueStopped) || errors.Is(err, context.Canceled) {
-			if submission.handle.reject(err) {
+			if submission.handle.rejectPending(err) {
 				pq.untrackSubmission(submission.handle)
 			}
 			return false
@@ -319,7 +325,7 @@ func (pq *PriorityQueue) trySubmit(ch chan prioritySubmission) bool {
 		select {
 		case ch <- submission:
 		default:
-			if submission.handle.reject(ErrPriorityQueueFull) {
+			if submission.handle.rejectPending(ErrPriorityQueueFull) {
 				pq.untrackSubmission(submission.handle)
 			}
 		}
@@ -372,6 +378,10 @@ func (pq *PriorityQueue) Drain() int {
 		for {
 			select {
 			case submission := <-ch:
+				if submission.handle.state.Load() != submissionPending {
+					pq.untrackSubmission(submission.handle)
+					continue
+				}
 				ok, err := pq.queue.acceptSubmission(submission.job, submissionOptions{
 					blocking:  true,
 					acceptCtx: context.Background(),
@@ -381,7 +391,7 @@ func (pq *PriorityQueue) Drain() int {
 				if ok {
 					pq.untrackSubmission(submission.handle)
 					drained++
-				} else if submission.handle.reject(err) {
+				} else if submission.handle.rejectPending(err) {
 					pq.untrackSubmission(submission.handle)
 				}
 			default:
@@ -413,9 +423,8 @@ func (pq *PriorityQueue) rejectPendingSubmissions(err error) {
 	pq.submissionsMut.Lock()
 	defer pq.submissionsMut.Unlock()
 	for handle := range pq.submissions {
-		if handle.reject(err) {
-			delete(pq.submissions, handle)
-		}
+		handle.rejectPending(err)
+		delete(pq.submissions, handle)
 	}
 }
 

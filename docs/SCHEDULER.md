@@ -37,6 +37,8 @@ if attempted && submitErr != nil {
 	log.Printf("latest cleanup submission was rejected: %v", submitErr)
 }
 if handle != nil {
+	// Cancel only the latest submitted occurrence.
+	handle.Cancel()
 	_ = handle.Wait(context.Background())
 }
 
@@ -47,7 +49,8 @@ cleanup.Cancel()
 
 `Latest` reports queue acceptance failures such as `cq.ErrQueueFull` or
 `cq.ErrQueueStopped`. Cancelling a schedule prevents future submission attempts;
-it does not cancel jobs already accepted by the queue.
+it does not cancel jobs already accepted by the queue. Use the `JobHandle`
+returned by `Latest` to cancel one accepted occurrence.
 
 The scheduler also supports lookup and centralized removal:
 

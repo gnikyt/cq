@@ -26,6 +26,10 @@ Typed priority submission errors:
 - `cq.ErrPriorityQueueStopped`
 - `cq.ErrPriorityQueueFull`
 
+Returned `JobHandle` values support cancellation while delayed, waiting in a
+priority buffer, or running. Cancelling a buffered job prevents execution but
+does not immediately reclaim its priority-buffer slot.
+
 #### Named Priority Queues
 
 **What it does:** Registers multiple priority queues by name and routes jobs to them through one manager.

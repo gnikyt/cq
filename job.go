@@ -12,12 +12,13 @@ const (
 	JobStatePending
 	JobStateActive
 	JobStateFailed
+	JobStateCancelled
 	JobStateCompleted
 )
 
 // String implements fmt.Stringer.
 func (js JobState) String() string {
-	return [5]string{"created", "pending", "active", "failed", "completed"}[js]
+	return [6]string{"created", "pending", "active", "failed", "cancelled", "completed"}[js]
 }
 
 // Job is the function signature processed by the queue.

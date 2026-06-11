@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -86,7 +87,11 @@ func (q *Queue) dispatchStart(meta JobMeta) {
 // dispatchResult dispatches the result hook event when a job completes.
 func (q *Queue) dispatchResult(meta JobMeta, err error) {
 	if err != nil {
-		event := eventFromMeta(meta, JobStateFailed, err)
+		state := JobStateFailed
+		if errors.Is(err, ErrJobCancelled) {
+			state = JobStateCancelled
+		}
+		event := eventFromMeta(meta, state, err)
 		for _, hooks := range q.hooks {
 			q.emitHook(hookFailure, hooks.OnFailure, event)
 		}

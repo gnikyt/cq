@@ -794,9 +794,11 @@ The new submission receives a fresh ID and these lineage attributes:
 - `cq.RescheduleAttributeRootID`
 - `cq.RescheduleAttributeReason`
 
-Keep the returned `JobHandle` when future delayed-handoff failures must be
-observed. Built-in release wrappers return immediate reschedule registration
-errors, but do not block workers waiting for the delayed submission to finish.
+The returned `JobHandle` tracks the new delayed submission. Use it to observe
+future submission failures or cancel the rescheduled job before it runs.
+
+Built-in release wrappers report immediate reschedule registration errors. They
+do not wait for the delayed submission to finish.
 
 #### Release Self
 

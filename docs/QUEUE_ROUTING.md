@@ -32,4 +32,5 @@ _, _ = mgr.SubmitAfter(context.Background(), "low", bulkJob, 30*time.Second)
 
 - `QueueManager` is orchestration-only... each queue still keeps its own options and hooks.
 - Unknown queue names return `cq.ErrQueueManagerNotFound`.
+- Routed submission methods return the underlying queue's cancellable `JobHandle`.
 - `SubmitAfter` returns the delayed job's eventual execution handle.

@@ -119,6 +119,131 @@ func TestJobHandle_WaitContextDoesNotCancelJob(t *testing.T) {
 	}
 }
 
+func TestJobHandle_CancelPendingPreventsExecution(t *testing.T) {
+	q := NewQueue(0, 0, 1)
+	q.Start()
+	defer q.Stop(false)
+
+	ran := make(chan struct{}, 1)
+	handle := mustSubmit(t, q, func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	})
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if handle.Cancel() {
+		t.Fatal("Cancel(second): got true, want false")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+	select {
+	case <-ran:
+		t.Fatal("cancelled pending job executed")
+	default:
+	}
+}
+
+func TestJobHandle_CancelRunningSignalsContext(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+	defer q.Stop(true)
+
+	started := make(chan struct{})
+	cause := make(chan error, 1)
+	handle := mustSubmit(t, q, func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		cause <- context.Cause(ctx)
+		return ctx.Err()
+	})
+	<-started
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if handle.Cancel() {
+		t.Fatal("Cancel(second): got true, want false")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+	if err := <-cause; !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("context cause: got %v, want %v", err, ErrJobCancelled)
+	}
+	// Handle completion is published just before the worker updates queue tallies.
+	waitFor(t, time.Second, func() bool {
+		return q.TallyOf(JobStateCancelled) == 1
+	})
+	if got := q.TallyOf(JobStateFailed); got != 0 {
+		t.Fatalf("TallyOf(JobStateFailed): got %d, want 0", got)
+	}
+	if got := q.Stats().CancelledJobs; got != 1 {
+		t.Fatalf("Stats().CancelledJobs: got %d, want 1", got)
+	}
+}
+
+func TestJobHandle_CancelRunningWaitsForJobExit(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+	defer q.Stop(true)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handle := mustSubmit(t, q, func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	})
+	<-started
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	select {
+	case <-handle.Done():
+		t.Fatal("Done() closed before running job exited")
+	default:
+	}
+
+	close(release)
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(): got %v, want nil", err)
+	}
+	if handle.Cancel() {
+		t.Fatal("Cancel(completed): got true, want false")
+	}
+}
+
+func TestJobHandle_CancelDelayedPreventsSubmission(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+	defer q.Stop(true)
+
+	ran := make(chan struct{}, 1)
+	handle, err := q.SubmitAfter(context.Background(), func(context.Context) error {
+		ran <- struct{}{}
+		return nil
+	}, time.Hour)
+	if err != nil {
+		t.Fatalf("SubmitAfter(): got err=%v, want nil", err)
+	}
+
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+	select {
+	case <-ran:
+		t.Fatal("cancelled delayed job executed")
+	default:
+	}
+}
+
 func TestQueueSubmit_NonBlockingAndAbandoned(t *testing.T) {
 	q := NewQueue(0, 0, 1)
 	q.Start()

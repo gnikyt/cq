@@ -177,3 +177,39 @@ func TestReschedule_ReturnsSubmissionError(t *testing.T) {
 		t.Fatalf("Reschedule(): got (%v, %v), want (nil, %v)", handle, err, ErrQueueStopped)
 	}
 }
+
+func TestReschedule_ReturnsCancellableHandle(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+	defer q.Stop(true)
+
+	rescheduled := make(chan *JobHandle, 1)
+	ran := make(chan struct{}, 1)
+	original := mustSubmit(t, q, func(ctx context.Context) error {
+		handle, err := Reschedule(ctx, q, func(context.Context) error {
+			ran <- struct{}{}
+			return nil
+		}, time.Hour, RescheduleReasonManualRetry)
+		if err != nil {
+			return err
+		}
+		rescheduled <- handle
+		return nil
+	})
+	if err := original.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(original): %v", err)
+	}
+
+	handle := <-rescheduled
+	if !handle.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("Wait(rescheduled): got %v, want %v", err, ErrJobCancelled)
+	}
+	select {
+	case <-ran:
+		t.Fatal("cancelled rescheduled job executed")
+	default:
+	}
+}

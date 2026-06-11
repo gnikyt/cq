@@ -13,14 +13,18 @@ const (
 	submissionPending uint32 = iota
 	// submissionRunning indicates a submission currently executing.
 	submissionRunning
-	// submissionCompleting indicates a submission publishing its terminal result.
+	// submissionCompleting indicates a submission writing its terminal result.
 	submissionCompleting
-	// submissionDone indicates a submission with an available terminal result.
+	// submissionDone indicates the terminal result is available and Done is closed.
 	submissionDone
 )
 
-// ErrJobAbandoned is returned when an accepted job is abandoned before execution.
-var ErrJobAbandoned = errors.New("cq: job abandoned before execution")
+var (
+	// ErrJobAbandoned is returned when an accepted job is abandoned before execution.
+	ErrJobAbandoned = errors.New("cq: job abandoned before execution")
+	// ErrJobCancelled is returned when a submission is cancelled through its handle.
+	ErrJobCancelled = errors.New("cq: job cancelled")
+)
 
 // JobResult is the terminal result of one accepted submission.
 type JobResult struct {
@@ -45,8 +49,11 @@ type JobHandle struct {
 	state atomic.Uint32
 	done  chan struct{}
 
-	mu     sync.RWMutex
-	result JobResult
+	cancelRequested atomic.Bool
+
+	mu              sync.RWMutex
+	executionCancel context.CancelCauseFunc
+	result          JobResult
 }
 
 // newJobHandle creates a pending handle for one submission.
@@ -77,6 +84,37 @@ func (h *JobHandle) Done() <-chan struct{} {
 	return h.done
 }
 
+// Cancel prevents pending execution or requests cancellation of a running job.
+// Running jobs must respect context cancellation for the request to stop execution.
+// It returns true when this call cancels pending execution or delivers the first
+// cancellation request to a running job.
+func (h *JobHandle) Cancel() bool {
+	for {
+		switch h.state.Load() {
+		case submissionPending:
+			if h.rejectPending(ErrJobCancelled) {
+				return true
+			}
+		case submissionRunning:
+			h.mu.RLock()
+			if h.state.Load() != submissionRunning {
+				h.mu.RUnlock()
+				continue
+			}
+			if !h.cancelRequested.CompareAndSwap(false, true) {
+				h.mu.RUnlock()
+				return false
+			}
+			cancel := h.executionCancel
+			cancel(ErrJobCancelled)
+			h.mu.RUnlock()
+			return true
+		default:
+			return false
+		}
+	}
+}
+
 // Wait waits for submission completion or ctx cancellation.
 // Cancelling ctx stops only the wait; it does not cancel the job.
 func (h *JobHandle) Wait(ctx context.Context) error {
@@ -105,14 +143,15 @@ func (h *JobHandle) Result() (JobResult, bool) {
 }
 
 // start transitions the handle from pending to running.
-func (h *JobHandle) start(at time.Time) bool {
+func (h *JobHandle) start(at time.Time, cancel context.CancelCauseFunc) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if !h.state.CompareAndSwap(submissionPending, submissionRunning) {
 		return false
 	}
-	h.mu.Lock()
 	h.result.Meta = cloneJobMeta(h.meta)
 	h.result.StartedAt = at
-	h.mu.Unlock()
+	h.executionCancel = cancel
 	return true
 }
 
@@ -123,27 +162,40 @@ func (h *JobHandle) setMeta(meta JobMeta) {
 	h.mu.Unlock()
 }
 
-// finish records a running submission's terminal result.
-func (h *JobHandle) finish(at time.Time, err error) bool {
+// finish records a running submission's terminal result and returns its final error.
+func (h *JobHandle) finish(at time.Time, err error) error {
 	if !h.state.CompareAndSwap(submissionRunning, submissionCompleting) {
-		return false
+		return err
 	}
 	h.mu.Lock()
+	h.executionCancel = nil
 	h.result.FinishedAt = at
 	h.result.Err = err
 	h.mu.Unlock()
 	h.state.Store(submissionDone)
 	close(h.done)
-	return true
+	return err
+}
+
+// terminalError returns the terminal error when available.
+func (h *JobHandle) terminalError() error {
+	if h.state.Load() == submissionCompleting {
+		<-h.done
+	}
+	result, ok := h.Result()
+	if !ok {
+		return ErrJobAbandoned
+	}
+	return result.Err
 }
 
 // abandon completes a pending submission without executing it.
 func (h *JobHandle) abandon() bool {
-	return h.reject(ErrJobAbandoned)
+	return h.rejectPending(ErrJobAbandoned)
 }
 
-// reject completes a pending submission without executing it.
-func (h *JobHandle) reject(err error) bool {
+// rejectPending completes a pending submission without executing it.
+func (h *JobHandle) rejectPending(err error) bool {
 	if !h.state.CompareAndSwap(submissionPending, submissionCompleting) {
 		return false
 	}

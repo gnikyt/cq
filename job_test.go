@@ -37,6 +37,10 @@ func TestJobStateString(t *testing.T) {
 			state: JobStateFailed,
 		},
 		{
+			want:  "cancelled",
+			state: JobStateCancelled,
+		},
+		{
 			want:  "completed",
 			state: JobStateCompleted,
 		},

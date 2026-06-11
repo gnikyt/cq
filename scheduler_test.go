@@ -504,6 +504,37 @@ func TestScheduleHandle_Cancel(t *testing.T) {
 	}
 }
 
+func TestScheduleHandle_LatestSubmissionCanBeCancelled(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	started := make(chan struct{})
+	schedule, err := scheduler.At("cancel-occurrence", time.Now().Add(10*time.Millisecond), func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("At(): %v", err)
+	}
+	<-started
+
+	handle, submitErr, attempted := schedule.Latest()
+	if !attempted || submitErr != nil || handle == nil {
+		t.Fatalf("Latest(): got (%v, %v, %v), want (handle, nil, true)", handle, submitErr, attempted)
+	}
+	if !handle.Cancel() {
+		t.Fatal("latest Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("latest Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+}
+
 func TestSchedulerStop_RejectsNewSchedules(t *testing.T) {
 	queue := NewQueue(1, 1, 10)
 	queue.Start()

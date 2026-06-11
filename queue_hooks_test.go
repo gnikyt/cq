@@ -104,6 +104,34 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 	}
 }
 
+func TestQueueHooks_CancelledJobUsesCancelledState(t *testing.T) {
+	events := make(chan JobEvent, 1)
+	q := NewQueue(1, 1, 1, WithHooks(Hooks{
+		OnFailure: func(event JobEvent) {
+			events <- event
+		},
+	}))
+	q.Start()
+	defer q.Stop(true)
+
+	started := make(chan struct{})
+	handle := mustSubmit(t, q, func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	<-started
+	handle.Cancel()
+
+	event := <-events
+	if event.State != JobStateCancelled {
+		t.Fatalf("event state: got %v, want %v", event.State, JobStateCancelled)
+	}
+	if !errors.Is(event.Err, ErrJobCancelled) {
+		t.Fatalf("event error: got %v, want %v", event.Err, ErrJobCancelled)
+	}
+}
+
 func TestQueueHooks_PanicInHookReportedAndJobContinues(t *testing.T) {
 	var panicCalls atomic.Int32
 	var ran atomic.Bool

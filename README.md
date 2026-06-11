@@ -316,8 +316,15 @@ rescheduled, err := cq.Reschedule(ctx, queue, job, time.Minute, cq.RescheduleRea
 
 `Submit` distinguishes submission failure from execution failure. It returns an
 error only when the queue does not accept the job. After acceptance, `JobHandle`
-tracks completion through `Done`, `Wait`, and `Result`. Custom IDs are visible
-through `MetaFromContext`, lifecycle hooks, and default checkpoint keys.
+tracks completion through `Done`, `Wait`, and `Result`. `Cancel` prevents a
+pending job from executing or signals a running job through its context. Running
+jobs must respect context cancellation for the request to stop execution. Custom
+IDs are visible through `MetaFromContext`, lifecycle hooks, and default checkpoint
+keys.
+
+`Cancel` returns whether that call cancelled pending execution or delivered the
+first request to a running job. Cancelling an already-buffered job prevents its
+body from running, but does not immediately reclaim its internal queue slot.
 
 `SubmitAfter` accepts scheduling responsibility immediately. Its handle remains
 pending during the delay, then reports the eventual execution result or a future
@@ -350,12 +357,14 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStatePending   - Jobs waiting in the queue.
 // cq.JobStateActive    - Jobs currently executing.
 // cq.JobStateFailed    - Jobs completed with error.
+// cq.JobStateCancelled - Jobs completed through handle cancellation.
 // cq.JobStateCompleted - Jobs completed successfully.
 ```
 
 `queue.Stats()` returns `cq.QueueStats` with queue state (`Stopped`, `Paused`),
 worker details (`WorkersMin`, `WorkersMax`, `RunningWorkers`, `IdleWorkers`, `Capacity`),
-and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `CompletedJobs`)
+and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`,
+`CancelledJobs`, `CompletedJobs`).
 in one snapshot call.
 
 ### Runtime Scaling

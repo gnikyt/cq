@@ -48,6 +48,7 @@ type QueueStats struct {
 	PendingJobs    int
 	ActiveJobs     int
 	FailedJobs     int
+	CancelledJobs  int
 	CompletedJobs  int
 }
 
@@ -76,6 +77,7 @@ type Queue struct {
 	activeJobsTally    atomic.Int64 // Jobs currently executing.
 	pendingJobsTally   atomic.Int64 // Jobs waiting in the queue.
 	failedJobsTally    atomic.Int64 // Jobs completed with error.
+	cancelledJobsTally atomic.Int64 // Jobs completed through handle cancellation.
 	completedJobsTally atomic.Int64 // Jobs completed successfully.
 
 	jobIDCounter   atomic.Int64            // Counter for generating unique job IDs.
@@ -357,6 +359,8 @@ func (q *Queue) TallyOf(js JobState) int {
 		val = q.completedJobsTally.Load()
 	case JobStateFailed:
 		val = q.failedJobsTally.Load()
+	case JobStateCancelled:
+		val = q.cancelledJobsTally.Load()
 	case JobStatePending:
 		val = q.pendingJobsTally.Load()
 	case JobStateActive:
@@ -398,6 +402,7 @@ func (q *Queue) Stats() QueueStats {
 		PendingJobs:    int(q.pendingJobsTally.Load()),
 		ActiveJobs:     int(q.activeJobsTally.Load()),
 		FailedJobs:     int(q.failedJobsTally.Load()),
+		CancelledJobs:  int(q.cancelledJobsTally.Load()),
 		CompletedJobs:  int(q.completedJobsTally.Load()),
 	}
 }
@@ -455,9 +460,11 @@ func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, o
 		defer timer.Stop()
 		select {
 		case <-q.ctx.Done():
-			if handle.reject(ErrQueueStopped) {
+			if handle.rejectPending(ErrQueueStopped) {
 				q.untrackSubmission(handle)
 			}
+		case <-handle.Done():
+			q.untrackSubmission(handle)
 		case <-timer.C:
 			ok, err := q.acceptSubmission(job, submissionOptions{
 				blocking:  false,
@@ -465,7 +472,7 @@ func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, o
 				meta:      meta,
 				handle:    handle,
 			})
-			if !ok && handle.reject(err) {
+			if !ok && handle.rejectPending(err) {
 				q.untrackSubmission(handle)
 			}
 		}
@@ -585,6 +592,12 @@ func (q *Queue) markJobFailed() {
 	q.failedJobsTally.Add(1)
 }
 
+// markJobCancelled records a cancelled active job.
+func (q *Queue) markJobCancelled() {
+	q.activeJobsTally.Add(-1)
+	q.cancelledJobsTally.Add(1)
+}
+
 // markJobCompleted records a successfully completed active job.
 func (q *Queue) markJobCompleted() {
 	q.activeJobsTally.Add(-1)
@@ -615,9 +628,8 @@ func (q *Queue) abandonPendingSubmissions() {
 	q.submissionsMut.Lock()
 	defer q.submissionsMut.Unlock()
 	for handle := range q.submissions {
-		if handle.abandon() {
-			delete(q.submissions, handle)
-		}
+		handle.abandon()
+		delete(q.submissions, handle)
 	}
 }
 
@@ -650,6 +662,9 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		default:
 		}
 	}
+	if opts.handle != nil && opts.handle.state.Load() != submissionPending {
+		return false, opts.handle.terminalError()
+	}
 
 	q.acceptMut.RLock()
 	if q.IsStopped() {
@@ -679,14 +694,21 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 	// Wrap the job with a job metadata context.
 	// Additionally, dispatch the start and result of the job.
 	wrappedJob := func(ctx context.Context) error {
+		executionCtx, cancel := context.WithCancelCause(ctx)
 		// Immediate shutdown may abandon a buffered submission before a worker starts it.
-		if !opts.handle.start(time.Now()) {
+		if !opts.handle.start(time.Now(), cancel) {
+			cancel(nil)
+			q.untrackSubmission(opts.handle)
+			if err := opts.handle.terminalError(); err != nil {
+				return err
+			}
 			return ErrJobAbandoned
 		}
+		defer cancel(nil)
 		defer q.untrackSubmission(opts.handle)
 
 		// Create a new context with the job metadata.
-		jobCtx := contextWithMeta(ctx, meta)
+		jobCtx := contextWithMeta(executionCtx, meta)
 
 		q.dispatchStart(meta)
 
@@ -703,8 +725,11 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 			}()
 			err = job(jobCtx)
 		}()
+		if errors.Is(context.Cause(executionCtx), ErrJobCancelled) && errors.Is(err, context.Canceled) {
+			err = ErrJobCancelled
+		}
+		err = opts.handle.finish(time.Now(), err)
 		q.dispatchResult(meta, err)
-		opts.handle.finish(time.Now(), err)
 		return err
 	}
 
@@ -827,7 +852,9 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 	q.markJobStarted()
 
 	// Run the job with the queue context and record the result.
-	if err := job(q.ctx); err != nil {
+	if err := job(q.ctx); errors.Is(err, ErrJobCancelled) {
+		q.markJobCancelled()
+	} else if err != nil {
 		q.markJobFailed()
 	} else {
 		q.markJobCompleted()
