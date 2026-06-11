@@ -12,12 +12,12 @@ import (
 func TestMemoryKeyConcurrencyLimiter(t *testing.T) {
 	t.Run("invalid_limit_rejected", func(t *testing.T) {
 		limiterZero := NewMemoryKeyConcurrencyLimiter(0)
-		if err := limiterZero.Acquire("customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
+		if err := limiterZero.Acquire(context.Background(), "customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
 			t.Fatalf("Acquire(): limit=0 got err=%v, want %v", err, ErrConcurrencyByKeyInvalidLimit)
 		}
 
 		limiterNegative := NewMemoryKeyConcurrencyLimiter(-1)
-		if err := limiterNegative.Acquire("customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
+		if err := limiterNegative.Acquire(context.Background(), "customer:1"); !errors.Is(err, ErrConcurrencyByKeyInvalidLimit) {
 			t.Fatalf("Acquire(): limit<0 got err=%v, want %v", err, ErrConcurrencyByKeyInvalidLimit)
 		}
 	})
@@ -86,81 +86,8 @@ func TestWithConcurrencyByKey(t *testing.T) {
 		}()
 
 		// Slot should be available again because defer Release ran.
-		if err := limiter.Acquire(key); err != nil {
+		if err := limiter.Acquire(context.Background(), key); err != nil {
 			t.Fatalf("Acquire(): expected slot to be released after panic, got err=%v", err)
-		}
-	})
-
-	t.Run("dispatch_on_contention", func(t *testing.T) {
-		limiter := NewMemoryKeyConcurrencyLimiter(1)
-		key := "customer:dispatch"
-		dispatcher := &stubContentionDispatcher{}
-		var calls atomic.Int32
-		entered := make(chan struct{}, 1)
-		release := make(chan struct{})
-
-		job := WithDispatchOnContention(WithConcurrencyByKey(func(ctx context.Context) error {
-			if calls.Add(1) == 1 {
-				entered <- struct{}{}
-				<-release
-			}
-			return nil
-		}, key, limiter), key, dispatcher)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-entered
-		if err := job(context.Background()); err != nil {
-			t.Fatalf("WithConcurrencyByKey(): got %v, want nil on dispatch", err)
-		}
-		if got := calls.Load(); got != 1 {
-			t.Fatalf("WithConcurrencyByKey(): calls got %d, want 1 while limited", got)
-		}
-		if got := dispatcher.calls.Load(); got != 1 {
-			t.Fatalf("WithConcurrencyByKey(): dispatcher calls got %d, want 1", got)
-		}
-		if dispatcher.last.Key != key {
-			t.Fatalf("WithConcurrencyByKey(): dispatch key got %q, want %q", dispatcher.last.Key, key)
-		}
-		if dispatcher.last.Reason != DispatchReasonContention {
-			t.Fatalf("WithConcurrencyByKey(): dispatch reason got %v, want %v", dispatcher.last.Reason, DispatchReasonContention)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithConcurrencyByKey(): first run got %v, want nil", err)
-		}
-	})
-
-	t.Run("dispatch_requires_dispatcher", func(t *testing.T) {
-		limiter := NewMemoryKeyConcurrencyLimiter(1)
-		key := "customer:dispatch-missing"
-		entered := make(chan struct{}, 1)
-		release := make(chan struct{})
-
-		job := WithDispatchOnContention(WithConcurrencyByKey(func(ctx context.Context) error {
-			entered <- struct{}{}
-			<-release
-			return nil
-		}, key, limiter), key, nil)
-
-		firstErr := make(chan error, 1)
-		go func() {
-			firstErr <- job(context.Background())
-		}()
-
-		<-entered
-		err := job(context.Background())
-		if !errors.Is(err, ErrDispatchRequired) {
-			t.Fatalf("WithConcurrencyByKey(): got %v, want %v", err, ErrDispatchRequired)
-		}
-
-		close(release)
-		if err := <-firstErr; err != nil {
-			t.Fatalf("WithConcurrencyByKey(): first run got %v, want nil", err)
 		}
 	})
 

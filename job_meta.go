@@ -32,24 +32,38 @@ type lockTouchRequester func(time.Duration) error
 // lastErrorKey is the context key for the previous attempt error.
 type lastErrorKey struct{}
 
+// discardedOutcomeMarkerKey is the context key for internal discard accounting.
+type discardedOutcomeMarkerKey struct{}
+
+// discardedOutcomeMarker marks a successful wrapper-level discard outcome.
+type discardedOutcomeMarker func()
+
 // JobMeta contains metadata about the current job execution.
 type JobMeta struct {
-	ID         string    // Unique job identifier.
-	EnqueuedAt time.Time // When the job was enqueued.
-	Attempt    int       // Current attempt (0-indexed, externally incremented).
+	ID         string            // Unique job identifier.
+	Name       string            // Optional human-readable job name.
+	Attributes map[string]string // Optional string attributes for correlation and observability.
+	EnqueuedAt time.Time         // When the job was enqueued.
+	Attempt    int               // Current attempt (0-indexed, externally incremented).
 }
 
 // MetaFromContext extracts job metadata from the context.
 // Returns an empty JobMeta if no metadata is present.
 func MetaFromContext(ctx context.Context) JobMeta {
 	if meta, ok := ctx.Value(jobMetaKey{}).(JobMeta); ok {
-		return meta
+		return cloneJobMeta(meta)
 	}
 	return JobMeta{}
 }
 
 // contextWithMeta returns a new context with the given job metadata.
 func contextWithMeta(ctx context.Context, meta JobMeta) context.Context {
+	return context.WithValue(ctx, jobMetaKey{}, cloneJobMeta(meta))
+}
+
+// contextWithMetaOwned returns a new context with metadata already owned
+// by queue internals.
+func contextWithMetaOwned(ctx context.Context, meta JobMeta) context.Context {
 	return context.WithValue(ctx, jobMetaKey{}, meta)
 }
 
@@ -67,7 +81,21 @@ func contextWithLastError(ctx context.Context, err error) context.Context {
 	return context.WithValue(ctx, lastErrorKey{}, err)
 }
 
-// RequestRelease asks the current wrapper chain to re-enqueue this job after delay.
+// contextWithDiscardMarker returns a context with an internal discard marker.
+func contextWithDiscardMarker(ctx context.Context, marker discardedOutcomeMarker) context.Context {
+	return context.WithValue(ctx, discardedOutcomeMarkerKey{}, marker)
+}
+
+// markDiscardedFromContext marks discard accounting when marker support is present.
+func markDiscardedFromContext(ctx context.Context) {
+	fn, ok := ctx.Value(discardedOutcomeMarkerKey{}).(discardedOutcomeMarker)
+	if !ok || fn == nil {
+		return
+	}
+	fn()
+}
+
+// RequestRelease asks the current wrapper chain to resubmit this job after delay.
 // Returns false when no release-self wrapper is present or metadata is unavailable.
 func RequestRelease(ctx context.Context, delay time.Duration) bool {
 	fn, ok := ctx.Value(releaseRequesterKey{}).(releaseRequester)
@@ -95,4 +123,10 @@ func TouchLock(ctx context.Context, ttl time.Duration) error {
 // contextWithLockTouchRequester returns a new context with unique lock touch requester.
 func contextWithLockTouchRequester(ctx context.Context, fn lockTouchRequester) context.Context {
 	return context.WithValue(ctx, lockTouchRequesterKey{}, fn)
+}
+
+// cloneJobMeta returns JobMeta with an independent Attributes map.
+func cloneJobMeta(meta JobMeta) JobMeta {
+	meta.Attributes = cloneStringMap(meta.Attributes)
+	return meta
 }

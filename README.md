@@ -18,7 +18,8 @@ Inspired by Bull, Pond, Ants, and more.
 - Pause/resume queue execution (local or distributed)
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
-- Optional queue lifecycle hooks (enqueue/start/success/failure/reschedule)
+- Optional queue lifecycle hooks (enqueue/start/success/failure/discard/
+  reschedule plus retry-attempt events)
 - Queue-level middleware chain for all jobs
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
@@ -32,17 +33,17 @@ Use this as a quick guide before diving into detailed sections.
 
 | Capability | Primary APIs | What it solves |
 | --- | --- | --- |
-| Queueing and workers | `NewQueue`, `Enqueue`, `Stop` | Run background jobs with auto-scaling workers |
+| Queueing and workers | `NewQueue`, `Submit`, `Stop` | Run background jobs with auto-scaling workers |
 | Reliability | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
-| Time control | `WithTimeout`, `WithDeadline`, `DelayEnqueue` | Bound execution and schedule delayed runs |
+| Time control | `WithTimeout`, `WithDeadline`, `SubmitAfter` | Bound execution and schedule delayed runs |
 | Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn`, `WithCheckpoint` | Build multi-step and grouped workflows with configurable dependency failure modes |
 | Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyByKey` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
 | Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
-| Multi-queue routing | `NewQueueManager`, `NewPriorityQueueManager`, `Register`, `Enqueue`, `DelayEnqueue`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
-| Prioritization and scheduling | `NewPriorityQueue`, `NewPriorityQueueManager`, `PriorityQueue.EnqueueOrError`, `PriorityQueue.TryEnqueueOrError`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed enqueue outcomes |
+| Multi-queue routing | `NewQueueManager`, `QueueManager.Submit`, `QueueManager.SubmitAfter`, `NewPriorityQueueManager`, `Register`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
+| Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.Submit`, `PriorityQueue.SubmitAfter`, `NewPriorityQueueManager`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed submission outcomes |
 
 ## When to Use
 
@@ -83,8 +84,8 @@ func main() {
 	queue := cq.NewQueue(1, 10, 100, cq.WithContext(ctx))
 	queue.Start()
 
-	// Enqueue work...
-	queue.Enqueue(func(ctx context.Context) error {
+	// Submit work...
+	_, _ = queue.Submit(context.Background(), func(ctx context.Context) error {
 		return doWork(ctx)
 	})
 
@@ -113,14 +114,14 @@ if err := mgr.Register("low", lowQ); err != nil {
 mgr.StartAll()
 defer mgr.StopAll(true)
 
-if err := mgr.Enqueue("high", processCritical); err != nil {
+if _, err := mgr.Submit(ctx, "high", processCritical); err != nil {
 	log.Fatal(err)
 }
-if err := mgr.Enqueue("low", processBulk); err != nil {
+if _, err := mgr.Submit(ctx, "low", processBulk); err != nil {
 	log.Fatal(err)
 }
 
-if err := mgr.DelayEnqueue("low", processLater, 30*time.Second); err != nil {
+if _, err := mgr.SubmitAfter(ctx, "low", processLater, 30*time.Second); err != nil {
 	log.Fatal(err)
 }
 ```
@@ -144,17 +145,20 @@ if err := pmgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200)); err != nil 
 
 defer pmgr.StopAll(true)
 
-if err := pmgr.Enqueue("critical", processNow, cq.PriorityHighest); err != nil {
+if _, err := pmgr.Submit(ctx, "critical", processNow, cq.PriorityHighest); err != nil {
 	log.Fatal(err)
 }
-if err := pmgr.DelayEnqueue("bulk", processLater, cq.PriorityLow, time.Minute); err != nil {
+if _, err := pmgr.SubmitAfter(ctx, "bulk", processLater, cq.PriorityLow, time.Minute); err != nil {
 	log.Fatal(err)
 }
 ```
 
 ## Wrapper Composition
 
-Wrappers let you add behavior to jobs without modifying the job itself. Compose them from **innermost to outermost** - the outermost wrapper runs first and controls the flow. This keeps job logic clean while adding retries, timeouts, tracing, and error handling declaratively.
+Wrappers let you add behavior to jobs without modifying the job itself.
+Compose them from **innermost to outermost**: the outermost wrapper runs first
+and controls the flow. This keeps job logic clean while adding retries,
+timeouts, tracing, and error handling declaratively.
 
 ```go
 job := WithOutcome(              // 3. Outermost: catches final outcome.
@@ -198,7 +202,7 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 ### Retry-safe chain step (checkpoint)
@@ -217,7 +221,16 @@ job := cq.WithChain(
 	step, // Will be skipped on retry after first success.
 	notifyCustomer,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
+```
+
+Inside a checkpointed job, use `SaveCheckpointData` when progress must be
+persisted before the job returns:
+
+```go
+if err := cq.SaveCheckpointData(ctx, []byte("batch-42-complete")); err != nil {
+	return err
+}
 ```
 
 ### Idempotent Work (unique + timeout)
@@ -230,7 +243,7 @@ job := cq.WithUnique(
 	5*time.Minute,
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 ### Long-Running Unique Locks (optional touch renewal)
@@ -260,7 +273,14 @@ For custom ownership token formats, pass `WithUniqueTokenGenerator(...)`.
 scheduler := cq.NewScheduler(context.Background(), queue)
 defer scheduler.Stop()
 
-_ = scheduler.Every("sync-products", 10*time.Minute, syncProductsJob)
+schedule, err := scheduler.Every(
+	"sync-products",
+	10*time.Minute,
+	syncProductsJob,
+	cq.WithJobName("sync-products"),
+)
+
+latest, submitErr, attempted := schedule.Latest()
 ```
 
 ## Queue
@@ -275,25 +295,65 @@ defer queue.Stop(true)
 
 Parameters: `NewQueue(minWorkers, maxWorkers, capacity)`.
 
-### Enqueue Methods
+### Submission
 
 ```go
-// For normal jobs.
-queue.Enqueue(job)                            // Blocking.
-queue.EnqueueOrError(job)                     // Blocking, returns typed rejection error.
-queue.EnqueueContext(ctx, job)                // Blocking, cancelable via context.
-queue.TryEnqueue(job)                         // Non-blocking, returns bool.
-queue.TryEnqueueOrError(job)                  // Non-blocking, returns typed (accepted, error).
-queue.DelayEnqueue(job, 2*time.Minute)        // Delayed.
-queue.EnqueueBatch(jobs)                      // Multiple jobs.
-queue.DelayEnqueueBatch(jobs, 30*time.Second) // Delayed, multiple jobs.
+// Recommended v2 submission API.
+handle, err := queue.Submit(ctx, job,
+	cq.WithJobID("message-123"),
+	cq.WithJobName("process-message"),
+	cq.WithJobAttribute("source", "sqs"),
+)
+if err != nil {
+	log.Fatal(err) // Job was not accepted.
+}
 
+// Waiting is optional. A wait timeout does not cancel the running job.
+if err := handle.Wait(ctx); err != nil {
+	log.Printf("job failed or wait ended: %v", err)
+}
+
+// Blocks until accepted or ctx ends.
+handle, err := queue.Submit(ctx, job)
+
+// Returns ErrQueueFull instead of waiting for capacity.
+handle, err = queue.Submit(ctx, job, cq.WithNonBlocking())
+
+scheduled, err := queue.SubmitAfter(ctx, job, 2*time.Minute)
+handles, err := queue.SubmitBatch(ctx, jobs)
+scheduledHandles, err := queue.SubmitBatchAfter(ctx, jobs, 30*time.Second)
+
+// Resubmit a running job later.
+rescheduled, err := cq.Reschedule(ctx, queue, job, time.Minute, cq.RescheduleReasonManualRetry)
 ```
 
-Typed enqueue rejection errors:
+`Submit` distinguishes submission failure from execution failure. It returns an
+error only when the queue does not accept the job. After acceptance, `JobHandle`
+tracks completion through `Done`, `Wait`, and `Result`. `Cancel` prevents a
+pending job from executing or signals a running job through its context. Running
+jobs must respect context cancellation for the request to stop execution. Custom
+IDs are visible through `MetaFromContext`, lifecycle hooks, and default checkpoint
+keys.
+
+`Cancel` returns whether that call cancelled pending execution or delivered the
+first request to a running job. Cancelling an already-buffered job prevents its
+body from running, but does not immediately reclaim its internal queue slot.
+
+`SubmitAfter` accepts scheduling responsibility immediately. Its handle remains
+pending during the delay, then reports the eventual execution result or a future
+rejection such as `ErrQueueStopped`, `ErrQueuePaused`, or `ErrQueueFull`.
+Batch methods return handles for accepted jobs and preserve partial-acceptance
+errors.
+
+`Reschedule` creates a fresh delayed submission while preserving the current
+job name and attributes. It adds parent ID, root ID, and reason lineage
+attributes and returns the new submission handle.
+
+Typed submission rejection errors:
 - `cq.ErrQueueStopped`
 - `cq.ErrQueuePaused`
 - `cq.ErrQueueFull`
+- `cq.ErrQueueJobRequired`
 
 ### Metrics
 
@@ -311,13 +371,17 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStatePending   - Jobs waiting in the queue.
 // cq.JobStateActive    - Jobs currently executing.
 // cq.JobStateFailed    - Jobs completed with error.
+// cq.JobStateCancelled - Jobs completed through handle cancellation.
 // cq.JobStateCompleted - Jobs completed successfully.
+// cq.JobStateDiscarded - Jobs marked as discarded outcomes.
 ```
 
-`queue.Stats()` returns `cq.QueueStats` with queue state (`Stopped`, `Paused`),
-worker details (`WorkersMin`, `WorkersMax`, `RunningWorkers`, `IdleWorkers`, `Capacity`),
-and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `CompletedJobs`)
-in one snapshot call.
+`queue.Stats()` returns `cq.QueueStats` with queue name (`Name`), queue state
+(`Stopped`, `Paused`), worker details (`WorkersMin`, `WorkersMax`,
+`RunningWorkers`, `IdleWorkers`, `Capacity`), and job tallies
+(`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `DiscardedJobs`,
+`CancelledJobs`, `CompletedJobs`, `RescheduledJobs`, `ReleasedJobs`) in one
+snapshot call.
 
 ### Runtime Scaling
 
@@ -328,7 +392,8 @@ if err := queue.SetWorkerRange(2, 20); err != nil {
 ```
 
 `SetWorkerRange` starts workers immediately when `min` increases.
-When `max` decreases, running workers are not touched, the idle cleanup drains excess workers.
+When `max` decreases, running workers are not touched. Idle cleanup drains
+excess workers.
 
 ### Options
 
@@ -347,10 +412,12 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
 // cq.WithIDGenerator(fn)             - Override fallback job ID generation.
+// cq.WithQueueName(name)             - Stable queue name for observability events/stats.
 // cq.WithPauseStore(store, key)      - Share pause state across queue instances.
 // cq.WithPausePollTick(d)            - Poll interval for distributed pause sync.
 // cq.WithPauseBehavior(mode)         - Buffer or reject enqueue while paused.
 // cq.WithMiddleware(mw...)           - Apply queue-level wrappers to all jobs.
+// cq.WithHooks(hooks)                - Register queue lifecycle hooks.
 ```
 
 ### Queue Middleware
@@ -368,7 +435,10 @@ withLogging := func(next cq.Job) cq.Job {
 queue := cq.NewQueue(1, 10, 100, cq.WithMiddleware(withLogging))
 ```
 
-`WithMiddleware(a, b)` executes as `a(b(job))`, so `a` first, then `b`. This allows you to apply common middlware to all jobs which are sent to that queue instead of per-job.
+`WithMiddleware(a, b)` composes as `a(b(job))`: `a` wraps `b` (outermost) and
+`b` wraps `job` (innermost).
+This lets you apply common middleware to all jobs sent to that queue instead
+of wiring middleware per job.
 
 ### Pause / Resume
 
@@ -405,31 +475,56 @@ For detailed usage and advanced features, see the following guides:
 - **[Priority Queue](docs/PRIORITY_QUEUE.md)** - Weighted fair queuing with custom priority levels and dispatch strategies
 - **[Queue Routing](docs/QUEUE_ROUTING.md)** - Register named queues and route jobs to isolated worker pools
 - **[Scheduler](docs/SCHEDULER.md)** - Recurring and one-time job scheduling with cron-like behavior
-- **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Distributed lock implementations for `WithUnique` and `WithoutOverlap` with Redis and SQLite examples
+- **[Custom Locker](docs/CUSTOM_LOCKER.md)** - Capability interfaces and a Redis example for distributed `WithUnique` and `WithoutOverlap` locks
 - **[Custom Checkpoint Store](docs/CUSTOM_CHECKPOINT_STORE.md)** - Distributed checkpoint implementations for `WithCheckpoint` with Redis and SQLite examples
 - **[Custom Key Concurrency Limiter](docs/CUSTOM_CONCURRENCY_LIMITER.md)** - Distributed limiter implementations for `WithConcurrencyByKey` with Redis and SQLite examples
 
 ## Testing
 
-`make test`
+Run the full suite:
 
 ```
-ok      github.com/gnikyt/cq            18.755s coverage: 90.0% of statements
+go test ./...
+ok  	github.com/gnikyt/cq	17.117s
+```
+
+Run with race detector:
+
+```
+go test -race ./...
+ok  	github.com/gnikyt/cq	18.548s
 ```
 
 ### Benchmarks
 
-`make bench`
+Run benchmarks:
 
 ```
+go test -run=^$ -bench=. -benchmem ./...
+goos: darwin
+goarch: arm64
 cpu: Apple M5
-BenchmarkScenarios/100Req--10kJobs-10                             7    192443179 ns/op
-BenchmarkScenarios/1kReq--1kJobs-10                               7    194722393 ns/op
-BenchmarkScenarios/10kReq--100Jobs-10                             7    352322048 ns/op
-BenchmarkSingleSteadyState-10                               3063700        393.4 ns/op
+BenchmarkScenarios/100Req--10kJobs-10                      1    1595968709 ns/op
+	987336904 B/op	12180834 allocs/op
+BenchmarkScenarios/1kReq--1kJobs-10                        1    1233305000 ns/op
+	954452224 B/op	12012438 allocs/op
+BenchmarkScenarios/10kReq--100Jobs-10                      1    1902146167 ns/op
+	960816464 B/op	12094121 allocs/op
+BenchmarkScenariosSteadyState/100Req--10kJobs-10           1    1199676209 ns/op
+	953164216 B/op	12002842 allocs/op
+BenchmarkScenariosSteadyState/1kReq--1kJobs-10             1    1206286625 ns/op
+	955462864 B/op	12018107 allocs/op
+BenchmarkScenariosSteadyState/10kReq--100Jobs-10           1    2188002542 ns/op
+	1047668752 B/op	12574643 allocs/op
+BenchmarkSingle-10                                     73831      16707 ns/op
+	84418 B/op	      30 allocs/op
+BenchmarkSingleSteadyState-10                        1000000       1369 ns/op
+	983 B/op	      13 allocs/op
 ```
 
 ## Demo
+
+*Note:* The demo is old and intentionally basic.
 
 ```bash
 go run example/web_direct.go

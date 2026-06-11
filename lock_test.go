@@ -1,424 +1,130 @@
 package cq
 
 import (
+	"context"
 	"testing"
 	"time"
 )
 
-// CustomLocker is a test implementation without Cleanup to verify backward compatibility.
-type CustomLocker struct {
+type coreTestLocker struct {
 	locks map[string]LockValue[string]
 }
 
-func (c *CustomLocker) Exists(key string) bool {
-	_, ok := c.locks[key]
-	return ok
-}
-
-func (c *CustomLocker) Get(key string) (LockValue[string], bool) {
-	lv, ok := c.locks[key]
-	return lv, ok
-}
-
-func (c *CustomLocker) Acquire(key string, lock LockValue[string]) bool {
-	if lv, ok := c.locks[key]; ok && !lv.IsExpired() {
-		return false
+func (l *coreTestLocker) Acquire(_ context.Context, key string, lock LockValue[string]) (bool, error) {
+	if current, ok := l.locks[key]; ok && !current.IsExpired() {
+		return false, nil
 	}
-	c.locks[key] = lock
-	return true
+	l.locks[key] = lock
+	return true, nil
 }
 
-// Aquire is deprecated. Use Acquire instead.
-func (c *CustomLocker) Aquire(key string, lock LockValue[string]) bool {
-	return c.Acquire(key, lock)
-}
-
-func (c *CustomLocker) Release(key string) bool {
-	if !c.Exists(key) {
-		return false
+func (l *coreTestLocker) Release(_ context.Context, key string) (bool, error) {
+	if _, ok := l.locks[key]; !ok {
+		return false, nil
 	}
-	delete(c.locks, key)
-	return true
+	delete(l.locks, key)
+	return true, nil
 }
 
-func (c *CustomLocker) ForceRelease(key string) {
-	delete(c.locks, key)
-}
-
-func TestMemoryLockerExists(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	if ok := ml.Exists("non-existant"); ok {
-		t.Error("Exists(): got true, want false")
+func TestLockValueIsExpired(t *testing.T) {
+	if (LockValue[string]{}).IsExpired() {
+		t.Fatal("zero expiration should not be expired")
+	}
+	if !(LockValue[string]{ExpiresAt: time.Now().Add(-time.Second)}).IsExpired() {
+		t.Fatal("past expiration should be expired")
 	}
 }
 
-func TestMemoryLockerGet(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-
-	t.Run("non-existant", func(t *testing.T) {
-		// Should be not found, thus no real expire time.
-		lock, ok := ml.Get("non-existant")
-		if !lock.ExpiresAt.IsZero() || ok {
-			t.Errorf("Get(): got (%v, true), want (%v, false)", lock.ExpiresAt, time.Time{})
-		}
-	})
-	t.Run("exists", func(t *testing.T) {
-		// Should allow since none exist yet.
-		tn := time.Now().Add(1 * time.Minute)
-		lock := LockValue[string]{
-			ExpiresAt: tn,
-			Value:     "",
-		}
-		if ok := ml.Acquire("exists", lock); !ok {
-			t.Error("Acquire(): got false, want true")
-		}
-		// Should be found.
-		lv, ok := ml.Get("exists")
-		if lv.ExpiresAt != lock.ExpiresAt || !ok {
-			t.Errorf("Get(): got (%v, false), want (%v, true)", lv, lock)
-		}
-	})
-}
-
-func TestMemoryLockerAcquire(t *testing.T) {
-	ml := NewMemoryLocker[string]()
+func TestMemoryLockerCoreOperations(t *testing.T) {
+	ctx := context.Background()
+	locker := NewMemoryLocker[string]()
 	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "",
+		Value:     "value",
+		ExpiresAt: time.Now().Add(time.Minute),
 	}
 
-	// Should allow since none exist yet.
-	if ok := ml.Acquire("test", lock); !ok {
-		t.Error("Acquire(): got false, want true")
+	acquired, err := locker.Acquire(ctx, "key", lock)
+	if err != nil || !acquired {
+		t.Fatalf("Acquire(): got (%v, %v), want (true, nil)", acquired, err)
 	}
-	// Should not allow since lock now exists.
-	if ok := ml.Acquire("test", lock); ok {
-		t.Error("Acquire(): got true, want false")
+	if acquired, err := locker.Acquire(ctx, "key", lock); err != nil || acquired {
+		t.Fatalf("Acquire(existing): got (%v, %v), want (false, nil)", acquired, err)
+	}
+
+	got, exists, err := locker.Get(ctx, "key")
+	if err != nil || !exists || got.Value != "value" {
+		t.Fatalf("Get(): got (%+v, %v, %v)", got, exists, err)
+	}
+
+	released, err := locker.Release(ctx, "key")
+	if err != nil || !released {
+		t.Fatalf("Release(): got (%v, %v), want (true, nil)", released, err)
+	}
+	if _, exists, err := locker.Get(ctx, "key"); err != nil || exists {
+		t.Fatalf("Get(released): got (exists=%v, err=%v), want (false, nil)", exists, err)
 	}
 }
 
-func TestMemoryLockerAcquireExpired(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	lexpp := LockValue[string]{
-		ExpiresAt: time.Now().Add(-1 * time.Minute), // Expiration in past.
-		Value:     "",
-	}
-	lexpf := LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute), // Expiration in future.
-		Value:     "",
-	}
+func TestMemoryLockerReplacesExpiredLock(t *testing.T) {
+	ctx := context.Background()
+	locker := NewMemoryLocker[string]()
+	_, _ = locker.Acquire(ctx, "key", LockValue[string]{ExpiresAt: time.Now().Add(-time.Second)})
 
-	// Should allow since none exist yet.
-	if ok := ml.Acquire("test", lexpp); !ok {
-		t.Error("Acquire(): got false, want true")
-	}
-	// Should allow since lock should be expired.
-	if ok := ml.Acquire("test", lexpf); !ok {
-		t.Error("Acquire(): got false, want true")
-	}
-}
-
-func TestMemoryLockerRelease(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "",
-	}
-
-	// Should allow since none exist yet.
-	if ok := ml.Acquire("test", lock); !ok {
-		t.Error("Acquire(): got false, want true")
-	}
-	// Should allow.
-	if ok := ml.Release("test"); !ok {
-		t.Error("Release(): got false, want true")
-	}
-}
-
-func TestMemoryLockerTouch(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	key := "touch"
-	token := "owner-1"
-
-	if ok := ml.Acquire(key, LockValue[string]{
-		ExpiresAt: time.Now().Add(50 * time.Millisecond),
-		Value:     "test",
-		Token:     token,
-	}); !ok {
-		t.Fatal("Acquire(): got false, want true")
-	}
-
-	t.Run("touch_with_owner_token", func(t *testing.T) {
-		expiresAt := time.Now().Add(1 * time.Minute)
-		if ok := ml.Touch(key, token, expiresAt); !ok {
-			t.Fatal("Touch(): got false, want true")
-		}
-
-		lock, ok := ml.Get(key)
-		if !ok {
-			t.Fatal("Get(): lock missing after touch")
-		}
-		if lock.ExpiresAt.Before(time.Now().Add(30 * time.Second)) {
-			t.Fatalf("Touch(): expiration was not extended: got %v", lock.ExpiresAt)
-		}
+	acquired, err := locker.Acquire(ctx, "key", LockValue[string]{
+		Value:     "new",
+		ExpiresAt: time.Now().Add(time.Minute),
 	})
-
-	t.Run("touch_rejected_for_wrong_token", func(t *testing.T) {
-		if ok := ml.Touch(key, "owner-2", time.Now().Add(1*time.Minute)); ok {
-			t.Fatal("Touch(): got true for wrong token, want false")
-		}
-	})
-
-	t.Run("touch_rejected_for_missing_key", func(t *testing.T) {
-		if ok := ml.Touch("missing", token, time.Now().Add(1*time.Minute)); ok {
-			t.Fatal("Touch(): got true for missing key, want false")
-		}
-	})
-
-	t.Run("touch_rejected_for_expired_lock", func(t *testing.T) {
-		expiredKey := "expired"
-		if ok := ml.Acquire(expiredKey, LockValue[string]{
-			ExpiresAt: time.Now().Add(-1 * time.Second),
-			Value:     "expired",
-			Token:     "owner-expired",
-		}); !ok {
-			t.Fatal("Acquire(): got false, want true for expired setup lock")
-		}
-
-		if ok := ml.Touch(expiredKey, "owner-expired", time.Now().Add(1*time.Minute)); ok {
-			t.Fatal("Touch(): got true for expired lock, want false")
-		}
-	})
-}
-
-func TestMemoryLockerReleaseIfOwner(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	key := "release-owner"
-
-	if ok := ml.Acquire(key, LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "test",
-		Token:     "owner-1",
-	}); !ok {
-		t.Fatal("Acquire(): got false, want true")
-	}
-
-	if ok := ml.ReleaseIfOwner(key, "owner-2"); ok {
-		t.Fatal("ReleaseIfOwner(): got true for wrong token, want false")
-	}
-	if !ml.Exists(key) {
-		t.Fatal("ReleaseIfOwner(): lock removed on wrong token")
-	}
-
-	if ok := ml.ReleaseIfOwner(key, "owner-1"); !ok {
-		t.Fatal("ReleaseIfOwner(): got false for owner token, want true")
-	}
-	if ml.Exists(key) {
-		t.Fatal("ReleaseIfOwner(): lock should be removed")
+	if err != nil || !acquired {
+		t.Fatalf("Acquire(expired): got (%v, %v), want (true, nil)", acquired, err)
 	}
 }
 
-func TestMemoryLockerCleanup(t *testing.T) {
-	t.Run("removes_expired_locks", func(t *testing.T) {
-		ml := NewMemoryLocker[string]()
-
-		// Add expired locks.
-		ml.Acquire("expired1", LockValue[string]{
-			ExpiresAt: time.Now().Add(-1 * time.Minute),
-			Value:     "test1",
-		})
-		ml.Acquire("expired2", LockValue[string]{
-			ExpiresAt: time.Now().Add(-2 * time.Minute),
-			Value:     "test2",
-		})
-
-		// Add active locks.
-		ml.Acquire("active1", LockValue[string]{
-			ExpiresAt: time.Now().Add(1 * time.Minute),
-			Value:     "test3",
-		})
-		ml.Acquire("active2", LockValue[string]{
-			ExpiresAt: time.Now().Add(2 * time.Minute),
-			Value:     "test4",
-		})
-
-		// Cleanup should remove 2 expired locks.
-		removed := ml.Cleanup()
-		if removed != 2 {
-			t.Errorf("Cleanup(): got %d removed, want 2", removed)
-		}
-
-		// Expired locks should be gone.
-		if ml.Exists("expired1") {
-			t.Error("Cleanup(): expired1 should not exist")
-		}
-		if ml.Exists("expired2") {
-			t.Error("Cleanup(): expired2 should not exist")
-		}
-
-		// Active locks should still exist.
-		if !ml.Exists("active1") {
-			t.Error("Cleanup(): active1 should exist")
-		}
-		if !ml.Exists("active2") {
-			t.Error("Cleanup(): active2 should exist")
-		}
-	})
-
-	t.Run("returns_zero_when_no_expired", func(t *testing.T) {
-		ml := NewMemoryLocker[string]()
-
-		// Add only active locks.
-		ml.Acquire("active1", LockValue[string]{
-			ExpiresAt: time.Now().Add(1 * time.Minute),
-			Value:     "test1",
-		})
-		ml.Acquire("active2", LockValue[string]{
-			ExpiresAt: time.Now().Add(2 * time.Minute),
-			Value:     "test2",
-		})
-
-		// Cleanup should remove nothing.
-		removed := ml.Cleanup()
-		if removed != 0 {
-			t.Errorf("Cleanup(): got %d removed, want 0", removed)
-		}
-
-		// All locks should still exist.
-		if !ml.Exists("active1") || !ml.Exists("active2") {
-			t.Error("Cleanup(): active locks should not be removed")
-		}
-	})
-
-	t.Run("handles_empty_locker", func(t *testing.T) {
-		ml := NewMemoryLocker[string]()
-
-		// Cleanup on empty locker should return 0.
-		removed := ml.Cleanup()
-		if removed != 0 {
-			t.Errorf("Cleanup(): got %d removed, want 0 (empty locker)", removed)
-		}
-	})
-
-	t.Run("handles_zero_time_locks", func(t *testing.T) {
-		ml := NewMemoryLocker[string]()
-
-		// Zero time locks never expire.
-		ml.Acquire("forever", LockValue[string]{
-			ExpiresAt: time.Time{},
-			Value:     "test",
-		})
-
-		// Cleanup should not remove it.
-		removed := ml.Cleanup()
-		if removed != 0 {
-			t.Errorf("Cleanup(): got %d removed, want 0 (zero time locks don't expire)", removed)
-		}
-
-		if !ml.Exists("forever") {
-			t.Error("Cleanup(): zero time lock should not be removed")
-		}
-	})
-}
-
-func TestCustomLockerBackwardCompatibility(t *testing.T) {
-	// Custom locker without Cleanup should still work as Locker[T].
-	var locker Locker[string] = &CustomLocker{
-		locks: make(map[string]LockValue[string]),
-	}
-
-	// Should work fine without Cleanup method.
-	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "test",
-	}
-
-	if !locker.Acquire("test", lock) {
-		t.Error("CustomLocker: Acquire() should work")
-	}
-
-	if !locker.Exists("test") {
-		t.Error("CustomLocker: Exists() should work")
-	}
-
-	if !locker.Release("test") {
-		t.Error("CustomLocker: Release() should work")
-	}
-}
-
-func TestDeprecatedAquireBackwardCompatibility(t *testing.T) {
-	ml := NewMemoryLocker[string]()
-	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "test",
-	}
-
-	// Deprecated Aquire should still work.
-	if ok := ml.Aquire("test", lock); !ok {
-		t.Error("Aquire() (deprecated): got false, want true")
-	}
-
-	// Should not allow since lock now exists.
-	if ok := ml.Aquire("test", lock); ok {
-		t.Error("Aquire() (deprecated): got true, want false")
-	}
-}
-
-func TestCleanableLockerInterface(t *testing.T) {
-	// MemoryLocker should implement CleanableLocker.
-	var locker CleanableLocker[string] = NewMemoryLocker[string]()
-
-	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(-1 * time.Minute),
-		Value:     "test",
-	}
-
-	locker.Acquire("expired", lock)
-
-	// Should be able to call Cleanup.
-	removed := locker.Cleanup()
-	if removed != 1 {
-		t.Errorf("CleanableLocker: Cleanup(): got %d removed, want 1", removed)
-	}
-}
-
-func TestRenewableLockerInterface(t *testing.T) {
-	var locker RenewableLocker[string] = NewMemoryLocker[string]()
-
-	if ok := locker.Acquire("renew", LockValue[string]{
-		ExpiresAt: time.Now().Add(1 * time.Minute),
-		Value:     "test",
+func TestMemoryLockerRenewalOperations(t *testing.T) {
+	ctx := context.Background()
+	locker := NewMemoryLocker[string]()
+	_, _ = locker.Acquire(ctx, "key", LockValue[string]{
 		Token:     "owner",
-	}); !ok {
-		t.Fatal("Acquire(): got false, want true")
-	}
+		ExpiresAt: time.Now().Add(time.Minute),
+	})
 
-	if ok := locker.Touch("renew", "owner", time.Now().Add(2*time.Minute)); !ok {
-		t.Fatal("Touch(): got false, want true")
+	if renewed, err := locker.Touch(ctx, "key", "other", time.Now().Add(2*time.Minute)); err != nil || renewed {
+		t.Fatalf("Touch(other): got (%v, %v), want (false, nil)", renewed, err)
 	}
-	if ok := locker.ReleaseIfOwner("renew", "owner"); !ok {
-		t.Fatal("ReleaseIfOwner(): got false, want true")
+	if renewed, err := locker.Touch(ctx, "key", "owner", time.Now().Add(2*time.Minute)); err != nil || !renewed {
+		t.Fatalf("Touch(owner): got (%v, %v), want (true, nil)", renewed, err)
+	}
+	if released, err := locker.ReleaseIfOwner(ctx, "key", "other"); err != nil || released {
+		t.Fatalf("ReleaseIfOwner(other): got (%v, %v), want (false, nil)", released, err)
+	}
+	if released, err := locker.ReleaseIfOwner(ctx, "key", "owner"); err != nil || !released {
+		t.Fatalf("ReleaseIfOwner(owner): got (%v, %v), want (true, nil)", released, err)
 	}
 }
 
-func TestCleanupWithTypeAssertion(t *testing.T) {
-	// Demonstrate optional cleanup pattern.
-	var locker Locker[string] = NewMemoryLocker[string]()
+func TestMemoryLockerManagementOperations(t *testing.T) {
+	ctx := context.Background()
+	locker := NewMemoryLocker[string]()
+	_, _ = locker.Acquire(ctx, "expired", LockValue[string]{ExpiresAt: time.Now().Add(-time.Second)})
+	_, _ = locker.Acquire(ctx, "active", LockValue[string]{ExpiresAt: time.Now().Add(time.Minute)})
 
-	lock := LockValue[string]{
-		ExpiresAt: time.Now().Add(-1 * time.Minute),
-		Value:     "test",
+	removed, err := locker.Cleanup(ctx)
+	if err != nil || removed != 1 {
+		t.Fatalf("Cleanup(): got (%d, %v), want (1, nil)", removed, err)
 	}
+	if err := locker.ForceRelease(ctx, "active"); err != nil {
+		t.Fatalf("ForceRelease(): %v", err)
+	}
+}
 
-	locker.Acquire("expired", lock)
+func TestLockerCapabilityInterfaces(t *testing.T) {
+	var core Locker[string] = &coreTestLocker{locks: make(map[string]LockValue[string])}
+	var readable ReadLocker[string] = NewMemoryLocker[string]()
+	var renewable RenewableLocker = NewMemoryLocker[string]()
+	var cleanable CleanableLocker = NewMemoryLocker[string]()
+	var forceReleaser ForceReleaser = NewMemoryLocker[string]()
+	var managed ManagedLocker[string] = NewMemoryLocker[string]()
 
-	// Optional cleanup using type assertion.
-	if cleaner, ok := locker.(CleanableLocker[string]); ok {
-		removed := cleaner.Cleanup()
-		if removed != 1 {
-			t.Errorf("Type assertion cleanup: got %d removed, want 1", removed)
-		}
-	} else {
-		t.Error("MemoryLocker should implement CleanableLocker")
+	if core == nil || readable == nil || renewable == nil || cleanable == nil || forceReleaser == nil || managed == nil {
+		t.Fatal("expected capability implementations")
 	}
 }

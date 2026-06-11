@@ -19,6 +19,10 @@ var (
 	// ErrPermanent is returned (or wrapped) when a job should be treated as
 	// permanently failed: no retry, count as failed.
 	ErrPermanent = errors.New("cq: permanent")
+
+	// errQueueDiscardedOutcome is an internal sentinel used for queue accounting
+	// when discarded outcomes are converted to nil errors (example, when WithOutcome is used).
+	errQueueDiscardedOutcome = errors.New("cq: discarded outcome")
 )
 
 // Kept for future/internal predicate helpers.
@@ -106,6 +110,7 @@ func WithOutcome(
 			if onDiscarded != nil {
 				onDiscarded(errors.Unwrap(err))
 			}
+			markDiscardedFromContext(ctx)
 			return nil
 		}
 		if onFailed != nil {

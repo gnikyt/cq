@@ -66,7 +66,9 @@ func BenchmarkScenarios(b *testing.B) {
 		b.Run(load.name, func(b *testing.B) {
 			for range b.N {
 				q := benchmarkQueue(benchmarkQueueCap)
-				runScenarioOnce(load.reqs, load.jobs, q.Enqueue, q.Stop)
+				runScenarioOnce(load.reqs, load.jobs, func(job Job) {
+					_, _ = q.Submit(context.Background(), job)
+				}, q.Stop)
 			}
 		})
 	}
@@ -113,7 +115,7 @@ func BenchmarkScenariosSteadyState(b *testing.B) {
 				for range load.reqs {
 					go func() {
 						for range load.jobs {
-							q.Enqueue(tf)
+							_, _ = q.Submit(context.Background(), tf)
 						}
 					}()
 				}
@@ -128,7 +130,9 @@ func BenchmarkScenariosSteadyState(b *testing.B) {
 func BenchmarkSingle(b *testing.B) {
 	for b.Loop() {
 		q := benchmarkQueue(benchmarkQueueCap)
-		runScenarioOnce(1, 1, q.Enqueue, q.Stop)
+		runScenarioOnce(1, 1, func(job Job) {
+			_, _ = q.Submit(context.Background(), job)
+		}, q.Stop)
 	}
 }
 
@@ -149,7 +153,7 @@ func BenchmarkSingleSteadyState(b *testing.B) {
 			return nil
 		})
 
-		q.Enqueue(tf)
+		_, _ = q.Submit(context.Background(), tf)
 		wg.Wait()
 	}
 }

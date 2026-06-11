@@ -71,7 +71,21 @@ func WithRetryPolicy(job Job, policy RetryPolicy) Job {
 				attemptCtx = contextWithLastError(attemptCtx, err)
 			}
 
-			if err = job(attemptCtx); err == nil {
+			// Dispatch the attempt start hook event.
+			attemptStartedAt := time.Now()
+			if emitter, ok := retryAttemptEmitterFromContext(attemptCtx); ok && emitter.start != nil {
+				emitter.start(attemptCtx, meta, attemptStartedAt)
+			}
+
+			// Execute the job.
+			err = job(attemptCtx)
+
+			// Dispatch the attempt result hook event.
+			attemptFinishedAt := time.Now()
+			if emitter, ok := retryAttemptEmitterFromContext(attemptCtx); ok && emitter.result != nil {
+				emitter.result(attemptCtx, meta, err, attemptStartedAt, attemptFinishedAt)
+			}
+			if err == nil {
 				break // Success, no retry needed.
 			}
 			if isPermanent(err) || isDiscarded(err) {

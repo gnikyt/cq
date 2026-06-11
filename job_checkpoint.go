@@ -9,12 +9,13 @@ import (
 	"sync"
 )
 
-// Sentinel errors returned by WithCheckpoint.
+// Sentinel errors returned by checkpoint operations.
 var (
-	ErrCheckpointKeyUnavailable = errors.New("cq: checkpoint key unavailable")
-	ErrCheckpointCheckFailed    = errors.New("cq: checkpoint check failed")
-	ErrCheckpointMarkFailed     = errors.New("cq: checkpoint mark failed")
-	ErrCheckpointDeleteFailed   = errors.New("cq: checkpoint delete failed")
+	ErrCheckpointKeyUnavailable  = errors.New("cq: checkpoint key unavailable")
+	ErrCheckpointCheckFailed     = errors.New("cq: checkpoint check failed")
+	ErrCheckpointMarkFailed      = errors.New("cq: checkpoint mark failed")
+	ErrCheckpointDeleteFailed    = errors.New("cq: checkpoint delete failed")
+	ErrCheckpointSaveUnavailable = errors.New("cq: checkpoint save unavailable in context")
 )
 
 // Checkpoint stores durable step state for workflow checkpointing.
@@ -136,10 +137,17 @@ func WithCheckpoint(job Job, step string, store CheckpointStore, opts ...Checkpo
 			return nil // Key is done... skip job.
 		}
 
-		// Create a new checkpoint state for the job.
-		state := &checkpointState{}
+		state := newCheckpointState(func(saveCtx context.Context, data []byte) error {
+			if err := store.Store(saveCtx, key, Checkpoint{
+				Done: false,
+				Data: data,
+			}); err != nil {
+				return fmt.Errorf("%w: %w", ErrCheckpointMarkFailed, err)
+			}
+			return nil
+		})
 		if exists {
-			state.data = cloneBytes(cp.Data)
+			state.setData(cp.Data)
 		}
 		jobCtx := contextWithCheckpointState(ctx, state)
 
@@ -148,7 +156,7 @@ func WithCheckpoint(job Job, step string, store CheckpointStore, opts ...Checkpo
 			if cfg.saveOnFailure {
 				setErr := store.Store(ctx, key, Checkpoint{
 					Done: false,
-					Data: cloneBytes(state.data),
+					Data: state.dataCopy(),
 				})
 				if setErr != nil && cfg.strict {
 					return fmt.Errorf("%w: %w", ErrCheckpointMarkFailed, setErr)
@@ -168,7 +176,7 @@ func WithCheckpoint(job Job, step string, store CheckpointStore, opts ...Checkpo
 		// Store the checkpoint record after successful execution.
 		if err := store.Store(ctx, key, Checkpoint{
 			Done: true,
-			Data: cloneBytes(state.data),
+			Data: state.dataCopy(),
 		}); err != nil && cfg.strict {
 			return fmt.Errorf("%w: %w", ErrCheckpointMarkFailed, err)
 		}
@@ -181,7 +189,37 @@ type checkpointStateKey struct{}
 
 // checkpointState is the state for the checkpoint.
 type checkpointState struct {
+	mu   sync.RWMutex
 	data []byte
+	save func(context.Context, []byte) error
+}
+
+// newCheckpointState creates a new checkpoint state with the given save function.
+func newCheckpointState(save func(context.Context, []byte) error) *checkpointState {
+	return &checkpointState{save: save}
+}
+
+// dataCopy returns an independent copy of the current checkpoint payload.
+func (s *checkpointState) dataCopy() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneBytes(s.data)
+}
+
+// setData replaces the current checkpoint payload.
+func (s *checkpointState) setData(data []byte) {
+	s.mu.Lock()
+	s.data = cloneBytes(data)
+	s.mu.Unlock()
+}
+
+// saveData replaces and immediately persists the current checkpoint payload.
+func (s *checkpointState) saveData(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.data = cloneBytes(data)
+	return s.save(ctx, cloneBytes(s.data))
 }
 
 // contextWithCheckpointState adds the checkpoint state to the context.
@@ -196,7 +234,7 @@ func CheckpointDataFromContext(ctx context.Context) []byte {
 	if !ok || state == nil {
 		return nil
 	}
-	return cloneBytes(state.data)
+	return state.dataCopy()
 }
 
 // SetCheckpointData updates checkpoint payload for the current step execution.
@@ -206,8 +244,19 @@ func SetCheckpointData(ctx context.Context, data []byte) bool {
 	if !ok || state == nil {
 		return false
 	}
-	state.data = cloneBytes(data)
+	state.setData(data)
 	return true
+}
+
+// SaveCheckpointData updates and immediately persists checkpoint payload for
+// the current step execution. It blocks until the checkpoint store responds.
+// The persisted checkpoint is marked Done=false.
+func SaveCheckpointData(ctx context.Context, data []byte) error {
+	state, ok := ctx.Value(checkpointStateKey{}).(*checkpointState)
+	if !ok || state == nil || state.save == nil {
+		return ErrCheckpointSaveUnavailable
+	}
+	return state.saveData(ctx, data)
 }
 
 // CheckpointDataAsJSON decodes checkpoint payload data as JSON into T.
@@ -231,6 +280,16 @@ func SetCheckpointDataAsJSON[T any](ctx context.Context, value T) (ok bool, err 
 		return false, err
 	}
 	return SetCheckpointData(ctx, raw), nil
+}
+
+// SaveCheckpointDataAsJSON JSON-encodes value and immediately persists it as
+// checkpoint payload data.
+func SaveCheckpointDataAsJSON[T any](ctx context.Context, value T) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return SaveCheckpointData(ctx, raw)
 }
 
 // defaultCheckpointKey derives a checkpoint key from the job ID and step.

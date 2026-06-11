@@ -5,9 +5,17 @@ Complete reference documentation for cq.
 ## Getting Started
 
 - [Main README](../README.md) - Quick start, installation, and overview
-- [Common Recipes](../README.md#common-recipes) - Practical examples to get you started
+- [Common Recipes](../README.md#common-recipes) - Practical examples to get
+  you started
 
 ## Core Features
+
+### [Queue Submissions](QUEUE_SUBMISSIONS.md)
+Understand submission acceptance and `JobHandle` behavior:
+- Acceptance contexts
+- Waiting for completion and reading results
+- Cancelling pending and running jobs
+- Handles returned by delayed, routed, priority, and scheduled submissions
 
 ### [Job Wrappers](JOB_WRAPPERS.md)
 Complete reference for all job wrappers including:
@@ -23,7 +31,7 @@ Complete reference for all job wrappers including:
 ### [Queue Routing](QUEUE_ROUTING.md)
 Register named queues and route jobs explicitly:
 - Named routing with `QueueManager`
-- Manager-level delayed enqueue
+- Manager-level delayed submission
 - Isolated worker pools per queue
 
 ### [Priority Queue](PRIORITY_QUEUE.md)
@@ -41,8 +49,13 @@ Recurring and one-time job scheduling:
 
 ### [Custom Locker](CUSTOM_LOCKER.md)
 Distributed lock implementations for `WithUnique` and `WithoutOverlap`:
-- Locker interface specification
+- Context-aware capability interfaces
+- Core, renewable, cleanup, and managed locker contracts
 - Redis implementation example
+
+### [Custom Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md)
+Distributed limits for `WithConcurrencyByKey`:
+- Context-aware acquire and release operations
 - SQLite implementation example
 
 ### [Custom Checkpoint Store](CUSTOM_CHECKPOINT_STORE.md)
@@ -57,3 +70,10 @@ Queue construction and runtime options:
 - Context and cancellation strategies
 - Panic handling
 - Custom job ID generation
+
+### [Observability Contract](OBSERVABILITY_CONTRACT.md)
+Lifecycle and telemetry guarantees for hooks and stats:
+- Hook ordering and terminal-event rules
+- `JobEvent` field semantics
+- Attempt-level retry events
+- Queue counter behavior and caveats

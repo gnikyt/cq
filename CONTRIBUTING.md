@@ -134,6 +134,7 @@ func TestWithExample(t *testing.T) {
 - Add detailed examples to `docs/` for new features
 - Include code examples that demonstrate usage
 - Document edge cases and caveats in wrapper docs
+- Keep lines to 80 column, if possible (excluding code blocks)
 - Use the standardized subsection format:
   - **What it does**
   - **When to use**

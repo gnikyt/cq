@@ -1,196 +1,136 @@
 # Custom Locker
 
-The `WithUnique` and `WithoutOverlap` wrappers require a `Locker` implementation. The built-in `MemoryLocker` works for single-instance applications, but distributed systems need a shared lock store like Redis or a database.
+`MemoryLocker` is suitable for one process. Implement the smallest interface
+needed by a wrapper when using Redis, SQL, or another shared backend.
 
-## Interface
-
-Implement the `Locker[T]` interface:
+## Core Interface
 
 ```go
 type Locker[T any] interface {
-	Exists(key string) bool
-	Get(key string) (LockValue[T], bool)
-	Acquire(key string, lock LockValue[T]) bool
-	Release(key string) bool
-	ForceRelease(key string)
+	Acquire(ctx context.Context, key string, lock LockValue[T]) (acquired bool, err error)
+	Release(ctx context.Context, key string) (released bool, err error)
+}
 
-	// Deprecated: kept for backward compatibility.
-	Aquire(key string, lock LockValue[T]) bool
+type LockReader[T any] interface {
+	Get(ctx context.Context, key string) (lock LockValue[T], exists bool, err error)
+}
+
+type ReadLocker[T any] interface {
+	Locker[T]
+	LockReader[T]
 }
 ```
 
-Optionally implement `CleanableLocker[T]` if your store doesn't handle expiration automatically:
+`Acquire` must be atomic. Return `(false, nil)` for ordinary contention and a
+non-nil error for backend failures. Methods should respect context cancellation
+and deadlines.
+
+`WithoutOverlap` requires `Locker[T]`. `WithUnique` and `WithUniqueWindow`
+require `ReadLocker[T]` because they inspect existing lock state. Optional
+capabilities are discovered through type assertions:
 
 ```go
-type CleanableLocker[T any] interface {
-	Locker[T]
-	Cleanup() int // Remove expired locks, return count removed.
+type RenewableLocker interface {
+	Touch(ctx context.Context, key, token string, expiresAt time.Time) (bool, error)
+	ReleaseIfOwner(ctx context.Context, key, token string) (bool, error)
+}
+
+type ForceReleaser interface {
+	ForceRelease(ctx context.Context, key string) error
+}
+
+type CleanableLocker interface {
+	Cleanup(ctx context.Context) (removed int, err error)
 }
 ```
 
-Optionally implement `RenewableLocker[T]` when your store supports owner-safe lease renewal:
+`ManagedLocker[T]` is a convenience composite for backends implementing every
+capability:
 
 ```go
-type RenewableLocker[T any] interface {
-	Locker[T]
-	Touch(key string, token string, expiresAt time.Time) bool
-	ReleaseIfOwner(key string, token string) bool
+type ManagedLocker[T any] interface {
+	ReadLocker[T]
+	ForceReleaser
+	RenewableLocker
+	CleanableLocker
 }
 ```
 
-`WithUniqueWindow` and `WithUnique` (with `ut > 0`) do not auto-renew by default.
-Use `TouchLock(ctx, ttl)` from inside the running job to extend the lease when
-`RenewableLocker` is available.
-`TouchLock` returns `nil` on success, `cq.ErrUniqueLeaseLost` when renewal fails,
-and `cq.ErrTouchLockUnavailable` when no renewable touch context is present.
-This requires preserving `LockValue.Token` as lock ownership identity.
-You can override token generation with `WithUniqueTokenGenerator(...)` when wrapping jobs.
+Consumers should accept the smallest interface they need rather than requiring
+`ManagedLocker`.
 
-#### Redis Example
+## Redis Example
 
 ```go
 type RedisLocker struct {
 	client *redis.Client
 }
 
-func (r *RedisLocker) Exists(key string) bool {
-	return r.client.Exists(context.Background(), key).Val() > 0
-}
-
-func (r *RedisLocker) Get(key string) (cq.LockValue[struct{}], bool) {
-	_, err := r.client.Get(context.Background(), key).Result()
-	if err == redis.Nil {
-		return cq.LockValue[struct{}]{}, false
+func (r *RedisLocker) Get(ctx context.Context, key string) (cq.LockValue[struct{}], bool, error) {
+	token, err := r.client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return cq.LockValue[struct{}]{}, false, nil
 	}
-	return cq.LockValue[struct{}]{}, err == nil
+	if err != nil {
+		return cq.LockValue[struct{}]{}, false, err
+	}
+	return cq.LockValue[struct{}]{Token: token}, true, nil
 }
 
-func (r *RedisLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
+func (r *RedisLocker) Acquire(ctx context.Context, key string, lock cq.LockValue[struct{}]) (bool, error) {
 	ttl := time.Until(lock.ExpiresAt)
-	if ttl <= 0 {
-		ttl = time.Minute // Default TTL if no expiration set.
+	if lock.ExpiresAt.IsZero() {
+		ttl = 0
 	}
-	// SET NX ensures atomic acquire. Store lock token as value.
-	ok, _ := r.client.SetNX(context.Background(), key, lock.Token, ttl).Result()
-	return ok
+	return r.client.SetNX(ctx, key, lock.Token, ttl).Result()
 }
 
-func (r *RedisLocker) Release(key string) bool {
-	return r.client.Del(context.Background(), key).Val() > 0
+func (r *RedisLocker) Release(ctx context.Context, key string) (bool, error) {
+	removed, err := r.client.Del(ctx, key).Result()
+	return removed > 0, err
 }
-
-func (r *RedisLocker) ForceRelease(key string) {
-	_ := r.Release(key)
-}
-
-func (r *RedisLocker) Touch(key string, token string, expiresAt time.Time) bool {
-	ttl := time.Until(expiresAt)
-	if ttl <= 0 {
-		return false
-	}
-	// Pseudocode: atomically verify token match and update TTL.
-	// Use a Lua script in production.
-	current, err := r.client.Get(context.Background(), key).Result()
-	if err != nil || current != token {
-		return false
-	}
-	return r.client.Expire(context.Background(), key, ttl).Val()
-}
-
-func (r *RedisLocker) ReleaseIfOwner(key string, token string) bool {
-	// Pseudocode: atomically compare value and delete key.
-	// Use a Lua script in production.
-	current, err := r.client.Get(context.Background(), key).Result()
-	if err != nil || current != token {
-		return false
-	}
-	return r.client.Del(context.Background(), key).Val() > 0
-}
-
-// Usage with WithUnique.
-locker := &RedisLocker{client: redisClient}
-job := cq.WithUnique(actualJob, "order:123", 5*time.Minute, locker)
 ```
 
-#### SQLite Example
+For owner-safe renewal, implement `Touch` and `ReleaseIfOwner` with an atomic
+operation that verifies `LockValue.Token`.
+
+## Behavior
+
+- `WithUnique` releases its lock after execution.
+- `WithUniqueWindow` leaves its lock until the configured window expires.
+- `WithoutOverlap` waits for atomic acquisition while respecting job
+  cancellation.
+- Under contention-try behavior, `WithoutOverlap` makes one acquisition attempt.
+- Deferred release receives a non-cancelled cleanup context so cancellation does
+  not leak remote locks.
+- Release failures are joined with the job result instead of being discarded.
+
+The cleanup context preserves values but has no cancellation or deadline.
+External implementations should enforce an appropriate backend or client
+timeout.
+
+`WithoutOverlap` intentionally holds its lock until the job returns. During
+normal cancellation or shutdown, its deferred cleanup still releases the lock.
+An abrupt process crash cannot run that cleanup. In-memory locks disappear with
+the process, but a distributed lock may remain orphaned. Handling that failure
+mode is a backend or operational policy, such as explicit stale-lock cleanup.
+Use lease-based `WithUnique` behavior when automatic expiration and renewal are
+part of the desired job semantics.
+
+For external lockers, tune acquisition polling with an option:
 
 ```go
-type SQLiteLocker struct {
-	db *sql.DB
-}
-
-func NewSQLiteLocker(db *sql.DB) *SQLiteLocker {
-	db.Exec(`CREATE TABLE IF NOT EXISTS locks (
-		key TEXT PRIMARY KEY,
-		expires_at DATETIME
-	)`)
-	return &SQLiteLocker{db: db}
-}
-
-func (s *SQLiteLocker) Exists(key string) bool {
-	var n int
-	err := s.db.QueryRow(
-		"SELECT 1 FROM locks WHERE key = ? AND expires_at > ?",
-		key,
-		time.Now(),
-	).Scan(&n)
-	return err == nil
-}
-
-func (s *SQLiteLocker) Get(key string) (cq.LockValue[struct{}], bool) {
-	var expiresAt time.Time
-	err := s.db.QueryRow(
-		"SELECT expires_at FROM locks WHERE key = ? AND expires_at > ?",
-		key,
-		time.Now(),
-	).Scan(&expiresAt)
-	if err != nil {
-		return cq.LockValue[struct{}]{}, false
-	}
-	return cq.LockValue[struct{}]{ExpiresAt: expiresAt}, true
-}
-
-func (s *SQLiteLocker) Acquire(key string, lock cq.LockValue[struct{}]) bool {
-	// Use a transaction to ensure atomicity.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false
-	}
-	defer tx.Rollback()
-
-	// Delete expired lock if exists.
-	tx.Exec("DELETE FROM locks WHERE key = ? AND expires_at <= ?", key, time.Now())
-
-	// Try to insert new lock (fails if non-expired lock exists).
-	_, err = tx.Exec(
-		"INSERT INTO locks (key, expires_at) VALUES (?, ?)",
-		key,
-		lock.ExpiresAt,
-	)
-	if err != nil {
-		return false // Lock exists and is not expired.
-	}
-
-	return tx.Commit() == nil
-}
-
-func (s *SQLiteLocker) Release(key string) bool {
-	res, _ := s.db.Exec("DELETE FROM locks WHERE key = ?", key)
-	affected, _ := res.RowsAffected()
-	return affected > 0
-}
-
-func (s *SQLiteLocker) ForceRelease(key string) {
-	_ := s.Release(key)
-}
-
-func (s *SQLiteLocker) Cleanup() int {
-	res, _ := s.db.Exec("DELETE FROM locks WHERE expires_at <= ?", time.Now())
-	affected, _ := res.RowsAffected()
-	return int(affected)
-}
-
-// Usage with WithUnique.
-locker := NewSQLiteLocker(db)
-job := cq.WithUnique(actualJob, "order:123", 5*time.Minute, locker)
+job := cq.WithoutOverlap(
+	actualJob,
+	"account:123",
+	locker,
+	cq.WithOverlapRetryInterval(250*time.Millisecond),
+)
 ```
+
+The default retry interval is `10ms`. Non-positive option values use the
+default.
+Contention-try behavior makes one attempt and does not use the retry interval.
+
+Use `TouchLock(ctx, ttl)` inside a running unique job when the backend
+implements `RenewableLocker`.

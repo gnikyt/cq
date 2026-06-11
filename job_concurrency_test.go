@@ -10,6 +10,21 @@ import (
 )
 
 func TestWithConcurrencyLimit(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithConcurrencyLimit(nil, "key", 1, 0, NewConcurrencyLimiter(), NewQueue(1, 1, 1))(context.Background())
+		if !errors.Is(err, ErrConcurrencyJobRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil job): got %v, want %v", err, ErrConcurrencyJobRequired)
+		}
+		err = WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, 0, nil, NewQueue(1, 1, 1))(context.Background())
+		if !errors.Is(err, ErrConcurrencyLimiterRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil limiter): got %v, want %v", err, ErrConcurrencyLimiterRequired)
+		}
+		err = WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, 0, NewConcurrencyLimiter(), nil)(context.Background())
+		if !errors.Is(err, ErrConcurrencyQueueRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil queue): got %v, want %v", err, ErrConcurrencyQueueRequired)
+		}
+	})
+
 	t.Run("executes_when_below_limit", func(t *testing.T) {
 		queue := NewQueue(2, 5, 50)
 		queue.Start()
@@ -26,7 +41,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", 5, 0, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		wg.Wait()
@@ -48,7 +63,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 		var wg sync.WaitGroup
 		barrier := make(chan struct{})
 
-		// Enqueue max jobs that hold at the barrier.
+		// Submit max jobs that hold at the barrier.
 		for range max {
 			wg.Add(1)
 			job := WithConcurrencyLimit(func(ctx context.Context) error {
@@ -57,20 +72,20 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", max, 30*time.Millisecond, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		// Give barrier-holding jobs time to start.
 		time.Sleep(50 * time.Millisecond)
 
-		// Enqueue one more — should be at limit and get re-enqueued.
+		// Submit one more — should be at limit and get re-submitted.
 		wg.Add(1)
 		extra := WithConcurrencyLimit(func(ctx context.Context) error {
 			count.Add(1)
 			wg.Done()
 			return nil
 		}, "key", max, 30*time.Millisecond, limiter, queue)
-		queue.Enqueue(extra)
+		mustSubmit(t, queue, extra)
 
 		// Release the barrier so all jobs can finish.
 		close(barrier)
@@ -159,7 +174,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 				wg.Done()
 				return nil
 			}, "key", max, 20*time.Millisecond, limiter, queue)
-			queue.Enqueue(job)
+			mustSubmit(t, queue, job)
 		}
 
 		done := make(chan struct{})
@@ -193,11 +208,11 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			<-holding
 			return nil
 		}, "key", 1, 0, limiter, queue)
-		queue.Enqueue(holderJob)
+		mustSubmit(t, queue, holderJob)
 
 		time.Sleep(30 * time.Millisecond)
 
-		// This one should re-enqueue without panicking (retryDelay=0 defaults to 50ms).
+		// This one should resubmit without panicking (retryDelay=0 defaults to 50ms).
 		secondJob := WithConcurrencyLimit(func(ctx context.Context) error {
 			select {
 			case done <- struct{}{}:
@@ -205,7 +220,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			}
 			return nil
 		}, "key", 1, 0, limiter, queue)
-		queue.Enqueue(secondJob)
+		mustSubmit(t, queue, secondJob)
 
 		// Release the holder.
 		close(holding)
@@ -213,7 +228,25 @@ func TestWithConcurrencyLimit(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(500 * time.Millisecond):
-			t.Fatal("WithConcurrencyLimit(): timed out waiting for re-enqueued job")
+			t.Fatal("WithConcurrencyLimit(): timed out waiting for resubmitted job")
+		}
+	})
+
+	t.Run("returns_reschedule_failure", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		queue.Stop(false)
+
+		limiter := NewConcurrencyLimiter()
+		entry, ok := limiter.acquire("key", 1)
+		if !ok {
+			t.Fatal("acquire(): expected holder slot")
+		}
+		defer limiter.release(entry)
+
+		job := WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, time.Second, limiter, queue)
+		if err := job(context.Background()); !errors.Is(err, ErrQueueStopped) {
+			t.Fatalf("WithConcurrencyLimit(): got %v, want %v", err, ErrQueueStopped)
 		}
 	})
 }

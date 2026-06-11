@@ -1,8 +1,19 @@
 package cq
 
 import (
+	"context"
 	"testing"
 )
+
+// mustSubmit submits job or fails the current test.
+func mustSubmit(t testing.TB, q *Queue, job Job, opts ...SubmitOption) *JobHandle {
+	t.Helper()
+	handle, err := q.Submit(context.Background(), job, opts...)
+	if err != nil {
+		t.Fatalf("Submit(): unexpected error: %v", err)
+	}
+	return handle
+}
 
 func TestJobStateString(t *testing.T) {
 	tests := []struct {
@@ -24,6 +35,10 @@ func TestJobStateString(t *testing.T) {
 		{
 			want:  "failed",
 			state: JobStateFailed,
+		},
+		{
+			want:  "cancelled",
+			state: JobStateCancelled,
 		},
 		{
 			want:  "completed",

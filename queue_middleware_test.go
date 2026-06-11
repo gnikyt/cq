@@ -37,7 +37,7 @@ func TestQueueMiddleware_Order(t *testing.T) {
 
 	q := NewQueue(1, 1, 10, WithMiddleware(m1, m2))
 	q.Start()
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		push("job")
 		return nil
 	})
@@ -76,7 +76,7 @@ func TestQueueMiddleware_AppendsAcrossOptions(t *testing.T) {
 
 	q := NewQueue(1, 1, 10, WithMiddleware(m1), WithMiddleware(nil, m2))
 	q.Start()
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		push("job")
 		return nil
 	})

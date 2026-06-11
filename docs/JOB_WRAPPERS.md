@@ -8,7 +8,7 @@ Use this quick wrapper index to choose the right building block:
 | --- | --- |
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
-| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`; contention handoff: [`WithDispatchOnContention`](#dispatch-on-contention-or-error), [`WithErrorOnContention`](#dispatch-on-contention-or-error), [`WithDispatchOnError`](#dispatch-on-contention-or-error) (classify with `IsContentionError`) |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`, plus contention handling with [`WithErrorOnContention`](#handling-contention) and `IsContentionError` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
@@ -16,11 +16,13 @@ Use this quick wrapper index to choose the right building block:
 
 #### Basic Function
 
-**What it does:** Defines the base `Job` shape and a cancellation-aware implementation.
+**What it does:** Defines the base `Job` shape and a cancellation-aware
+implementation.
 
 **When to use:** Any job implementation.
 
-**Caveat:** Operationally, jobs stop promptly only if they check `ctx.Err()` or use context-aware operations.
+**Caveat:** Operationally, jobs stop promptly only if they check `ctx.Err()`
+or use context-aware operations.
 
 ```go
 job := func(ctx context.Context) error {
@@ -30,16 +32,18 @@ job := func(ctx context.Context) error {
 	}
 	return doWork(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Job Metadata
 
-**What it does:** Exposes per-job metadata through context (ID, enqueue time, attempt), plus previous retry error when applicable.
+**What it does:** Exposes per-job metadata through context (ID, enqueue time,
+attempt), plus previous retry error when applicable.
 
 **When to use:** Structured logging, tracing correlation, retry-aware logic.
 
-**Caveat:** Operationally, `Attempt` starts at 0 and increments only with retry wrappers.
+**Caveat:** Operationally, `Attempt` starts at 0 and increments only with
+retry wrappers.
 
 ```go
 job := func(ctx context.Context) error {
@@ -50,7 +54,7 @@ job := func(ctx context.Context) error {
 	)
 	return doWork(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 The `JobMeta` struct contains:
@@ -58,7 +62,8 @@ The `JobMeta` struct contains:
 - `EnqueuedAt` - Timestamp when the job was enqueued
 - `Attempt` - Current retry attempt (0-indexed, incremented by `WithRetry`)
 
-When using `WithRetryPolicy` / `WithRetry` / `WithRetryIf`, you can inspect the previous attempt error:
+When using `WithRetryPolicy` / `WithRetry` / `WithRetryIf`, you can inspect
+the previous attempt error:
 
 ```go
 job := cq.WithRetryIf(func(ctx context.Context) error {
@@ -73,7 +78,8 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 }, 5, nil)
 ```
 
-You can also use a custom error type to carry step/checkpoint context across retries in-process:
+You can also use a custom error type to carry step/checkpoint context across
+retries in-process:
 
 ```go
 type StepError struct {
@@ -122,9 +128,11 @@ Notes:
 
 **What it does:** Re-runs failed jobs for a bounded number of attempts.
 
-**When to use:** Transient failures such as timeout, throttling, or temporary outages.
+**When to use:** Transient failures such as timeout, throttling, or temporary
+outages.
 
-**Caveat:** Operationally, retries can duplicate side effects unless work is idempotent.
+**Caveat:** Operationally, retries can duplicate side effects unless work is
+idempotent.
 
 Use `WithRetryPolicy` as the default path:
 
@@ -138,10 +146,11 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-`WithRetry`, `WithRetryIf`, and `WithBackoff` remain available for manual composition when you need finer control.
+`WithRetry`, `WithRetryIf`, and `WithBackoff` remain available for manual
+composition when you need finer control.
 
 Conditional retries allow you to retry only on specific errors:
 
@@ -171,13 +180,15 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 
 #### Backoff
 
-**What it does:** Adds delay strategy between retries to reduce pressure on dependencies.
+**What it does:** Adds delay strategy between retries to reduce pressure on
+dependencies.
 
 **When to use:** Any retry loop that should avoid immediate hammering.
 
 **Caveat:** Operationally, backoff has no effect unless composed with retries.
 
-With policy-based retries, backoff is usually configured in `RetryPolicy.Backoff`:
+With policy-based retries, backoff is usually configured in
+`RetryPolicy.Backoff`:
 
 ```go
 job := cq.WithRetryPolicy(
@@ -187,17 +198,18 @@ job := cq.WithRetryPolicy(
 		Backoff:     cq.ExponentialBackoff,
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 You can still use explicit wrapper composition:
 
 ```go
 job := cq.WithRetry(cq.WithBackoff(actualJob, cq.ExponentialBackoff), 3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBackoff`
+Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`,
+`JitterBackoff`
 
 #### Outcome Handler
 
@@ -205,7 +217,8 @@ Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`, `JitterBac
 
 **When to use:** Metrics, DLQ forwarding, notifications, and audit hooks.
 
-**Caveat:** Operationally, callbacks run inline with job completion... throughput impact depends on callback implementation.
+**Caveat:** Operationally, callbacks run inline with job completion...
+throughput impact depends on callback implementation.
 
 ```go
 job := cq.WithOutcome(
@@ -219,10 +232,11 @@ job := cq.WithOutcome(
 	},
 	nil, // onDiscarded.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-To handle discarded jobs (for example, idempotent duplicates), pass `onDiscarded`:
+To handle discarded jobs (for example, idempotent duplicates), pass
+`onDiscarded`:
 
 ```go
 job := cq.WithOutcome(
@@ -238,7 +252,7 @@ job := cq.WithOutcome(
 		log.Printf("discarded: %v", err)
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To access job metadata in handlers, capture it inside the job:
@@ -257,16 +271,19 @@ job := func(ctx context.Context) error {
 		nil, // onDiscarded.
 	)(ctx)
 }
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Outcome Markers
 
-**What it does:** Marks errors as retryable, permanent, or discardable explicitly.
+**What it does:** Marks errors as retryable, permanent, or discardable
+explicitly.
 
-**When to use:** You need deterministic behavior with `WithRetry`/`WithRetryIf`, and explicit discard semantics with `WithOutcome`.
+**When to use:** You need deterministic behavior with
+`WithRetry`/`WithRetryIf`, and explicit discard semantics with `WithOutcome`.
 
-**Caveat:** Operationally, markers are consumed by retry wrappers (`WithRetry`, `WithRetryIf`) and by `WithOutcome` for discard handling.
+**Caveat:** Operationally, markers are consumed by retry wrappers
+(`WithRetry`, `WithRetryIf`) and by `WithOutcome` for discard handling.
 
 ```go
 job := cq.WithRetryIf(
@@ -295,22 +312,28 @@ job := cq.WithRetryIf(
 		return errors.Is(err, cq.ErrRetryable)
 	},
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Available outcome markers:
 
-- `cq.ErrRetryable` / `cq.AsRetryable(err)` - Transient errors that may succeed on retry (example: network timeouts, rate limits, 5xx server errors).
-- `cq.ErrPermanent` / `cq.AsPermanent(err)` - Errors that won't be fixed by retrying (example: validation errors, 4xx client errors, malformed input).
-- `cq.ErrDiscard` / `cq.AsDiscard(err)` - Errors that should be discarded (example: duplicate processing, already completed, idempotent no-op).
+- `cq.ErrRetryable` / `cq.AsRetryable(err)` - Transient errors that may
+  succeed on retry (example: network timeouts, rate limits, 5xx server
+  errors).
+- `cq.ErrPermanent` / `cq.AsPermanent(err)` - Errors that won't be fixed by
+  retrying (example: validation errors, 4xx client errors, malformed input).
+- `cq.ErrDiscard` / `cq.AsDiscard(err)` - Errors that should be discarded
+  (example: duplicate processing, already completed, idempotent no-op).
 
 #### Tracing
 
-**What it does:** Emits lifecycle signals for timing and success/failure instrumentation.
+**What it does:** Emits lifecycle signals for timing and success/failure
+instrumentation.
 
 **When to use:** Integrating observability platforms or custom telemetry.
 
-**Caveat:** Operationally, wrapper placement changes measured duration scope (single attempt vs total retries).
+**Caveat:** Operationally, wrapper placement changes measured duration scope
+(single attempt vs total retries).
 
 ```go
 type myHook struct{}
@@ -328,10 +351,11 @@ func (h myHook) Failure(ctx context.Context, err error, d time.Duration) {
 }
 
 job := cq.WithTracing(actualJob, "sync-products", myHook{})
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-Place tracing as the outermost wrapper to capture total execution time including retries:
+Place tracing as the outermost wrapper to capture total execution time
+including retries:
 
 ```go
 // Traceable job with up to 3 retry attempts on a 5 second timeout deadline.
@@ -345,21 +369,24 @@ job := cq.WithTracing(
 )
 ```
 
-To trace each retry attempt individually, place tracing inside the retry instead.
+To trace each retry attempt individually, place tracing inside the retry
+instead.
 
 #### Skip If
 
-**What it does:** Conditionally bypasses execution when a predicate returns true.
+**What it does:** Conditionally bypasses execution when a predicate returns
+true.
 
 **When to use:** Feature flags, maintenance mode, or unmet preconditions.
 
-**Caveat:** Operationally, skipped jobs return `nil` and count as intentional no-ops.
+**Caveat:** Operationally, skipped jobs return `nil` and count as intentional
+no-ops.
 
 ```go
 job := cq.WithSkipIf(actualJob, func(ctx context.Context) bool {
 	return !shouldProcess()
 })
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Timeout
@@ -368,11 +395,12 @@ queue.Enqueue(job)
 
 **When to use:** Preventing runaway jobs from occupying workers indefinitely.
 
-**Caveat:** Operationally, timeout/deadline signals cancel the context, but job code stops only where it checks the context.
+**Caveat:** Operationally, timeout/deadline signals cancel the context, but
+job code stops only where it checks the context.
 
 ```go
 job := cq.WithTimeout(actualJob, 5*time.Minute)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Deadline
@@ -381,26 +409,51 @@ queue.Enqueue(job)
 
 **When to use:** Time-sensitive work with a hard business cutoff.
 
-**Caveat:** Operationally, queue wait time consumes deadline budget, but that is expected given its a deadline.
+**Caveat:** Operationally, queue wait time consumes deadline budget, but that
+is expected given its a deadline.
 
 ```go
 deadline := time.Date(2025, 12, 25, 16, 0, 0, 0, time.Local)
 job := cq.WithDeadline(actualJob, deadline)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Overlap Prevention
 
-**What it does:** `WithoutOverlap` runs jobs for the same key **one after another**. Waits on a mutex until the previous run finishes, then executes. Workers block while queued on that key.
+**What it does:** `WithoutOverlap` runs jobs for the same key **one after
+another**. It retries atomic lock acquisition until the previous run
+finishes, then executes. Workers block while queued on that key.
 
 **When to use:** Non-overlapping work such as account sync or balance mutation.
 
-**Caveat:** Hot keys can occupy workers while others wait. That differs from `WithUnique`, which deduplicates by key/window and often drops duplicates instead of forming a queue behind the mutex.
+**Caveat:** Hot keys can occupy workers while others wait. That differs from
+`WithUnique`, which deduplicates by key/window and often drops duplicates
+instead of forming a queue behind the lock.
+Nil `job` or `locker` arguments return `cq.ErrUniqueJobRequired` or
+`cq.ErrUniqueLockerRequired`.
+
+`WithoutOverlap` holds its lock until the job returns. Normal cancellation and
+shutdown still run deferred lock release. An abrupt process crash cannot run
+cleanup. In-memory locks disappear with the process, while distributed lockers
+must define how orphaned locks are handled. Use `WithUnique` when lease expiry
+and renewal are part of the intended behavior.
 
 ```go
 locker := cq.NewOverlapMemoryLocker()
 job := cq.WithoutOverlap(actualJob, "account-123", locker)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
+```
+
+Use `WithOverlapRetryInterval` to control how often normal blocking execution
+retries acquisition, especially for external lockers:
+
+```go
+job := cq.WithoutOverlap(
+	actualJob,
+	"account-123",
+	locker,
+	cq.WithOverlapRetryInterval(250*time.Millisecond),
+)
 ```
 
 To cap how long the overlap lock is held, wrap the inner job with `WithTimeout`:
@@ -412,30 +465,25 @@ job := cq.WithoutOverlap(
 	"account-123",
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-This releases the overlap lock when the timeout wrapper returns, but note the underlying job goroutine may continue running until it respects `ctx.Done()`.
+This releases the overlap lock when the timeout wrapper returns, but note the
+underlying job goroutine may continue running until it respects `ctx.Done()`.
 
-For **overlap contention** (dispatch to a side queue instead of blocking on the mutex), see [Dispatch on contention or error](#dispatch-on-contention-or-error).
-
-#### Dispatching Contract
-
-* `DispatchRequest.Key`: Routing key for the dispatched job.
-* `DispatchRequest.Job`: Job to hand off (may execute asynchronously).
-* `DispatchRequest.Reason`: Why dispatch occurred (`DispatchReasonContention` from `WithDispatchOnContention`, or `DispatchReasonError` from `WithDispatchOnError`).
-* `DispatchRequest.Err`: Set when `Reason` is `DispatchReasonError` (the inner error that triggered dispatch).
-* `DispatchError.Kind`: Classify failures (`rejected` vs `unavailable`) for retry policy decisions.
-* Built-in adapters: `NewQueueJobDispatcher`, `NewQueueManagerJobDispatcher`,
-  `NewPriorityQueueJobDispatcher`, `NewPriorityQueueManagerJobDispatcher`.
+For **overlap contention** that should be routed elsewhere instead of waiting,
+see [Handling contention](#handling-contention).
 
 #### Concurrency By Key
 
 **What it does:** Caps how many jobs with the same key can execute concurrently.
 
-**When to use:** Per-tenant or per-resource protection (for example: max 5 concurrent API calls per customer).
+**When to use:** Per-tenant or per-resource protection (for example: max 5
+concurrent API calls per customer).
 
-**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is process-local only; use a custom `KeyConcurrencyLimiter` for multi-instance coordination.
+**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is
+process-local only. Use a custom `KeyConcurrencyLimiter` for multi-instance
+coordination.
 
 ```go
 limiter := cq.NewMemoryKeyConcurrencyLimiter(5)
@@ -445,15 +493,22 @@ job := cq.WithConcurrencyByKey(
 	"customer:123",
 	limiter,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-When the key limit is already reached, the wrapper returns `cq.ErrConcurrencyByKeyLimited`.
+When the key limit is already reached, the wrapper returns
+`cq.ErrConcurrencyByKeyLimited`.
 Invalid limits (`<= 0`) return `cq.ErrConcurrencyByKeyInvalidLimit`.
 
-For distributed implementations (for example Redis or SQLite), see [Custom Key Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md).
+For distributed implementations (for example Redis or SQLite), see
+[Custom Key Concurrency Limiter](CUSTOM_CONCURRENCY_LIMITER.md).
 
-`WithConcurrencyByKey` does not provide a built-in "block until a slot frees" mode... `MemoryKeyConcurrencyLimiter.Acquire` returns `ErrConcurrencyByKeyLimited` immediately. If you want to wait for a slot, implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a semaphore per key). To route contended runs elsewhere, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+`WithConcurrencyByKey` does not provide a built-in "block until a slot frees"
+mode... `MemoryKeyConcurrencyLimiter.Acquire` returns
+`ErrConcurrencyByKeyLimited` immediately. If you want to wait for a slot,
+implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a
+semaphore per key). To route contended runs elsewhere, see
+[Handling contention](#handling-contention).
 
 #### Unique Jobs
 
@@ -461,17 +516,24 @@ For distributed implementations (for example Redis or SQLite), see [Custom Key C
 
 **When to use:** Idempotent workloads where repeated work should be skipped.
 
-**Caveat:** Operationally, uniqueness controls deduplication only, not run duration.
+**Caveat:** Operationally, uniqueness controls deduplication only, not run
+duration.
+Nil `job` or `locker` arguments return `cq.ErrUniqueJobRequired` or
+`cq.ErrUniqueLockerRequired`.
 
 ```go
 locker := cq.NewUniqueMemoryLocker()
 job := cq.WithUnique(actualJob, "index-products", 1*time.Hour, locker)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-Duplicate runs while the lock is active **do not execute** the inner job... by default the wrapper **returns nil** (discard the job). For `WithUniqueWindow`, the lock covers the full window even after the job finishes.
+Duplicate runs while the lock is active **do not execute** the inner job... by
+default the wrapper **returns nil** (discard the job). For `WithUniqueWindow`,
+the lock covers the full window even after the job finishes.
 
-To re-enqueue duplicates instead of discarding them, wrap with `WithErrorOnContention` so the duplicate surfaces as `ErrUniqueContended`, and pair with `WithRelease` using `IsContentionError` as the predicate:
+To resubmit duplicates instead of discarding them, wrap with
+`WithErrorOnContention` so the duplicate surfaces as `ErrUniqueContended`, and
+pair with `WithRelease` using `IsContentionError` as the predicate:
 
 ```go
 job := cq.WithRelease(
@@ -483,10 +545,11 @@ job := cq.WithRelease(
 	0,
 	cq.IsContentionError,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-To route duplicates to a side queue or different dispatcher, see [Dispatch on contention or error](#dispatch-on-contention-or-error).
+To route duplicates to a side queue or external system, see
+[Handling contention](#handling-contention).
 
 Combine with timeout to limit both uniqueness and execution time:
 
@@ -498,7 +561,7 @@ job := cq.WithUnique(
 	1*time.Hour,
 	locker,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Chains
@@ -507,20 +570,25 @@ queue.Enqueue(job)
 
 **When to use:** Ordered workflows with step dependencies.
 
-**Caveat:** Operationally, chains provide no data handoff and no built-in checkpointing... use `WithPipeline` for data passing and `WithCheckpoint` for retry-safe step gating.
+**Caveat:** Operationally, chains provide no data handoff and no built-in
+checkpointing... use `WithPipeline` for data passing and `WithCheckpoint` for
+retry-safe step gating.
 
 ```go
 job := cq.WithChain(step1, step2, step3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Checkpoint
 
-**What it does:** Skips a step when it was already completed for the same checkpoint key, and supports loading/saving step payload data across retries.
+**What it does:** Skips a step when it was already completed for the same
+checkpoint key, and supports loading/saving step payload data across retries.
 
-**When to use:** Retry-safe chains/dependencies where previously successful steps should not run again.
+**When to use:** Retry-safe chains/dependencies where previously successful
+steps should not run again.
 
-**Caveat:** Operationally, correctness depends on stable key resolution and durable checkpoint storage in distributed environments.
+**Caveat:** Operationally, correctness depends on stable key resolution and
+durable checkpoint storage in distributed environments.
 
 ```go
 store := cq.NewMemoryCheckpointStore()
@@ -533,7 +601,7 @@ step := cq.WithCheckpoint(
 )
 
 job := cq.WithChain(validateOrder, step, notifyCustomer)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 To persist resume data from a failed run and load it on retry:
@@ -556,9 +624,39 @@ job := func(ctx context.Context) error {
 }
 ```
 
-To remove checkpoint records after success, add `cq.WithCheckpointDeleteOnSuccess()`.
+`SetCheckpointData` updates execution-local payload. It is persisted when the
+job succeeds, or when it fails with `WithCheckpointSaveOnFailure`.
 
-To use domain keys (for example `orderID`) instead of job ID, override key resolution:
+For long-running jobs, use `SaveCheckpointData` to synchronously persist
+`Done=false` progress before the job returns:
+
+```go
+job := func(ctx context.Context) error {
+	for _, batch := range batches {
+		if err := processBatch(ctx, batch); err != nil {
+			return err
+		}
+		if err := cq.SaveCheckpointDataAsJSON(ctx, batchProgress{
+			LastCompletedID: batch.ID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+`SaveCheckpointData` blocks until `CheckpointStore.Store` responds. When called
+from a `WithCheckpoint`-wrapped job, store failures return
+`ErrCheckpointMarkFailed`. If the context has no checkpoint state, for example,
+the job was not wrapped with `WithCheckpoint`, then it returns
+`ErrCheckpointSaveUnavailable`.
+
+To remove checkpoint records after success, add
+`cq.WithCheckpointDeleteOnSuccess()`.
+
+To use domain keys (for example `orderID`) instead of job ID, override key
+resolution:
 
 ```go
 step := cq.WithCheckpoint(
@@ -577,11 +675,13 @@ step := cq.WithCheckpoint(
 
 #### Pipeline
 
-**What it does:** Executes sequential steps with typed channel-based data passing.
+**What it does:** Executes sequential steps with typed channel-based data
+passing.
 
 **When to use:** Multi-step flows where output from one step feeds the next.
 
-**Caveat:** Operationally, pipeline steps must coordinate channel sends/receives... unmatched operations can block execution.
+**Caveat:** Operationally, pipeline steps must coordinate channel
+sends/receives... unmatched operations can block execution.
 
 ```go
 step1 := func(ch chan int) cq.Job {
@@ -599,16 +699,19 @@ step2 := func(ch chan int) cq.Job {
 }
 
 job := cq.WithPipeline(step1, step2)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Batch
 
-**What it does:** Wraps a job set with group-level progress and completion callbacks.
+**What it does:** Wraps a job set with group-level progress and completion
+callbacks.
 
-**When to use:** Bulk operations where aggregate completion and error tracking matter.
+**When to use:** Bulk operations where aggregate completion and error tracking
+matter.
 
-**Caveat:** Operationally, expensive batch callbacks can throttle completion throughput.
+**Caveat:** Operationally, expensive batch callbacks can throttle completion
+throughput.
 
 ```go
 jobs := []cq.Job{job1, job2, job3}
@@ -624,7 +727,7 @@ batchJobs, state := cq.WithBatch(
 		)
 	}),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 
 // Optionally wait for completion in-process:
 <-state.Done()
@@ -633,7 +736,11 @@ queue.EnqueueBatch(batchJobs)
 rec, _ := state.Snapshot(ctx) // BatchRecord{Total, Completed, Failed, Errors, Done}
 ```
 
-**Pluggable storage:** by default batches use an in-memory store. Provide your own `BatchStore` (interface: `Init`, `RecordResult`, `Load`, `Delete`) to share batch state across processes — e.g. a service that enqueues writes progress to Postgres, and a separate HTTP handler reads `Snapshot` from the same store:
+**Pluggable storage:** by default batches use an in-memory store. Provide your
+own `BatchStore` (interface: `Init`, `RecordResult`, `Load`, `Delete`) to
+share batch state across processes — e.g. a service that enqueues writes
+progress to Postgres, and a separate HTTP handler reads `Snapshot` from the
+same store:
 
 ```go
 batchJobs, state := cq.WithBatch(
@@ -641,10 +748,11 @@ batchJobs, state := cq.WithBatch(
 	cq.WithBatchID("import-42"),
 	cq.WithBatchStore(myPostgresStore),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 ```
 
-`state.Done()` only fires in the process that ran the jobs. Cross-process consumers should poll `Snapshot` (or query the store directly).
+`state.Done()` only fires in the process that ran the jobs. Cross-process
+consumers should poll `Snapshot` (or query the store directly).
 
 **Options:**
 * `WithBatchID(string)` — Explicit batch identifier (auto-generated if omitted).
@@ -653,7 +761,9 @@ queue.EnqueueBatch(batchJobs)
 * `WithBatchOnComplete(func([]error))` — Fires once when all jobs finish.
 * `WithBatchOnProgress(func(completed, total int))` — Fires after each completed job.
 
-To access job metadata in batch callbacks, use a sentinel error type to wrap errors with the job ID. The `onComplete` callback receives all errors from the batch, allowing you to extract IDs using `errors.As`:
+To access job metadata in batch callbacks, use a sentinel error type to wrap
+errors with the job ID. The `onComplete` callback receives all errors from the
+batch, allowing you to extract IDs using `errors.As`:
 
 ```go
 // Define a sentinel error type.
@@ -692,16 +802,19 @@ batchJobs, _ := cq.WithBatch(
 		}
 	}),
 )
-queue.EnqueueBatch(batchJobs)
+_, _ = queue.SubmitBatch(context.Background(), batchJobs)
 ```
 
 #### Dependencies
 
-**What it does:** Executes dependency jobs sequentially before the main job, with configurable failure behavior per dependency.
+**What it does:** Executes dependency jobs sequentially before the main job,
+with configurable failure behavior per dependency.
 
-**When to use:** Sequential workflows where some steps are optional or should be skipped/ignored on failure.
+**When to use:** Sequential workflows where some steps are optional or should
+be skipped/ignored on failure.
 
-**Caveat:** Operationally, dependencies run sequentially (one after another). For concurrent dependencies, wrap them in `WithChain` inside a `Dep()` call.
+**Caveat:** Operationally, dependencies run sequentially (one after another).
+For concurrent dependencies, wrap them in `WithChain` inside a `Dep()` call.
 
 ```go
 job := cq.WithDependsOn(
@@ -709,14 +822,17 @@ job := cq.WithDependsOn(
     cq.Dep(dep1, cq.DependencyFailCancel),    // If dep1 fails, stop and return error.
     cq.Dep(dep2, cq.DependencyFailContinue),  // If dep2 fails, ignore and continue.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Three failure modes control what happens when a dependency fails:
 
-* `DependencyFailCancel`: Stops execution and returns an error wrapping `ErrDependencyCancelled`; the main job never runs.
-* `DependencyFailSkip`: Stops execution and returns a discard outcome; the main job never runs but is not counted as failed.
-* `DependencyFailContinue`: Ignores the failure and proceeds to the next dependency or job.
+* `DependencyFailCancel`: Stops execution and returns an error wrapping
+  `ErrDependencyCancelled`. The main job never runs.
+* `DependencyFailSkip`: Stops execution and returns a discard outcome. The
+  main job never runs but is not counted as failed.
+* `DependencyFailContinue`: Ignores the failure and proceeds to the next
+  dependency or job.
 
 Execution order is always: `dep1 -> dep2 -> ... -> job`.
 
@@ -728,7 +844,7 @@ job := cq.WithDependsOn(
     cq.Dep(validatePayment, cq.DependencyFailCancel),    // Must succeed.
     cq.Dep(logAttempt, cq.DependencyFailContinue),       // Ignore if fails.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 **Example: Compose with retry**
@@ -739,7 +855,7 @@ job := cq.WithDependsOn(
     cq.Dep(cq.WithRetry(validatePayment, 2), cq.DependencyFailCancel),
     cq.Dep(updateInventory, cq.DependencyFailSkip),
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 **Example: Group dependencies with `WithChain`**
@@ -751,37 +867,67 @@ job := cq.WithDependsOn(
     cq.Dep(cq.WithChain(checkInventory, reserveItems), cq.DependencyFailCancel),
     cq.Dep(notifyWarehouse, cq.DependencyFailContinue),
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Release
 
-**What it does:** Re-enqueues jobs after delay when a predicate-matched error occurs.
+**What it does:** Resubmits jobs after delay when a predicate-matched error
+occurs.
 
-**When to use:** Retry-later semantics such as rate limits or temporary upstream failures.
+**When to use:** Retry-later semantics such as rate limits or temporary
+upstream failures.
 
-**Caveat:** Operationally, releases can run indefinitely without `maxReleases` bounds.
+**Caveat:** Operationally, releases can run indefinitely without
+`maxReleases` bounds. If delayed submission is rejected, the wrapper returns
+that rejection error.
 
 ```go
 job := cq.WithRelease(
 	actualJob,
-	queue,             // Queue to re-enqueue into.
-	30*time.Second,    // Delay before re-enqueue.
+	queue,             // Queue to resubmit into.
+	30*time.Second,    // Delay before resubmission.
 	3,                 // Max releases before giving up.
 	func(err error) bool {
 		return errors.Is(err, ErrRateLimited)
 	}, // Predicate: which errors trigger release.
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
+
+For manual control, `Reschedule` returns the delayed submission handle and
+preserves the current job name and attributes:
+
+```go
+handle, err := cq.Reschedule(
+	ctx,
+	queue,
+	job,
+	30*time.Second,
+	cq.RescheduleReasonManualRetry,
+)
+```
+
+The new submission receives a fresh ID and these lineage attributes:
+
+- `cq.RescheduleAttributeParentID`
+- `cq.RescheduleAttributeRootID`
+- `cq.RescheduleAttributeReason`
+
+The returned `JobHandle` tracks the new delayed submission. Use it to observe
+future submission failures or cancel the rescheduled job before it runs.
+
+Built-in release wrappers report immediate reschedule registration errors. They
+do not wait for the delayed submission to finish.
 
 #### Release Self
 
-**What it does:** Lets job code request its own delayed re-enqueue.
+**What it does:** Lets job code request its own delayed resubmission.
 
 **When to use:** Jobs that decide at runtime to defer themselves.
 
-**Caveat:** Operationally, multiple release requests in one run use last-write-wins delay.
+**Caveat:** Operationally, multiple release requests in one run use
+last-write-wins delay.
 
 ```go
 job := cq.WithReleaseSelf(func(ctx context.Context) error {
@@ -794,10 +940,11 @@ job := cq.WithReleaseSelf(func(ctx context.Context) error {
 	return doWork(ctx)
 }, queue, 3) // maxReleases (0 = unlimited).
 
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-You can call `RequestRelease` multiple times in a single run to refine the delay. Only one release is scheduled for that run, and the last request wins:
+You can call `RequestRelease` multiple times in a single run to refine the
+delay. Only one release is scheduled for that run, and the last request wins:
 
 ```go
 job := cq.WithReleaseSelf(func(ctx context.Context) error {
@@ -808,12 +955,14 @@ job := cq.WithReleaseSelf(func(ctx context.Context) error {
 	return nil
 }, queue, 3)
 
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 Logic:
 
-* If a release request is made and release budget allows, the job is delayed and re-enqueued, and this run returns `nil`.
+* If a release request is made and release budget allows, the job is delayed
+  and resubmitted, and this run returns `nil`.
+* If delayed submission is rejected, this run returns the rejection error.
 * If both an error and release request occur, release wins while budget allows.
 * Multiple requests in one run use last-write-wins delay.
 * `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
@@ -824,27 +973,30 @@ Logic:
 
 **When to use:** You need custom panic handling per job path.
 
-**Caveat:** Operationally, wrapper-level recovery plus queue recovery can duplicate error reporting.
+**Caveat:** Operationally, wrapper-level recovery plus queue recovery can
+duplicate error reporting.
 
 ```go
 job := cq.WithRecover(func(ctx context.Context) error {
 	panic("oops")
 })
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
 #### Tagged
 
-**What it does:** Attaches tags so related jobs can be tracked or canceled together.
+**What it does:** Attaches tags so related jobs can be tracked or canceled
+together.
 
 **When to use:** Multi-tenant workflows or operation-wide cancellation.
 
-**Caveat:** Operationally, cancellation scope includes all jobs matching the tag.
+**Caveat:** Operationally, cancellation scope includes all jobs matching the
+tag.
 
 ```go
 registry := cq.NewJobRegistry()
 job := cq.WithTagged(actualJob, registry, "user:123", "export")
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 
 registry.CancelForTag("user:123")
 // or:
@@ -853,35 +1005,53 @@ registry.CancelForTag("export")
 
 #### Rate Limit
 
-**What it does:** Applies token-bucket throttling before job execution using Go builtins.
+**What it does:** Applies token-bucket throttling before job execution using
+Go builtins.
 
 **When to use:** Respecting external quotas and protecting shared dependencies.
 
-**Caveat:** Operationally, `WithRateLimit` blocks workers unless release mode is used.
+**Caveat:** Operationally, `WithRateLimit` blocks workers unless release mode
+is used.
+Nil `job`, `limiter`, or `queue` (release mode) arguments return
+`cq.ErrRateLimitJobRequired`, `cq.ErrRateLimitLimiterRequired`, or
+`cq.ErrRateLimitQueueRequired`.
 
 ```go
 limiter := rate.NewLimiter(10, 5) // 10 per second, burst of 5.
 job := cq.WithRateLimit(actualJob, limiter)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-Use `WithRateLimitRelease` when you want to free workers instead of blocking them while waiting for limiter tokens:
+Use `WithRateLimitRelease` when you want to free workers instead of blocking
+them while waiting for limiter tokens:
 
 ```go
 limiter := rate.NewLimiter(10, 5)
 job := cq.WithRateLimitRelease(actualJob, limiter, queue, 3)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-`WithRateLimitRelease` re-enqueues the job using the limiter reservation delay when rate limited, and returns `nil` immediately so workers can keep processing other jobs. `maxReleases` controls how many times this defer/re-enqueue can happen (`0` means unlimited). Once exhausted, it falls back to blocking `WithRateLimit` behavior.
+`WithRateLimitRelease` resubmits the job using the limiter reservation delay
+when rate limited, and returns `nil` immediately so workers can keep
+processing other jobs. If delayed submission is rejected, the wrapper returns
+that rejection error. `maxReleases` controls how many times this defer/
+resubmit can happen (`0` means unlimited). Once exhausted, it falls back to
+blocking `WithRateLimit` behavior.
 
 #### Concurrency Limit
 
-**What it does:** Limits how many jobs sharing the same key can execute concurrently using a shared counter.
+**What it does:** Limits how many jobs sharing the same key can execute
+concurrently using a shared counter.
 
-**When to use:** Restricting parallel access to a shared resource (API with concurrency limits, database connections, file locks, etc).
+**When to use:** Restricting parallel access to a shared resource (API with
+concurrency limits, database connections, file locks, etc).
 
-**Caveat:** Operationally, when a job hits the limit it is re-enqueued after a retry delay; the current worker is freed immediately (non-blocking).
+**Caveat:** Operationally, when a job hits the limit it is resubmitted after a
+retry delay. The current worker is freed immediately (non-blocking). If
+delayed submission is rejected, the wrapper returns that rejection error.
+Nil `job`, `limiter`, or `queue` arguments return
+`cq.ErrConcurrencyJobRequired`, `cq.ErrConcurrencyLimiterRequired`, or
+`cq.ErrConcurrencyQueueRequired`.
 
 ```go
 limiter := cq.NewConcurrencyLimiter()
@@ -894,10 +1064,13 @@ job := cq.WithConcurrencyLimit(
 	limiter,
 	queue,
 )
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```
 
-Multiple jobs sharing the same key are serialized or limited to the `max` count. If all slots are occupied, a new job requesting the same key is immediately released (returns `nil`) and re-enqueued after the retry delay. A single `ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
+Multiple jobs sharing the same key are serialized or limited to the `max`
+count. If all slots are occupied, a new job requesting the same key is
+immediately released and resubmitted after the retry delay. A single
+`ConcurrencyLimiter` can be shared across multiple queues and multiple keys:
 
 ```go
 limiter := cq.NewConcurrencyLimiter()
@@ -922,8 +1095,8 @@ dbJob := cq.WithConcurrencyLimit(
 	queue,
 )
 
-queue.Enqueue(paymentJob)
-queue.Enqueue(dbJob)
+_, _ = queue.Submit(context.Background(), paymentJob)
+_, _ = queue.Submit(context.Background(), dbJob)
 ```
 
 Check current concurrency for a key:
@@ -935,18 +1108,25 @@ log.Printf("Active jobs for api-payments: %d", active)
 
 #### Circuit Breaker
 
-**What it does:** Short-circuits calls after consecutive failures to protect dependencies.
+**What it does:** Short-circuits calls after consecutive failures to protect
+dependencies.
 
 **When to use:** Isolating unstable upstreams and reducing cascading failures.
 
-**Caveat:** Operationally, poor breaker thresholds can cause false opens or delayed protection.
+**Caveat:** Operationally, poor breaker thresholds can cause false opens or
+delayed protection.
 
 The circuit has three states:
-- **Closed**: Normal operation, jobs execute. Opens after threshold consecutive failures.
-- **Open**: Jobs rejected immediately with `cq.ErrCircuitOpen`. Transitions to half-open after cooldown.
-- **Half-open**: Allows one job through to test recovery. Success closes the circuit; failure reopens it.
+- **Closed**: Normal operation, jobs execute. Opens after threshold
+  consecutive failures.
+- **Open**: Jobs rejected immediately with `cq.ErrCircuitOpen`. Transitions to
+  half-open after cooldown.
+- **Half-open**: Allows one job through to test recovery. Success closes the
+  circuit. Failure reopens it.
 
-Half-open is enabled by default. Use `cb.SetHalfOpen(false)` to disable it (circuit goes directly from open to closed after cooldown). Use `cb.State()` to check the current state.
+Half-open is enabled by default. Use `cb.SetHalfOpen(false)` to disable it
+(circuit goes directly from open to closed after cooldown). Use `cb.State()`
+to check the current state.
 
 ```go
 // Shared circuit breaker across all jobs calling a payment API.
@@ -956,7 +1136,7 @@ for _, orderID := range orderIDs {
 	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
 		return processPayment(orderID)
 	}, paymentCB)
-	queue.Enqueue(job)
+	_, _ = queue.Submit(context.Background(), job)
 }
 
 // If 5 consecutive jobs fail, the circuit opens.
@@ -992,70 +1172,79 @@ for _, orderID := range orderIDs {
 	job := cq.WithCircuitBreaker(func(ctx context.Context) error {
 		return processPayment(orderID)
 	}, paymentCB)
-	route().Enqueue(job)
+	route().Submit(context.Background(), job)
 }
 ```
 
-This pattern isolates failing dependency traffic from the main queue. Use with your normal replay/DLQ strategy for long-term failed work handling.
+This pattern isolates failing dependency traffic from the main queue. Use with
+your normal replay/DLQ strategy for long-term failed work handling.
 
-#### Dispatch on contention or error
+#### Handling contention
 
-**`WithDispatchOnContention(job, key, dispatcher)`** runs the inner job with `ContextWithContentionTry`. When the inner job returns a contention error (`ErrWithoutOverlapContended`, `ErrUniqueContended`, or `ErrConcurrencyByKeyLimited`), it forwards the **same** inner `Job` to `dispatcher` with `DispatchReasonContention`. Other errors are returned unchanged. A nil `dispatcher` yields `ErrDispatchRequired`.
+Bare `WithoutOverlap` retries atomic acquisition until the key is free. Bare
+`WithUnique` and `WithUniqueWindow` quietly discard duplicates. Wrap them with
+`WithErrorOnContention` to make one acquisition attempt and surface contention
+as `ErrWithoutOverlapContended` or `ErrUniqueContended`.
 
-Bare `WithoutOverlap` uses `Lock()` (blocks until the key is free). Under contention-try, it uses `TryLock` and returns `ErrWithoutOverlapContended` when busy. Bare `WithUnique` / `WithUniqueWindow` return nil on duplicate; under contention-try they return `ErrUniqueContended`.
+`WithConcurrencyByKey` already returns `ErrConcurrencyByKeyLimited` when its
+limit is reached. `IsContentionError(err)` identifies all three contention
+errors.
 
-**`WithErrorOnContention(job)`** injects `ContextWithContentionTry` but does NOT dispatch. The contention error bubbles up unchanged so callers can classify it themselves... use this with `WithRelease` and `IsContentionError` to re-enqueue duplicates, or with custom retry logic.
-
-**`WithDispatchOnError(job, key, dispatcher)`** does **not** inject contention-try; any non-nil error from the inner job triggers dispatch with `DispatchReasonError`, and `DispatchRequest.Err` carries that error. Pick `WithDispatchOnContention` when you specifically want to route contended runs (and let other errors propagate); pick `WithDispatchOnError` when you want a generic "send all failures somewhere else" handoff.
-
-**`IsContentionError(err)`** reports whether `err` is any of the three contention sentinels. Use it as the predicate for `WithRelease`, custom routing, or logging classification.
-
-> **Context propagation note:** `ContextWithContentionTry` (set by `WithDispatchOnContention` and `WithErrorOnContention`) propagates through ctx, so every nested `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` deeper in the chain switches to try semantics too. Usually that's what you want; if you compose multiple of these, only the outermost needs the wrapper.
-
-Use the **same routing `key`** as the inner wrapper where applicable.
-
-##### Example: hand off contended overlap work
-
-Dispatch contended runs to a **per-key side queue** so this worker returns immediately:
+Use `WithRelease` for automatic delayed local retry:
 
 ```go
-var (
-	mu     sync.Mutex
-	byKeyQ = map[string]*cq.Queue{}
-)
-
-dispatcher := cq.JobDispatcherFunc(func(ctx context.Context, req cq.DispatchRequest) error {
-	mu.Lock()
-	q, ok := byKeyQ[req.Key]
-	if !ok {
-		q = cq.NewQueue(1, 1, 100)
-		q.Start()
-		byKeyQ[req.Key] = q
-	}
-	mu.Unlock()
-	return q.EnqueueOrError(req.Job)
-})
-
-job := cq.WithDispatchOnContention(
-	cq.WithoutOverlap(actualJob, "account-123", locker),
-	"account-123",
-	dispatcher,
+job := cq.WithRelease(
+	cq.WithErrorOnContention(
+		cq.WithoutOverlap(actualJob, "account-123", locker),
+	),
+	queue,
+	30*time.Second,
+	3,
+	cq.IsContentionError,
 )
 ```
 
-This is intentionally minimal to show routing only. In production, **stop or remove idle per-key queues** so the map does not grow without bound—for example **TTL-based eviction** together with checks on **pending vs active** work before tearing down a queue.
+Applications that need custom routing can observe the job result and submit to
+another queue or publish their own serializable domain payload externally:
 
-##### Dispatch errors
+```go
+job := cq.WithErrorOnContention(
+	cq.WithoutOverlap(actualJob, "account-123", locker),
+)
 
-Typed `DispatchError` and adapters are described under [Dispatching Contract](#dispatching-contract).
+handle, err := queue.Submit(ctx, job)
+if err != nil {
+	return err // The original queue rejected submission.
+}
+
+select {
+case <-handle.Done():
+	result, _ := handle.Result()
+	if cq.IsContentionError(result.Err) {
+		_, err = overflowQueue.Submit(ctx, job)
+		// Or publish an account-sync payload to SQS, Redis, or another broker.
+		return err
+	}
+	return result.Err
+case <-ctx.Done():
+	return ctx.Err() // Stops waiting; it does not cancel the submitted job.
+}
+```
+
+> **Context propagation note:** `ContextWithContentionTry`, set by
+> `WithErrorOnContention`, propagates through ctx. Every nested
+> `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` switches to try
+> semantics. Usually only the outermost wrapper needs `WithErrorOnContention`.
 
 #### Custom Wrapper
 
-**What it does:** Shows how to build composable custom wrappers with the decorator pattern.
+**What it does:** Shows how to build composable custom wrappers with the
+decorator pattern.
 
 **When to use:** You need behavior not covered by built-in wrappers.
 
-**Caveat:** Operationally, custom wrappers must preserve context propagation and error semantics.
+**Caveat:** Operationally, custom wrappers must preserve context propagation
+and error semantics.
 
 ```go
 func withLogging(job cq.Job) cq.Job {
@@ -1068,5 +1257,5 @@ func withLogging(job cq.Job) cq.Job {
 }
 
 job := withLogging(actualJob)
-queue.Enqueue(job)
+_, _ = queue.Submit(context.Background(), job)
 ```

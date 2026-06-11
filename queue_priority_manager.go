@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"sync"
@@ -93,30 +94,20 @@ func (m *PriorityQueueManager) StopAll(stopQueue bool) {
 	}
 }
 
-// Enqueue routes a job to a named priority queue.
-func (m *PriorityQueueManager) Enqueue(name string, job Job, priority Priority) error {
+// Submit routes a job to a named priority queue.
+func (m *PriorityQueueManager) Submit(ctx context.Context, name string, job Job, priority Priority, opts ...SubmitOption) (*JobHandle, error) {
 	q, ok := m.ByName(name)
 	if !ok {
-		return ErrPriorityQueueManagerNotFound
+		return nil, ErrPriorityQueueManagerNotFound
 	}
-	return q.EnqueueOrError(job, priority)
+	return q.Submit(ctx, job, priority, opts...)
 }
 
-// TryEnqueue routes a job to a named priority queue without blocking.
-func (m *PriorityQueueManager) TryEnqueue(name string, job Job, priority Priority) (bool, error) {
+// SubmitAfter routes a delayed job to a named priority queue.
+func (m *PriorityQueueManager) SubmitAfter(ctx context.Context, name string, job Job, priority Priority, delay time.Duration, opts ...SubmitOption) (*JobHandle, error) {
 	q, ok := m.ByName(name)
 	if !ok {
-		return false, ErrPriorityQueueManagerNotFound
+		return nil, ErrPriorityQueueManagerNotFound
 	}
-	return q.TryEnqueueOrError(job, priority)
-}
-
-// DelayEnqueue routes a delayed job to a named priority queue.
-func (m *PriorityQueueManager) DelayEnqueue(name string, job Job, priority Priority, delay time.Duration) error {
-	q, ok := m.ByName(name)
-	if !ok {
-		return ErrPriorityQueueManagerNotFound
-	}
-	q.DelayEnqueue(job, priority, delay)
-	return nil
+	return q.SubmitAfter(ctx, job, priority, delay, opts...)
 }

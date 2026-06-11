@@ -74,7 +74,7 @@ func TestJobMetaInQueue(t *testing.T) {
 		var receivedMeta JobMeta
 		done := make(chan bool)
 
-		queue.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, queue, func(ctx context.Context) error {
 			receivedMeta = MetaFromContext(ctx)
 			done <- true
 			return nil
@@ -108,7 +108,7 @@ func TestJobMetaInQueue(t *testing.T) {
 
 		for i := range 3 {
 			i := i
-			queue.Enqueue(func(ctx context.Context) error {
+			mustSubmit(t, queue, func(ctx context.Context) error {
 				ids[i] = MetaFromContext(ctx).ID
 				wg.Done()
 				return nil
@@ -132,7 +132,7 @@ func TestJobMetaInQueue(t *testing.T) {
 		defer queue.Stop(true)
 
 		done := make(chan JobMeta, 1)
-		queue.Enqueue(func(ctx context.Context) error {
+		mustSubmit(t, queue, func(ctx context.Context) error {
 			done <- MetaFromContext(ctx)
 			return nil
 		})
@@ -198,7 +198,7 @@ func TestJobMetaWithRetry(t *testing.T) {
 			return nil
 		}, 5)
 
-		queue.Enqueue(job)
+		mustSubmit(t, queue, job)
 
 		select {
 		case <-done:

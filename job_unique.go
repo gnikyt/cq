@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -14,7 +13,12 @@ import (
 var (
 	ErrUniqueContended         = errors.New("cq: unique contention detected")
 	ErrWithoutOverlapContended = errors.New("cq: without overlap contention detected")
+	ErrUniqueJobRequired       = errors.New("cq: unique job required")
+	ErrUniqueLockerRequired    = errors.New("cq: unique locker required")
 )
+
+// defaultOverlapRetryTick controls how often WithoutOverlap retries acquisition.
+const defaultOverlapRetryTick = 10 * time.Millisecond
 
 // uniqueLockTokenCounter is a counter for unique lock tokens.
 var uniqueLockTokenCounter atomic.Uint64
@@ -24,8 +28,16 @@ type uniqueOptions struct {
 	tokenGenerator func() string // Function to generate a unique lock token.
 }
 
+// overlapOptions configures WithoutOverlap behavior.
+type overlapOptions struct {
+	retryInterval time.Duration
+}
+
 // UniqueOption configures unique wrapper behavior.
 type UniqueOption func(*uniqueOptions)
+
+// OverlapOption configures WithoutOverlap behavior.
+type OverlapOption func(*overlapOptions)
 
 // uniqueContentionOrDiscard returns ErrUniqueContended under ContextWithContentionTry.
 // Otherwise, it returns nil (quiet discard).
@@ -41,6 +53,14 @@ func uniqueContentionOrDiscard(ctx context.Context) error {
 func WithUniqueTokenGenerator(gen func() string) UniqueOption {
 	return func(opts *uniqueOptions) {
 		opts.tokenGenerator = gen
+	}
+}
+
+// WithOverlapRetryInterval sets how often WithoutOverlap retries lock acquisition.
+// Non-positive intervals use the default.
+func WithOverlapRetryInterval(interval time.Duration) OverlapOption {
+	return func(opts *overlapOptions) {
+		opts.retryInterval = interval
 	}
 }
 
@@ -68,6 +88,22 @@ func resolveUniqueOptions(opts []UniqueOption) uniqueOptions {
 	return cfg
 }
 
+// resolveOverlapOptions resolves the overlap options.
+func resolveOverlapOptions(opts []OverlapOption) overlapOptions {
+	cfg := overlapOptions{
+		retryInterval: defaultOverlapRetryTick,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.retryInterval <= 0 {
+		cfg.retryInterval = defaultOverlapRetryTick
+	}
+	return cfg
+}
+
 // nextUniqueLockToken generates a new unique lock token.
 func nextUniqueLockToken(gen func() string) string {
 	if gen == nil {
@@ -80,48 +116,64 @@ func nextUniqueLockToken(gen func() string) string {
 }
 
 // releaseLockByToken releases a lock by token.
-func releaseLockByToken(locker Locker[struct{}], key string, token string) {
-	if token == "" {
-		locker.Release(key)
-		return
+func releaseLockByToken(ctx context.Context, locker Locker[struct{}], key string, token string) error {
+	if renewableLocker, ok := locker.(RenewableLocker); ok && token != "" {
+		_, err := renewableLocker.ReleaseIfOwner(ctx, key, token)
+		return err
 	}
 
-	if renewableLocker, ok := locker.(RenewableLocker[struct{}]); ok {
-		_ = renewableLocker.ReleaseIfOwner(key, token)
-		return
-	}
-
-	locker.Release(key)
+	_, err := locker.Release(ctx, key)
+	return err
 }
 
 // WithoutOverlap ensures multiple jobs of a given key cannot run concurrently.
 // When ctx carries contention-try mode (see ContextWithContentionTry),
-// WithoutOverlap uses TryLock instead: if the mutex is busy it returns
-// ErrWithoutOverlapContended without running the inner job.
-// WithDispatchOnContention/WithDispatchOnError sets this automatically when invoking the job.
-func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
-	return func(ctx context.Context) error {
-		locker.Acquire(key, LockValue[*sync.Mutex]{
-			ExpiresAt: time.Time{},
-			Value:     &sync.Mutex{},
-		})
-
-		lock, _ := locker.Get(key)
-		mut := lock.Value
-
-		if contentionTryFromContext(ctx) {
-			// Contention-try mode: try to lock the mutex.
-			if mut.TryLock() {
-				defer mut.Unlock()
-				return job(ctx)
-			}
-			return ErrWithoutOverlapContended // Mutex is busy, return the contention error.
+// WithoutOverlap makes one acquisition attempt and returns
+// ErrWithoutOverlapContended when the key is already locked.
+// WithErrorOnContention sets this automatically when invoking the job.
+func WithoutOverlap(job Job, key string, locker Locker[struct{}], opts ...OverlapOption) Job {
+	cfg := resolveOverlapOptions(opts)
+	return func(ctx context.Context) (err error) {
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
+		if err := acquireOverlap(ctx, locker, key, contentionTryFromContext(ctx), cfg.retryInterval); err != nil {
+			return err
 		}
 
-		// Regular mode: lock the mutex.
-		mut.Lock()
-		defer mut.Unlock()
+		defer func() {
+			_, releaseErr := locker.Release(context.WithoutCancel(ctx), key)
+			err = errors.Join(err, releaseErr)
+		}()
 		return job(ctx)
+	}
+}
+
+// acquireOverlap waits for ownership unless tryOnly requests one attempt.
+func acquireOverlap(ctx context.Context, locker Locker[struct{}], key string, tryOnly bool, retryInterval time.Duration) error {
+	lock := LockValue[struct{}]{Value: struct{}{}}
+	for {
+		acquired, err := locker.Acquire(ctx, key, lock)
+		if err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
+		if tryOnly {
+			return ErrWithoutOverlapContended
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
@@ -133,25 +185,37 @@ func WithoutOverlap(job Job, key string, locker Locker[*sync.Mutex]) Job {
 // one instance can run at a time without any time-based constraint.
 // For enforcing a fixed minimum time between executions regardless of job
 // completion time, use WithUniqueWindow instead.
-// Under WithDispatchOnContention/WithDispatchOnError, duplicate runs return
-// ErrUniqueContended so the outer wrapper can apply drop, error, dispatch, or block policy.
-func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], opts ...UniqueOption) Job {
+// Under WithErrorOnContention, duplicate runs return ErrUniqueContended so the
+// caller can apply its own retry or routing policy.
+func WithUnique(job Job, key string, ut time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
-	return func(ctx context.Context) error {
-		lock, exists := locker.Get(key)
+	return func(ctx context.Context) (err error) {
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
+
+		lock, exists, err := locker.Get(ctx, key)
+		if err != nil {
+			return err
+		}
 		if exists {
 			if !lock.IsExpired() {
 				return uniqueContentionOrDiscard(ctx)
 			}
 			// Lock exists, but is expired, release it. In this event, the job may have
 			// not been processed yet, took too long to complete, etc.
-			releaseLockByToken(locker, key, lock.Token)
+			if err := releaseLockByToken(ctx, locker, key, lock.Token); err != nil {
+				return err
+			}
 		}
 
 		// Lock either does not exist or was released... acquire a new lock.
 		var es struct{}
 		var expiresAt time.Time
-		renewableLocker, renewable := locker.(RenewableLocker[struct{}])
+		renewableLocker, renewable := locker.(RenewableLocker)
 		token := ""
 		if renewable {
 			token = nextUniqueLockToken(cfg.tokenGenerator)
@@ -163,11 +227,15 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 			// Append duration to now.
 			expiresAt = time.Now().Add(ut)
 		}
-		if !locker.Acquire(key, LockValue[struct{}]{
+		acquired, err := locker.Acquire(ctx, key, LockValue[struct{}]{
 			ExpiresAt: expiresAt,
 			Value:     es,
 			Token:     token,
-		}) {
+		})
+		if err != nil {
+			return err
+		}
+		if !acquired {
 			return uniqueContentionOrDiscard(ctx) // Lock acquisition failed, return the contention error.
 		}
 
@@ -176,14 +244,20 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 				if ttl <= 0 {
 					ttl = ut
 				}
-				if !renewableLocker.Touch(key, token, time.Now().Add(ttl)) {
+				renewed, err := renewableLocker.Touch(ctx, key, token, time.Now().Add(ttl))
+				if err != nil {
+					return err
+				}
+				if !renewed {
 					return ErrUniqueLeaseLost
 				}
 				return nil
 			})
 		}
 
-		defer releaseLockByToken(locker, key, token)
+		defer func() {
+			err = errors.Join(err, releaseLockByToken(context.WithoutCancel(ctx), locker, key, token))
+		}()
 		return job(ctx)
 	}
 }
@@ -192,33 +266,49 @@ func WithUnique(job Job, key string, ut time.Duration, locker Locker[struct{}], 
 // regardless of how quickly the job completes. Unlike WithUnique, the lock is
 // not released when the job completes... instead, it persists for the full duration.
 // This guarantees a minimum time gap between executions.
-// Under WithDispatchOnContention, duplicate runs return ErrUniqueContended so the outer
-// wrapper can apply policy.
-func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[struct{}], opts ...UniqueOption) Job {
+// Under WithErrorOnContention, duplicate runs return ErrUniqueContended so the
+// caller can apply its own retry or routing policy.
+func WithUniqueWindow(job Job, key string, window time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
 	return func(ctx context.Context) error {
-		lock, exists := locker.Get(key)
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
+
+		lock, exists, err := locker.Get(ctx, key)
+		if err != nil {
+			return err
+		}
 		if exists {
 			if !lock.IsExpired() {
 				return uniqueContentionOrDiscard(ctx)
 			}
 			// Lock exists, but is expired, release it. In this event, the job may have
 			// not been processed yet, took too long to complete, etc.
-			releaseLockByToken(locker, key, lock.Token)
+			if err := releaseLockByToken(ctx, locker, key, lock.Token); err != nil {
+				return err
+			}
 		}
 
-		renewableLocker, renewable := locker.(RenewableLocker[struct{}])
+		renewableLocker, renewable := locker.(RenewableLocker)
 		token := ""
 		if renewable {
 			token = nextUniqueLockToken(cfg.tokenGenerator)
 		}
 
 		// Acquire lock for the full window duration.
-		if !locker.Acquire(key, LockValue[struct{}]{
+		acquired, err := locker.Acquire(ctx, key, LockValue[struct{}]{
 			ExpiresAt: time.Now().Add(window),
 			Value:     struct{}{},
 			Token:     token,
-		}) {
+		})
+		if err != nil {
+			return err
+		}
+		if !acquired {
 			return uniqueContentionOrDiscard(ctx) // Lock acquisition failed, return the contention error.
 		}
 
@@ -227,7 +317,11 @@ func WithUniqueWindow(job Job, key string, window time.Duration, locker Locker[s
 				if ttl <= 0 {
 					ttl = window
 				}
-				if !renewableLocker.Touch(key, token, time.Now().Add(ttl)) {
+				renewed, err := renewableLocker.Touch(ctx, key, token, time.Now().Add(ttl))
+				if err != nil {
+					return err
+				}
+				if !renewed {
 					return ErrUniqueLeaseLost
 				}
 				return nil

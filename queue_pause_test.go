@@ -2,6 +2,7 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -46,7 +47,7 @@ func TestQueuePauseResume_Local(t *testing.T) {
 		t.Fatal("IsPaused(): got false, want true")
 	}
 
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		called.Store(true)
 		return nil
 	})
@@ -81,7 +82,7 @@ func TestQueuePause_ActiveJobContinues(t *testing.T) {
 	q.Start()
 	defer q.Stop(true)
 
-	q.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q, func(ctx context.Context) error {
 		started <- struct{}{}
 		<-release
 		done <- struct{}{}
@@ -132,7 +133,7 @@ func TestQueuePauseResume_Distributed(t *testing.T) {
 	}
 
 	var called atomic.Bool
-	q2.Enqueue(func(ctx context.Context) error {
+	mustSubmit(t, q2, func(ctx context.Context) error {
 		called.Store(true)
 		return nil
 	})
@@ -163,7 +164,7 @@ func TestQueuePauseResume_Distributed(t *testing.T) {
 	}
 }
 
-func TestQueuePauseReject_TryEnqueue(t *testing.T) {
+func TestQueuePauseReject_NonBlockingSubmit(t *testing.T) {
 	q := NewQueue(1, 1, 10, WithPauseBehavior(PauseReject))
 	q.Start()
 	defer q.Stop(true)
@@ -172,8 +173,8 @@ func TestQueuePauseReject_TryEnqueue(t *testing.T) {
 		t.Fatalf("Pause(): unexpected error: %v", err)
 	}
 
-	ok := q.TryEnqueue(func(ctx context.Context) error { return nil })
-	if ok {
-		t.Fatal("TryEnqueue(): got true, want false while paused in reject mode")
+	handle, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil }, WithNonBlocking())
+	if handle != nil || !errors.Is(err, ErrQueuePaused) {
+		t.Fatalf("Submit(): got (%v, %v), want (nil, %v)", handle, err, ErrQueuePaused)
 	}
 }

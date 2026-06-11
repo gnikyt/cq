@@ -22,7 +22,7 @@ func TestSchedulerEvery(t *testing.T) {
 	}
 
 	// Schedule job to run every 50ms.
-	err := scheduler.Every("test-job", 50*time.Millisecond, job)
+	_, err := scheduler.Every("test-job", 50*time.Millisecond, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
@@ -35,6 +35,15 @@ func TestSchedulerEvery(t *testing.T) {
 	if executions < 3 {
 		t.Errorf("Every(): got %d executions, want >= 3", executions)
 	}
+}
+
+func TestNewSchedulerNilQueuePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewScheduler(nil queue): expected panic")
+		}
+	}()
+	_ = NewScheduler(context.Background(), nil)
 }
 
 func TestSchedulerAt(t *testing.T) {
@@ -52,7 +61,7 @@ func TestSchedulerAt(t *testing.T) {
 
 	// Schedule job to run once in 100ms.
 	runAt := time.Now().Add(100 * time.Millisecond)
-	err := scheduler.At("one-time-job", runAt, job)
+	_, err := scheduler.At("one-time-job", runAt, job)
 	if err != nil {
 		t.Fatalf("At(): unexpected err: %v", err)
 	}
@@ -91,24 +100,24 @@ func TestSchedulerDuplicateID(t *testing.T) {
 	}
 
 	// Add first job.
-	err := scheduler.Every("duplicate", 1*time.Second, job)
+	_, err := scheduler.Every("duplicate", 1*time.Second, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
 	// Try to add job with same ID.
-	err = scheduler.Every("duplicate", 1*time.Second, job)
+	_, err = scheduler.Every("duplicate", 1*time.Second, job)
 	if err == nil {
 		t.Error("Every(): expected error for duplicate ID, got nil")
 	}
 
 	// Same for At().
-	err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
+	_, err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
 	if err != nil {
 		t.Fatalf("At(): unexpected err: %v", err)
 	}
 
-	err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
+	_, err = scheduler.At("duplicate2", time.Now().Add(1*time.Hour), job)
 	if err == nil {
 		t.Error("At(): expected error for duplicate ID, got nil")
 	}
@@ -129,7 +138,7 @@ func TestSchedulerRemove(t *testing.T) {
 	}
 
 	// Schedule job.
-	err := scheduler.Every("removable", 50*time.Millisecond, job)
+	_, err := scheduler.Every("removable", 50*time.Millisecond, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
@@ -173,12 +182,12 @@ func TestSchedulerStop(t *testing.T) {
 	}
 
 	// Schedule multiple jobs.
-	err := scheduler.Every("job1", 50*time.Millisecond, job)
+	_, err := scheduler.Every("job1", 50*time.Millisecond, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
 
-	err = scheduler.Every("job2", 50*time.Millisecond, job)
+	_, err = scheduler.Every("job2", 50*time.Millisecond, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
@@ -217,7 +226,7 @@ func TestSchedulerHas(t *testing.T) {
 	}
 
 	// Add job and check.
-	err := scheduler.Every("exists", 1*time.Second, job)
+	_, err := scheduler.Every("exists", 1*time.Second, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
@@ -299,7 +308,7 @@ func TestSchedulerAtPastTime(t *testing.T) {
 
 	// Try to schedule in the past.
 	pastTime := time.Now().Add(-1 * time.Hour)
-	err := scheduler.At("past-job", pastTime, job)
+	_, err := scheduler.At("past-job", pastTime, job)
 	if err == nil {
 		t.Error("At(): expected error for past time, got nil")
 	}
@@ -318,15 +327,31 @@ func TestSchedulerEveryInvalidInterval(t *testing.T) {
 	}
 
 	// Try zero interval.
-	err := scheduler.Every("zero", 0, job)
+	_, err := scheduler.Every("zero", 0, job)
 	if err == nil {
 		t.Error("Every(): expected error for zero interval, got nil")
 	}
 
 	// Try negative interval.
-	err = scheduler.Every("negative", -1*time.Second, job)
+	_, err = scheduler.Every("negative", -1*time.Second, job)
 	if err == nil {
 		t.Error("Every(): expected error for negative interval, got nil")
+	}
+}
+
+func TestSchedulerRejectsNilJob(t *testing.T) {
+	queue := NewQueue(1, 1, 1)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	if handle, err := scheduler.Every("nil-job", time.Second, nil); handle != nil || !errors.Is(err, ErrScheduleJobRequired) {
+		t.Fatalf("Every(nil job): got (%v, %v), want (nil, %v)", handle, err, ErrScheduleJobRequired)
+	}
+	if handle, err := scheduler.At("nil-job-at", time.Now().Add(time.Second), nil); handle != nil || !errors.Is(err, ErrScheduleJobRequired) {
+		t.Fatalf("At(nil job): got (%v, %v), want (nil, %v)", handle, err, ErrScheduleJobRequired)
 	}
 }
 
@@ -342,45 +367,45 @@ func TestSchedulerErrorChecking(t *testing.T) {
 		return nil
 	}
 
-	// Test ErrJobExists.
-	err := scheduler.Every("duplicate", 1*time.Second, job)
+	// Test ErrScheduleExists.
+	_, err := scheduler.Every("duplicate", 1*time.Second, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err on first call: %v", err)
 	}
 
-	err = scheduler.Every("duplicate", 1*time.Second, job)
-	if !errors.Is(err, ErrJobExists) {
-		t.Errorf("Every(): expected ErrJobExists, got %v", err)
+	_, err = scheduler.Every("duplicate", 1*time.Second, job)
+	if !errors.Is(err, ErrScheduleExists) {
+		t.Errorf("Every(): expected ErrScheduleExists, got %v", err)
 	}
 
-	// Test ErrInvalidInterval.
-	err = scheduler.Every("invalid", 0, job)
-	if !errors.Is(err, ErrInvalidInterval) {
-		t.Errorf("Every(): expected ErrInvalidInterval for zero interval, got %v", err)
+	// Test ErrScheduleIntervalInvalid.
+	_, err = scheduler.Every("invalid", 0, job)
+	if !errors.Is(err, ErrScheduleIntervalInvalid) {
+		t.Errorf("Every(): expected ErrScheduleIntervalInvalid for zero interval, got %v", err)
 	}
 
-	err = scheduler.Every("invalid2", -1*time.Second, job)
-	if !errors.Is(err, ErrInvalidInterval) {
-		t.Errorf("Every(): expected ErrInvalidInterval for negative interval, got %v", err)
+	_, err = scheduler.Every("invalid2", -1*time.Second, job)
+	if !errors.Is(err, ErrScheduleIntervalInvalid) {
+		t.Errorf("Every(): expected ErrScheduleIntervalInvalid for negative interval, got %v", err)
 	}
 
 	// Test ErrScheduleInPast.
 	pastTime := time.Now().Add(-1 * time.Hour)
-	err = scheduler.At("past", pastTime, job)
+	_, err = scheduler.At("past", pastTime, job)
 	if !errors.Is(err, ErrScheduleInPast) {
 		t.Errorf("At(): expected ErrScheduleInPast, got %v", err)
 	}
 
-	// Test ErrJobExists for At().
+	// Test ErrScheduleExists for At().
 	futureTime := time.Now().Add(1 * time.Hour)
-	err = scheduler.At("duplicate-at", futureTime, job)
+	_, err = scheduler.At("duplicate-at", futureTime, job)
 	if err != nil {
 		t.Fatalf("At(): unexpected err on first call: %v", err)
 	}
 
-	err = scheduler.At("duplicate-at", futureTime, job)
-	if !errors.Is(err, ErrJobExists) {
-		t.Errorf("At(): expected ErrJobExists, got %v", err)
+	_, err = scheduler.At("duplicate-at", futureTime, job)
+	if !errors.Is(err, ErrScheduleExists) {
+		t.Errorf("At(): expected ErrScheduleExists, got %v", err)
 	}
 }
 
@@ -400,7 +425,7 @@ func TestSchedulerContextCancellation(t *testing.T) {
 	}
 
 	// Schedule recurring job.
-	err := scheduler.Every("auto-cancel", 50*time.Millisecond, job)
+	_, err := scheduler.Every("auto-cancel", 50*time.Millisecond, job)
 	if err != nil {
 		t.Fatalf("Every(): unexpected err: %v", err)
 	}
@@ -420,4 +445,165 @@ func TestSchedulerContextCancellation(t *testing.T) {
 	if finalCount != firstCount {
 		t.Errorf("ContextCancellation(): got %d executions after cancel, want %d (no change)", finalCount, firstCount)
 	}
+}
+
+func TestScheduleHandle_LatestSubmissionAndOptions(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	schedule, err := scheduler.At(
+		"report",
+		time.Now().Add(10*time.Millisecond),
+		func(context.Context) error { return nil },
+		WithJobName("daily-report"),
+		WithJobAttribute("team", "finance"),
+	)
+	if err != nil {
+		t.Fatalf("At(): %v", err)
+	}
+	<-schedule.Done()
+
+	handle, submitErr, ok := schedule.Latest()
+	if !ok || submitErr != nil || handle == nil {
+		t.Fatalf("Latest(): got (%v, %v, %v), want (handle, nil, true)", handle, submitErr, ok)
+	}
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(): %v", err)
+	}
+	meta := handle.Meta()
+	if meta.Name != "daily-report" || meta.Attributes["team"] != "finance" {
+		t.Fatalf("Meta(): got %+v", meta)
+	}
+	if schedule.ID() != "report" || schedule.SubmissionAttempts() != 1 {
+		t.Fatalf("schedule: id=%q submissionAttempts=%d", schedule.ID(), schedule.SubmissionAttempts())
+	}
+}
+
+func TestScheduleHandle_RecordsSubmissionRejection(t *testing.T) {
+	queue := NewQueue(0, 0, 0)
+	queue.Start()
+	queue.Stop(false)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	schedule, err := scheduler.At("rejected", time.Now().Add(10*time.Millisecond), func(context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("At(): %v", err)
+	}
+	<-schedule.Done()
+
+	handle, submitErr, ok := schedule.Latest()
+	if !ok || handle != nil || !errors.Is(submitErr, ErrQueueStopped) {
+		t.Fatalf("Latest(): got (%v, %v, %v), want (nil, %v, true)", handle, submitErr, ok, ErrQueueStopped)
+	}
+}
+
+func TestScheduleHandle_Cancel(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	schedule, err := scheduler.Every("cancel-me", time.Hour, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("Every(): %v", err)
+	}
+	if !schedule.Cancel() {
+		t.Fatal("Cancel(): got false, want true")
+	}
+	if schedule.Cancel() {
+		t.Fatal("Cancel(): second call got true, want false")
+	}
+	<-schedule.Done()
+	if scheduler.Has("cancel-me") {
+		t.Fatal("Has(): cancelled schedule still registered")
+	}
+}
+
+func TestScheduleHandle_LatestSubmissionCanBeCancelled(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	started := make(chan struct{})
+	schedule, err := scheduler.At("cancel-occurrence", time.Now().Add(10*time.Millisecond), func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("At(): %v", err)
+	}
+	<-started
+
+	handle, submitErr, attempted := schedule.Latest()
+	if !attempted || submitErr != nil || handle == nil {
+		t.Fatalf("Latest(): got (%v, %v, %v), want (handle, nil, true)", handle, submitErr, attempted)
+	}
+	if !handle.Cancel() {
+		t.Fatal("latest Cancel(): got false, want true")
+	}
+	if err := handle.Wait(context.Background()); !errors.Is(err, ErrJobCancelled) {
+		t.Fatalf("latest Wait(): got %v, want %v", err, ErrJobCancelled)
+	}
+}
+
+func TestSchedulerStop_RejectsNewSchedules(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	schedule, err := scheduler.Every("existing", time.Hour, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("Every(): %v", err)
+	}
+	scheduler.Stop()
+	<-schedule.Done()
+
+	if scheduler.Count() != 0 {
+		t.Fatalf("Count(): got %d, want 0", scheduler.Count())
+	}
+	if handle, err := scheduler.Every("new", time.Hour, func(context.Context) error { return nil }); handle != nil || !errors.Is(err, ErrSchedulerStopped) {
+		t.Fatalf("Every(after stop): got (%v, %v), want (nil, %v)", handle, err, ErrSchedulerStopped)
+	}
+}
+
+func TestScheduleHandle_OldHandleCannotCancelReusedID(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	old, err := scheduler.At("reused", time.Now().Add(10*time.Millisecond), func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("At(): %v", err)
+	}
+	<-old.Done()
+
+	current, err := scheduler.Every("reused", time.Hour, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("Every(): %v", err)
+	}
+	if old.Cancel() {
+		t.Fatal("old Cancel(): got true, want false")
+	}
+	if !scheduler.Has("reused") {
+		t.Fatal("old Cancel(): cancelled current schedule")
+	}
+	current.Cancel()
 }

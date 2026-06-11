@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"sync"
@@ -117,30 +118,20 @@ func (m *QueueManager) StopAll(wait bool) {
 	}
 }
 
-// Enqueue routes a job to a named queue.
-func (m *QueueManager) Enqueue(name string, job Job) error {
+// Submit routes a job to a named queue and returns its execution handle.
+func (m *QueueManager) Submit(ctx context.Context, name string, job Job, opts ...SubmitOption) (*JobHandle, error) {
 	q, ok := m.ByName(name)
 	if !ok {
-		return ErrQueueManagerNotFound
+		return nil, ErrQueueManagerNotFound
 	}
-	return q.EnqueueOrError(job)
+	return q.Submit(ctx, job, opts...)
 }
 
-// TryEnqueue routes a job to a named queue without blocking.
-func (m *QueueManager) TryEnqueue(name string, job Job) (bool, error) {
+// SubmitAfter routes a delayed job to a named queue.
+func (m *QueueManager) SubmitAfter(ctx context.Context, name string, job Job, delay time.Duration, opts ...SubmitOption) (*JobHandle, error) {
 	q, ok := m.ByName(name)
 	if !ok {
-		return false, ErrQueueManagerNotFound
+		return nil, ErrQueueManagerNotFound
 	}
-	return q.TryEnqueueOrError(job)
-}
-
-// DelayEnqueue routes a delayed job to a named queue.
-func (m *QueueManager) DelayEnqueue(name string, job Job, delay time.Duration) error {
-	q, ok := m.ByName(name)
-	if !ok {
-		return ErrQueueManagerNotFound
-	}
-	q.DelayEnqueue(job, delay)
-	return nil
+	return q.SubmitAfter(ctx, job, delay, opts...)
 }

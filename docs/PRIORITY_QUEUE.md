@@ -1,6 +1,8 @@
 # Priority Queue
 
-Dispatch jobs based on priority levels using weighted fair queuing. Higher priority jobs get more execution slots per tick, but lower priorities still make progress. Useful when some jobs are more time-sensitive than others.
+Dispatch jobs based on priority levels using weighted fair queuing. Higher
+priority jobs get more execution slots per tick, but lower priorities still
+make progress. Useful when some jobs are more time-sensitive than others.
 
 ```go
 queue := cq.NewQueue(2, 10, 100)
@@ -9,31 +11,47 @@ queue.Start()
 pq := cq.NewPriorityQueue(queue, 50)
 defer pq.Stop(true)
 
-pq.Enqueue(criticalJob, cq.PriorityHighest)
-pq.Enqueue(normalJob, cq.PriorityMedium)
-pq.Enqueue(cleanupJob, cq.PriorityLowest)
+critical, err := pq.Submit(ctx, criticalJob, cq.PriorityHighest)
+normal, err := pq.Submit(ctx, normalJob, cq.PriorityMedium)
+cleanup, err := pq.Submit(ctx, cleanupJob, cq.PriorityLowest)
 
-// Explicit result variants.
-_ = pq.EnqueueOrError(criticalJob, cq.PriorityHighest)
-ok, err := pq.TryEnqueueOrError(normalJob, cq.PriorityMedium)
+// Non-blocking priority-buffer acceptance.
+handle, err := pq.Submit(ctx, normalJob, cq.PriorityMedium, cq.WithNonBlocking())
 ```
 
-Priority levels: `PriorityHighest`, `PriorityHigh`, `PriorityMedium`, `PriorityLow`, `PriorityLowest`
+Priority levels: `PriorityHighest`, `PriorityHigh`, `PriorityMedium`,
+`PriorityLow`, `PriorityLowest`
 
-Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch cycle, the highest priority queue gets 5 job attempts, then the next gets 3, then 2, then 1, then 1 for the lowest.
+Default weights (attempts per tick): `5:3:2:1:1`. This means per dispatch
+cycle, the highest priority queue gets 5 job attempts, then the next gets 3,
+then 2, then 1, then 1 for the lowest.
 
-Typed priority enqueue errors:
+Typed priority submission errors:
 - `cq.ErrPriorityInvalid`
 - `cq.ErrPriorityQueueStopped`
 - `cq.ErrPriorityQueueFull`
 
+Construction/option validation:
+
+- `cq.NewPriorityQueue(nil, ...)` panics
+  (`cq: priority queue requires base queue`).
+- `cq.WithPriorityTick(d)` uses the default tick when `d <= 0`.
+
+Returned `JobHandle` values support cancellation while delayed, waiting in a
+priority buffer, or running. Cancelling a buffered job prevents execution but
+does not immediately reclaim its priority-buffer slot.
+
 #### Named Priority Queues
 
-**What it does:** Registers multiple priority queues by name and routes jobs to them through one manager.
+**What it does:** Registers multiple priority queues by name and routes jobs
+to them through one manager.
 
-**When to use:** You want the same named-routing convenience as `QueueManager`, but your application only works with `PriorityQueue`.
+**When to use:** You want the same named-routing convenience as
+`QueueManager`, but your application only works with `PriorityQueue`.
 
-**Caveat:** `PriorityQueueManager` manages priority queue routing and shutdown, but each underlying base `Queue` still defines worker sizing and execution behavior.
+**Caveat:** `PriorityQueueManager` manages priority queue routing and shutdown,
+but each underlying base `Queue` still defines worker sizing and execution
+behavior.
 
 ```go
 criticalBase := cq.NewQueue(5, 20, 500)
@@ -48,8 +66,8 @@ _ = mgr.Register("bulk", cq.NewPriorityQueue(bulkBase, 200))
 
 defer mgr.StopAll(true)
 
-_ = mgr.Enqueue("critical", criticalJob, cq.PriorityHighest)
-_ = mgr.DelayEnqueue("bulk", cleanupJob, cq.PriorityLow, time.Minute)
+_, _ = mgr.Submit(ctx, "critical", criticalJob, cq.PriorityHighest)
+_, _ = mgr.SubmitAfter(ctx, "bulk", cleanupJob, cq.PriorityLow, time.Minute)
 ```
 
 #### Custom Weights
@@ -58,7 +76,8 @@ _ = mgr.DelayEnqueue("bulk", cleanupJob, cq.PriorityLow, time.Minute)
 
 **When to use:** You need workload-specific fairness or latency tuning.
 
-**Caveat:** Operationally, aggressive high-priority weights can starve lower priorities.
+**Caveat:** Operationally, aggressive high-priority weights can starve lower
+priorities.
 
 ```go
 // Using raw counts.
@@ -86,7 +105,8 @@ pq := cq.NewPriorityQueue(queue, 50,
 
 #### Drain Before Stop
 
-**What it does:** Flushes buffered priority jobs into the base queue before shutdown.
+**What it does:** Flushes buffered priority jobs into the base queue before
+shutdown.
 
 **When to use:** Graceful shutdown where queued work must be preserved.
 
