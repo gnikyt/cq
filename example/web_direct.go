@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	. "github.com/gnikyt/cq"
+	. "github.com/gnikyt/cq/v2"
 )
 
 // Queue instance.

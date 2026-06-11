@@ -1,5 +1,5 @@
 BINARY_NAME=cq
-PKG=github.com/gnikyt/cq
+PKG=github.com/gnikyt/cq/v2
 
 all: clean build test
 

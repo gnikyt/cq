@@ -2,7 +2,7 @@
 
 [![Testing](https://github.com/gnikyt/cq/actions/workflows/cq.yml/badge.svg)](https://github.com/gnikyt/cq/actions/workflows/cq.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gnikyt/cq)](https://goreportcard.com/report/github.com/gnikyt/cq)
-[![GoDoc](https://godoc.org/github.com/gnikyt/cq?status.svg)](https://godoc.org/github.com/gnikyt/cq)
+[![GoDoc](https://godoc.org/github.com/gnikyt/cq/v2?status.svg)](https://godoc.org/github.com/gnikyt/cq/v2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A lightweight, auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then compose behavior with wrappers for retries, timeouts, tracing, and more.
@@ -64,7 +64,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnikyt/cq"
+	"github.com/gnikyt/cq/v2"
 )
 
 func doWork(ctx context.Context) error {
@@ -485,14 +485,14 @@ Run the full suite:
 
 ```
 go test ./...
-ok  	github.com/gnikyt/cq	17.117s
+ok  	github.com/gnikyt/cq/v2	17.117s
 ```
 
 Run with race detector:
 
 ```
 go test -race ./...
-ok  	github.com/gnikyt/cq	18.548s
+ok  	github.com/gnikyt/cq/v2	18.548s
 ```
 
 ### Benchmarks
