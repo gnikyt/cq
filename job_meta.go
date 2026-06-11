@@ -32,6 +32,12 @@ type lockTouchRequester func(time.Duration) error
 // lastErrorKey is the context key for the previous attempt error.
 type lastErrorKey struct{}
 
+// discardedOutcomeMarkerKey is the context key for internal discard accounting.
+type discardedOutcomeMarkerKey struct{}
+
+// discardedOutcomeMarker marks a successful wrapper-level discard outcome.
+type discardedOutcomeMarker func()
+
 // JobMeta contains metadata about the current job execution.
 type JobMeta struct {
 	ID         string            // Unique job identifier.
@@ -67,6 +73,20 @@ func LastErrorFromContext(ctx context.Context) error {
 // contextWithLastError returns a new context with the previous attempt error.
 func contextWithLastError(ctx context.Context, err error) context.Context {
 	return context.WithValue(ctx, lastErrorKey{}, err)
+}
+
+// contextWithDiscardMarker returns a context with an internal discard marker.
+func contextWithDiscardMarker(ctx context.Context, marker discardedOutcomeMarker) context.Context {
+	return context.WithValue(ctx, discardedOutcomeMarkerKey{}, marker)
+}
+
+// markDiscardedFromContext marks discard accounting when marker support is present.
+func markDiscardedFromContext(ctx context.Context) {
+	fn, ok := ctx.Value(discardedOutcomeMarkerKey{}).(discardedOutcomeMarker)
+	if !ok || fn == nil {
+		return
+	}
+	fn()
 }
 
 // RequestRelease asks the current wrapper chain to resubmit this job after delay.

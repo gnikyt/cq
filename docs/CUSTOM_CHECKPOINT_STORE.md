@@ -130,5 +130,7 @@ job := cq.WithCheckpoint(actualJob, "send-invoice", store)
 - In strict mode (default), `WithCheckpoint` returns an error when key resolution/checkpoint operations fail.
 - In best-effort mode (`WithCheckpointBestEffort()`), failures fall back to executing the job without checkpoint enforcement.
 - Use `WithCheckpointSaveOnFailure()` when failed runs should persist resume payload for retries.
-- Inside checkpointed jobs, read/write payload via `cq.CheckpointDataFromContext(ctx)` and `cq.SetCheckpointData(ctx, data)`.
+- `SetCheckpointData` updates execution-local payload for end-of-run persistence.
+- `SaveCheckpointData` and `SaveCheckpointDataAsJSON` synchronously store `Done=false` progress during execution. Explicit immediate-save failures are returned even in best-effort mode.
+- Inside checkpointed jobs, read payload via `CheckpointDataFromContext` or `CheckpointDataAsJSON`.
 - Use `WithCheckpointDeleteOnSuccess()` when checkpoint cleanup should happen automatically after successful completion.

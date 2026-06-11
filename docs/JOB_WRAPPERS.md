@@ -565,6 +565,34 @@ job := func(ctx context.Context) error {
 }
 ```
 
+`SetCheckpointData` updates execution-local payload. It is persisted when the
+job succeeds, or when it fails with `WithCheckpointSaveOnFailure`.
+
+For long-running jobs, use `SaveCheckpointData` to synchronously persist
+`Done=false` progress before the job returns:
+
+```go
+job := func(ctx context.Context) error {
+	for _, batch := range batches {
+		if err := processBatch(ctx, batch); err != nil {
+			return err
+		}
+		if err := cq.SaveCheckpointDataAsJSON(ctx, batchProgress{
+			LastCompletedID: batch.ID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+`SaveCheckpointData` blocks until `CheckpointStore.Store` responds. When called
+from a `WithCheckpoint`-wrapped job, store failures return
+`ErrCheckpointMarkFailed`. If the context has no checkpoint state, for example,
+the job was not wrapped with `WithCheckpoint`, then it returns
+`ErrCheckpointSaveUnavailable`.
+
 To remove checkpoint records after success, add `cq.WithCheckpointDeleteOnSuccess()`.
 
 To use domain keys (for example `orderID`) instead of job ID, override key resolution:

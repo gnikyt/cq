@@ -220,6 +220,15 @@ job := cq.WithChain(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
+Inside a checkpointed job, use `SaveCheckpointData` when progress must be
+persisted before the job returns:
+
+```go
+if err := cq.SaveCheckpointData(ctx, []byte("batch-42-complete")); err != nil {
+	return err
+}
+```
+
 ### Idempotent Work (unique + timeout)
 
 ```go
@@ -359,12 +368,13 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStateFailed    - Jobs completed with error.
 // cq.JobStateCancelled - Jobs completed through handle cancellation.
 // cq.JobStateCompleted - Jobs completed successfully.
+// cq.JobStateDiscarded - Jobs marked as discarded outcomes.
 ```
 
-`queue.Stats()` returns `cq.QueueStats` with queue state (`Stopped`, `Paused`),
+`queue.Stats()` returns `cq.QueueStats` with queue name (`Name`), queue state (`Stopped`, `Paused`),
 worker details (`WorkersMin`, `WorkersMax`, `RunningWorkers`, `IdleWorkers`, `Capacity`),
 and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`,
-`CancelledJobs`, `CompletedJobs`).
+`DiscardedJobs`, `CancelledJobs`, `CompletedJobs`, `RescheduledJobs`, `ReleasedJobs`).
 in one snapshot call.
 
 ### Runtime Scaling

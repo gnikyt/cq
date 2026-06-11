@@ -37,19 +37,26 @@ type submissionOptions struct {
 
 // QueueStats is an atomic snapshot of queue state and tallies.
 type QueueStats struct {
-	Stopped        bool
-	Paused         bool
+	Name    string
+	Stopped bool
+	Paused  bool
+
 	WorkersMin     int
 	WorkersMax     int
 	RunningWorkers int
 	IdleWorkers    int
 	Capacity       int
-	CreatedJobs    int
-	PendingJobs    int
-	ActiveJobs     int
-	FailedJobs     int
-	CancelledJobs  int
-	CompletedJobs  int
+
+	CreatedJobs   int
+	PendingJobs   int
+	ActiveJobs    int
+	FailedJobs    int
+	DiscardedJobs int
+	CancelledJobs int
+	CompletedJobs int
+
+	RescheduledJobs int
+	ReleasedJobs    int
 }
 
 // Queue dispatches jobs to workers.
@@ -73,12 +80,15 @@ type Queue struct {
 	acceptMut     sync.RWMutex   // Synchronizes submission acceptance with Stop/Terminate.
 	jobsCloseOnce sync.Once      // Ensures jobs channel is closed at most once.
 
-	createdJobsTally   atomic.Int64 // Total jobs accepted.
-	activeJobsTally    atomic.Int64 // Jobs currently executing.
-	pendingJobsTally   atomic.Int64 // Jobs waiting in the queue.
-	failedJobsTally    atomic.Int64 // Jobs completed with error.
-	cancelledJobsTally atomic.Int64 // Jobs completed through handle cancellation.
-	completedJobsTally atomic.Int64 // Jobs completed successfully.
+	createdJobsTally     atomic.Int64 // Total jobs accepted.
+	activeJobsTally      atomic.Int64 // Jobs currently executing.
+	pendingJobsTally     atomic.Int64 // Jobs waiting in the queue.
+	failedJobsTally      atomic.Int64 // Jobs completed with error.
+	cancelledJobsTally   atomic.Int64 // Jobs completed through handle cancellation.
+	completedJobsTally   atomic.Int64 // Jobs completed successfully.
+	discardedJobsTally   atomic.Int64 // Jobs completed as discarded outcomes.
+	rescheduledJobsTally atomic.Int64 // Total job reschedule requests.
+	releasedJobsTally    atomic.Int64 // Total release/release-self requests.
 
 	jobIDCounter   atomic.Int64            // Counter for generating unique job IDs.
 	idGenerator    IDGenerator             // Optional override for generating job IDs.
@@ -95,6 +105,7 @@ type Queue struct {
 	pauseStoreKey string        // Key used for distributed pause state.
 	pausePollTick time.Duration // Interval for distributed pause polling.
 	pauseBehavior PauseBehavior // Submission behavior while paused.
+	name          string        // Optional queue name used for observability.
 }
 
 // NewQueue creates a queue with worker and buffer limits.
@@ -361,6 +372,8 @@ func (q *Queue) TallyOf(js JobState) int {
 		val = q.failedJobsTally.Load()
 	case JobStateCancelled:
 		val = q.cancelledJobsTally.Load()
+	case JobStateDiscarded:
+		val = q.discardedJobsTally.Load()
 	case JobStatePending:
 		val = q.pendingJobsTally.Load()
 	case JobStateActive:
@@ -391,19 +404,23 @@ func (q *Queue) Stats() QueueStats {
 	q.mut.Unlock()
 
 	return QueueStats{
-		Stopped:        q.stopped.Load(),
-		Paused:         q.IsPaused(),
-		WorkersMin:     wmin,
-		WorkersMax:     wmax,
-		RunningWorkers: int(q.workersRunningTally.Load()),
-		IdleWorkers:    int(q.workersIdleTally.Load()),
-		Capacity:       cap(q.jobs),
-		CreatedJobs:    int(q.createdJobsTally.Load()),
-		PendingJobs:    int(q.pendingJobsTally.Load()),
-		ActiveJobs:     int(q.activeJobsTally.Load()),
-		FailedJobs:     int(q.failedJobsTally.Load()),
-		CancelledJobs:  int(q.cancelledJobsTally.Load()),
-		CompletedJobs:  int(q.completedJobsTally.Load()),
+		Name:            q.name,
+		Stopped:         q.stopped.Load(),
+		Paused:          q.IsPaused(),
+		WorkersMin:      wmin,
+		WorkersMax:      wmax,
+		RunningWorkers:  int(q.workersRunningTally.Load()),
+		IdleWorkers:     int(q.workersIdleTally.Load()),
+		Capacity:        cap(q.jobs),
+		CreatedJobs:     int(q.createdJobsTally.Load()),
+		PendingJobs:     int(q.pendingJobsTally.Load()),
+		ActiveJobs:      int(q.activeJobsTally.Load()),
+		FailedJobs:      int(q.failedJobsTally.Load()),
+		DiscardedJobs:   int(q.discardedJobsTally.Load()),
+		CancelledJobs:   int(q.cancelledJobsTally.Load()),
+		CompletedJobs:   int(q.completedJobsTally.Load()),
+		RescheduledJobs: int(q.rescheduledJobsTally.Load()),
+		ReleasedJobs:    int(q.releasedJobsTally.Load()),
 	}
 }
 
@@ -592,6 +609,12 @@ func (q *Queue) markJobFailed() {
 	q.failedJobsTally.Add(1)
 }
 
+// markJobDiscarded records a discarded active job.
+func (q *Queue) markJobDiscarded() {
+	q.activeJobsTally.Add(-1)
+	q.discardedJobsTally.Add(1)
+}
+
 // markJobCancelled records a cancelled active job.
 func (q *Queue) markJobCancelled() {
 	q.activeJobsTally.Add(-1)
@@ -602,6 +625,14 @@ func (q *Queue) markJobCancelled() {
 func (q *Queue) markJobCompleted() {
 	q.activeJobsTally.Add(-1)
 	q.completedJobsTally.Add(1)
+}
+
+// markJobRescheduled records a reschedule request.
+func (q *Queue) markJobRescheduled(reason string) {
+	q.rescheduledJobsTally.Add(1)
+	if reason == RescheduleReasonRelease || reason == RescheduleReasonReleaseSelf {
+		q.releasedJobsTally.Add(1)
+	}
 }
 
 // markWorkerIdle records a worker becoming idle.
@@ -710,7 +741,25 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		// Create a new context with the job metadata.
 		jobCtx := contextWithMeta(executionCtx, meta)
 
-		q.dispatchStart(jobCtx, meta)
+		// Create a new context with the retry attempt emitter.
+		jobCtx = contextWithRetryAttemptEmitter(jobCtx, retryAttemptEmitter{
+			start: func(hookCtx context.Context, hookMeta JobMeta, startedAt time.Time) {
+				q.dispatchAttemptStart(hookCtx, hookMeta, startedAt)
+			},
+			result: func(hookCtx context.Context, hookMeta JobMeta, hookErr error, startedAt, finishedAt time.Time) {
+				q.dispatchAttemptResult(hookCtx, hookMeta, hookErr, startedAt, finishedAt)
+			},
+		})
+
+		// Create a new context with the discard marker.
+		discarded := false
+		jobCtx = contextWithDiscardMarker(jobCtx, func() {
+			discarded = true
+		})
+
+		// Dispatch the start hook event.
+		startedAt := time.Now()
+		q.dispatchStart(jobCtx, meta, startedAt)
 
 		// Convert a job or middleware panic into the submission's terminal result.
 		var err error
@@ -728,8 +777,17 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		if errors.Is(context.Cause(executionCtx), ErrJobCancelled) && errors.Is(err, context.Canceled) {
 			err = ErrJobCancelled
 		}
-		err = opts.handle.finish(time.Now(), err)
-		q.dispatchResult(jobCtx, meta, err)
+
+		// Dispatch the result hook event.
+		finishedAt := time.Now()
+		if discarded && err == nil {
+			err = errQueueDiscardedOutcome
+			_ = opts.handle.finish(finishedAt, nil)
+		} else {
+			err = opts.handle.finish(finishedAt, err)
+		}
+		q.dispatchResult(jobCtx, meta, err, startedAt, finishedAt)
+
 		return err
 	}
 
@@ -858,6 +916,8 @@ func (q *Queue) workJob(job Job, isFirst bool) {
 	// Run the job with the queue context and record the result.
 	if err := job(q.ctx); errors.Is(err, ErrJobCancelled) {
 		q.markJobCancelled()
+	} else if errors.Is(err, ErrDiscard) || errors.Is(err, errQueueDiscardedOutcome) {
+		q.markJobDiscarded()
 	} else if err != nil {
 		q.markJobFailed()
 	} else {
@@ -1030,6 +1090,13 @@ func WithPanicHandler(handler func(any)) QueueOption {
 func WithIDGenerator(gen IDGenerator) QueueOption {
 	return func(q *Queue) {
 		q.idGenerator = gen
+	}
+}
+
+// WithQueueName sets a stable queue name for observability payloads.
+func WithQueueName(name string) QueueOption {
+	return func(q *Queue) {
+		q.name = name
 	}
 }
 

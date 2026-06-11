@@ -3,7 +3,9 @@ package cq
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 )
 
@@ -168,6 +170,98 @@ func TestWithCheckpoint(t *testing.T) {
 		}
 	})
 
+	t.Run("immediately_persists_data_for_resume", func(t *testing.T) {
+		store := NewMemoryCheckpointStore()
+		var calls int
+		job := WithCheckpoint(func(ctx context.Context) error {
+			calls++
+			if calls == 1 {
+				if err := SaveCheckpointData(ctx, []byte("saved-now")); err != nil {
+					t.Fatalf("SaveCheckpointData(): %v", err)
+				}
+
+				cp, exists, err := store.Load(context.Background(), "job-immediate:step-a")
+				if err != nil {
+					t.Fatalf("Load(): %v", err)
+				}
+				if !exists || cp.Done || !bytes.Equal(cp.Data, []byte("saved-now")) {
+					t.Fatalf("immediate checkpoint: got (%+v, %v)", cp, exists)
+				}
+				return errors.New("process interrupted")
+			}
+
+			if data := CheckpointDataFromContext(ctx); !bytes.Equal(data, []byte("saved-now")) {
+				t.Fatalf("resume data: got %q, want %q", data, "saved-now")
+			}
+			return nil
+		}, "step-a", store)
+
+		ctx := contextWithMeta(context.Background(), JobMeta{ID: "job-immediate"})
+		if err := job(ctx); err == nil {
+			t.Fatal("first run: expected error")
+		}
+		if err := job(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+	})
+
+	t.Run("immediately_persists_json_data", func(t *testing.T) {
+		store := NewMemoryCheckpointStore()
+		type resumeState struct {
+			Offset int `json:"offset"`
+		}
+
+		job := WithCheckpoint(func(ctx context.Context) error {
+			return SaveCheckpointDataAsJSON(ctx, resumeState{Offset: 4})
+		}, "step-a", store)
+
+		ctx := contextWithMeta(context.Background(), JobMeta{ID: "job-immediate-json"})
+		if err := job(ctx); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+
+		cp, exists, err := store.Load(context.Background(), "job-immediate-json:step-a")
+		if err != nil || !exists || !cp.Done {
+			t.Fatalf("Load(): got (%+v, %v, %v)", cp, exists, err)
+		}
+		var state resumeState
+		if err := json.Unmarshal(cp.Data, &state); err != nil {
+			t.Fatalf("Unmarshal(): %v", err)
+		}
+		if state.Offset != 4 {
+			t.Fatalf("offset: got %d, want 4", state.Offset)
+		}
+	})
+
+	t.Run("immediate_save_blocks_until_store_responds", func(t *testing.T) {
+		store := &blockingCheckpointStore{
+			MemoryCheckpointStore: NewMemoryCheckpointStore(),
+			entered:               make(chan struct{}),
+			release:               make(chan struct{}),
+		}
+		job := WithCheckpoint(func(ctx context.Context) error {
+			return SaveCheckpointData(ctx, []byte("saved-now"))
+		}, "step-a", store)
+
+		done := make(chan error, 1)
+		go func() {
+			ctx := contextWithMeta(context.Background(), JobMeta{ID: "job-blocking"})
+			done <- job(ctx)
+		}()
+
+		<-store.entered
+		select {
+		case err := <-done:
+			t.Fatalf("job returned before store response: %v", err)
+		default:
+		}
+
+		close(store.release)
+		if err := <-done; err != nil {
+			t.Fatalf("job: %v", err)
+		}
+	})
+
 	t.Run("strict_mode_fails_when_key_unavailable", func(t *testing.T) {
 		store := NewMemoryCheckpointStore()
 		called := false
@@ -274,6 +368,22 @@ func TestWithCheckpoint_StoreErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("immediate_save_propagates_set_errors", func(t *testing.T) {
+		store := &errorCheckpointStore{setErr: errors.New("write failed")}
+		job := WithCheckpoint(func(ctx context.Context) error {
+			return SaveCheckpointData(ctx, []byte("progress"))
+		}, "step-a", store,
+			WithCheckpointKeyFunc(func(context.Context, string) (string, bool) {
+				return "wf-1:step-a", true
+			}),
+		)
+
+		err := job(context.Background())
+		if !errors.Is(err, ErrCheckpointMarkFailed) {
+			t.Fatalf("got err=%v, want %v", err, ErrCheckpointMarkFailed)
+		}
+	})
+
 	t.Run("strict_mode_propagates_delete_errors", func(t *testing.T) {
 		store := &errorCheckpointStore{deleteErr: errors.New("delete failed")}
 		job := WithCheckpoint(func(context.Context) error { return nil }, "step-a", store,
@@ -309,6 +419,15 @@ func TestWithCheckpoint_StoreErrors(t *testing.T) {
 			t.Fatalf("got calls=%d, want 1", calls)
 		}
 	})
+}
+
+func TestSaveCheckpointData_Unavailable(t *testing.T) {
+	if err := SaveCheckpointData(context.Background(), []byte("progress")); !errors.Is(err, ErrCheckpointSaveUnavailable) {
+		t.Fatalf("SaveCheckpointData(): got %v, want %v", err, ErrCheckpointSaveUnavailable)
+	}
+	if err := SaveCheckpointDataAsJSON(context.Background(), struct{}{}); !errors.Is(err, ErrCheckpointSaveUnavailable) {
+		t.Fatalf("SaveCheckpointDataAsJSON(): got %v, want %v", err, ErrCheckpointSaveUnavailable)
+	}
 }
 
 type captureCheckpointStore struct {
@@ -357,4 +476,23 @@ func (s *errorCheckpointStore) Store(_ context.Context, _ string, _ Checkpoint) 
 
 func (s *errorCheckpointStore) Delete(_ context.Context, _ string) error {
 	return s.deleteErr
+}
+
+type blockingCheckpointStore struct {
+	*MemoryCheckpointStore
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingCheckpointStore) Store(ctx context.Context, key string, checkpoint Checkpoint) error {
+	if s.calls.Add(1) == 1 {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.MemoryCheckpointStore.Store(ctx, key, checkpoint)
 }
