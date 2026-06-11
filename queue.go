@@ -302,10 +302,10 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		q.abandonPendingSubmissions()
 		q.paused.Store(false)
 		q.distPaused.Store(false)
-		q.started.Store(false)
 		go func() {
 			q.workerWg.Wait()
 			q.resetWorkers()
+			q.started.Store(false)
 			q.closeJobs()
 		}()
 		return ctx.Err()
