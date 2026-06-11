@@ -1,6 +1,7 @@
 # Queue Options
 
-Queue options configure runtime behavior for worker lifecycle, context management, panic handling, and job ID generation.
+Queue options configure runtime behavior for worker lifecycle, context
+management, panic handling, and job ID generation.
 
 ## Runtime Worker Range
 
@@ -14,36 +15,55 @@ if err := queue.SetWorkerRange(2, 20); err != nil {
 
 Behavior:
 - Increasing `min` starts additional workers immediately.
-- Decreasing `max` does not stop active workers, the idle cleanup drains excess workers.
+- Decreasing `max` does not stop active workers, the idle cleanup drains
+  excess workers.
+- Calling `Start()` more than once is a no-op (idempotent start behavior).
 
 ## Option Reference
 
 - `cq.WithWorkerIdleTick(d)`  
-  Interval for idle-worker cleanup. Default is `5*time.Second`. Non-positive values fall back to the default.
+  Interval for idle-worker cleanup. Default is `5*time.Second`.
+  Non-positive values fall back to the default.
 
 - `cq.WithContext(ctx)`  
-  Parent context for queue workers and jobs. Queue derives a cancel function from this context.
+  Parent context for queue workers and jobs. Queue derives a cancel function
+  from this context.
 
 - `cq.WithCancelableContext(ctx, cancel)`  
-  Parent context with an explicit cancel function (useful for signal-aware shutdown).
+  Parent context with an explicit cancel function (useful for signal-aware
+  shutdown).
 
 - `cq.WithPanicHandler(fn)`  
   Handles recovered panics from job execution and internal queue reporting.
 
 - `cq.WithHooks(hooks)`  
-  Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`, `OnSuccess`, `OnFailure`, `OnDiscard`, `OnReschedule`, `OnAttemptStart`, `OnAttemptSuccess`, `OnAttemptFailure`) for observability integrations. `OnEnqueue` receives the acceptance context, execution hooks receive the job context, and `OnReschedule` receives the rescheduling job context. Discarded outcomes emit `OnDiscard` (not `OnFailure`). Result-hook contexts may already be cancelled. Use `context.WithoutCancel(ctx)` when reporting must outlive job cancellation. You can pass `WithHooks` multiple times. Callbacks are appended and all are executed.
+  Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`,
+  `OnSuccess`, `OnFailure`, `OnDiscard`, `OnReschedule`, `OnAttemptStart`,
+  `OnAttemptSuccess`, `OnAttemptFailure`) for observability integrations.
+  `OnEnqueue` receives the acceptance context, execution hooks receive the job
+  context, and `OnReschedule` receives the rescheduling job context.
+  Discarded outcomes emit `OnDiscard` (not `OnFailure`). Result-hook contexts
+  may already be cancelled. Use `context.WithoutCancel(ctx)` when reporting
+  must outlive job cancellation. You can pass `WithHooks` multiple times.
+  Callbacks are appended and all are executed. See
+  [`OBSERVABILITY_CONTRACT.md`](OBSERVABILITY_CONTRACT.md) for complete event
+  and counter semantics.
 
 - `cq.WithIDGenerator(fn)`  
-  Overrides fallback job ID generation. If the generator returns an empty string, the queue falls back to its atomic counter.
+  Overrides fallback job ID generation. If the generator returns an empty
+  string, the queue falls back to its atomic counter.
 
 - `cq.WithQueueName(name)`  
-  Sets an optional stable queue name included in `JobEvent.QueueName` and `QueueStats.Name`.
+  Sets an optional stable queue name included in `JobEvent.QueueName` and
+  `QueueStats.Name`.
 
 - `cq.WithPauseStore(store, key)`  
-  Enables distributed pause/resume state using a shared store. All queue instances using the same key will honor the same pause flag.
+  Enables distributed pause/resume state using a shared store. All queue
+  instances using the same key will honor the same pause flag.
 
 - `cq.WithPausePollTick(d)`  
-  Interval for polling distributed pause state. Default is `1*time.Second`. Non-positive values fall back to the default.
+  Interval for polling distributed pause state. Default is `1*time.Second`.
+  Non-positive values fall back to the default.
 
 - `cq.WithPauseBehavior(mode)`  
   Controls submission behavior while paused:
@@ -52,7 +72,8 @@ Behavior:
 
 - `cq.WithMiddleware(mw...)`  
   Applies queue-level wrappers to every job accepted by the queue.
-  Registration order is preserved: `WithMiddleware(a, b)` executes as `a(b(job))`.
+  Registration order is preserved: `WithMiddleware(a, b)` executes as
+  `a(b(job))`.
 
 ## Example
 
@@ -119,8 +140,10 @@ queue := cq.NewQueue(1, 10, 100,
 ```
 
 You can implement time-window pauses by either, for example:
-- Having an external scheduler call `SetPaused(key, true/false)` at start/end, or
-- Making `IsPaused` compute pause state from a DB table with `start_at`/`end_at`.
+- Having an external scheduler call `SetPaused(key, true/false)` at start/end,
+  or
+- Making `IsPaused` compute pause state from a DB table with
+  `start_at`/`end_at`.
 
 ### Pause Behavior Notes
 

@@ -98,7 +98,8 @@ operation that verifies `LockValue.Token`.
 
 - `WithUnique` releases its lock after execution.
 - `WithUniqueWindow` leaves its lock until the configured window expires.
-- `WithoutOverlap` waits for atomic acquisition while respecting job cancellation.
+- `WithoutOverlap` waits for atomic acquisition while respecting job
+  cancellation.
 - Under contention-try behavior, `WithoutOverlap` makes one acquisition attempt.
 - Deferred release receives a non-cancelled cleanup context so cancellation does
   not leak remote locks.
@@ -127,8 +128,9 @@ job := cq.WithoutOverlap(
 )
 ```
 
-The default retry interval is `10ms`. Non-positive option values use the default.
+The default retry interval is `10ms`. Non-positive option values use the
+default.
 Contention-try behavior makes one attempt and does not use the retry interval.
 
-Use `TouchLock(ctx, ttl)` inside a running unique job when the backend implements
-`RenewableLocker`.
+Use `TouchLock(ctx, ttl)` inside a running unique job when the backend
+implements `RenewableLocker`.

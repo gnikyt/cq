@@ -5,7 +5,8 @@ Complete reference documentation for cq.
 ## Getting Started
 
 - [Main README](../README.md) - Quick start, installation, and overview
-- [Common Recipes](../README.md#common-recipes) - Practical examples to get you started
+- [Common Recipes](../README.md#common-recipes) - Practical examples to get
+  you started
 
 ## Core Features
 
@@ -69,3 +70,10 @@ Queue construction and runtime options:
 - Context and cancellation strategies
 - Panic handling
 - Custom job ID generation
+
+### [Observability Contract](OBSERVABILITY_CONTRACT.md)
+Lifecycle and telemetry guarantees for hooks and stats:
+- Hook ordering and terminal-event rules
+- `JobEvent` field semantics
+- Attempt-level retry events
+- Queue counter behavior and caveats

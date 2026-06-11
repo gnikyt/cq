@@ -1,6 +1,9 @@
 # Custom Checkpoint Store
 
-`WithCheckpoint` uses a `CheckpointStore` to persist step completion markers and optional step payload data. The built-in `MemoryCheckpointStore` works for single-instance applications, but distributed systems should use a shared store such as Redis or a database.
+`WithCheckpoint` uses a `CheckpointStore` to persist step completion markers
+and optional step payload data. The built-in `MemoryCheckpointStore` works
+for single-instance applications, but distributed systems should use a shared
+store such as Redis or a database.
 
 ## Interface
 
@@ -14,18 +17,21 @@ type CheckpointStore interface {
 }
 ```
 
-`checkpoint.Done` controls skip behavior (`true` = step is skipped on future runs with same key).  
+`checkpoint.Done` controls skip behavior (`true` = step is skipped on future
+runs with same key).
 `checkpoint.Data` stores optional resume payload bytes.
 
 ## Key Design
 
-Use deterministic keys that stay stable across retries/resubmissions for the same logical workflow step:
+Use deterministic keys that stay stable across retries/resubmissions for the
+same logical workflow step:
 
 - `tenant:<id>:workflow:<id>:step:<name>`
 - `order:<id>:step:<name>`
 - `idempotency:<request_id>:step:<name>`
 
-When using `WithCheckpointNamespace("billing")`, keys are prefixed automatically (`billing:<resolved-key>`).
+When using `WithCheckpointNamespace("billing")`, keys are prefixed
+automatically (`billing:<resolved-key>`).
 
 #### Redis Example
 
@@ -127,10 +133,18 @@ job := cq.WithCheckpoint(actualJob, "send-invoice", store)
 
 ## Operational Notes
 
-- In strict mode (default), `WithCheckpoint` returns an error when key resolution/checkpoint operations fail.
-- In best-effort mode (`WithCheckpointBestEffort()`), failures fall back to executing the job without checkpoint enforcement.
-- Use `WithCheckpointSaveOnFailure()` when failed runs should persist resume payload for retries.
-- `SetCheckpointData` updates execution-local payload for end-of-run persistence.
-- `SaveCheckpointData` and `SaveCheckpointDataAsJSON` synchronously store `Done=false` progress during execution. Explicit immediate-save failures are returned even in best-effort mode.
-- Inside checkpointed jobs, read payload via `CheckpointDataFromContext` or `CheckpointDataAsJSON`.
-- Use `WithCheckpointDeleteOnSuccess()` when checkpoint cleanup should happen automatically after successful completion.
+- In strict mode (default), `WithCheckpoint` returns an error when key
+  resolution/checkpoint operations fail.
+- In best-effort mode (`WithCheckpointBestEffort()`), failures fall back to
+  executing the job without checkpoint enforcement.
+- Use `WithCheckpointSaveOnFailure()` when failed runs should persist resume
+  payload for retries.
+- `SetCheckpointData` updates execution-local payload for end-of-run
+  persistence.
+- `SaveCheckpointData` and `SaveCheckpointDataAsJSON` synchronously store
+  `Done=false` progress during execution. Explicit immediate-save failures are
+  returned even in best-effort mode.
+- Inside checkpointed jobs, read payload via `CheckpointDataFromContext` or
+  `CheckpointDataAsJSON`.
+- Use `WithCheckpointDeleteOnSuccess()` when checkpoint cleanup should happen
+  automatically after successful completion.

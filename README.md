@@ -18,7 +18,8 @@ Inspired by Bull, Pond, Ants, and more.
 - Pause/resume queue execution (local or distributed)
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
-- Optional queue lifecycle hooks (enqueue/start/success/failure/reschedule)
+- Optional queue lifecycle hooks (enqueue/start/success/failure/discard/
+  reschedule + retry-attempt events)
 - Queue-level middleware chain for all jobs
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints

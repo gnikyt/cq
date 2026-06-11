@@ -1,7 +1,9 @@
 # Custom Key Concurrency Limiter
 
 `WithConcurrencyByKey` accepts any `KeyConcurrencyLimiter` implementation.
-The built-in `NewMemoryKeyConcurrencyLimiter` is a simple in-memory setup and works well for a single instance, but multi-instance usually need a distributed store.
+The built-in `NewMemoryKeyConcurrencyLimiter` is a simple in-memory setup and
+works well for a single instance, but multi-instance deployments usually need
+a distributed store.
 
 ## Interface
 

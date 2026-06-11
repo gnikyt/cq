@@ -3,6 +3,7 @@ package cq
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -269,8 +270,6 @@ func cloneStringMap(values map[string]string) map[string]string {
 		return nil
 	}
 	cloned := make(map[string]string, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, values)
 	return cloned
 }
