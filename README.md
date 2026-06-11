@@ -392,7 +392,7 @@ if err := queue.SetWorkerRange(2, 20); err != nil {
 ```
 
 `SetWorkerRange` starts workers immediately when `min` increases.
-When `max` decreases, running workers are not touched; idle cleanup drains
+When `max` decreases, running workers are not touched. Idle cleanup drains
 excess workers.
 
 ### Options

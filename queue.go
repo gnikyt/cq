@@ -409,7 +409,7 @@ func (q *Queue) IdleWorkers() int {
 }
 
 // Stats returns a snapshot of queue state, worker counts, and job tallies.
-// This is intended for metrics/observability; it does not provide transactional
+// This is intended for metrics/observability. It does not provide transactional
 // consistency across every field.
 func (q *Queue) Stats() QueueStats {
 	q.mut.Lock()
@@ -439,7 +439,7 @@ func (q *Queue) Stats() QueueStats {
 }
 
 // Submit accepts one job and returns a handle that tracks its execution.
-// ctx controls waiting for queue acceptance only; it does not cancel the running job.
+// ctx controls waiting for queue acceptance only. It does not cancel the running job.
 func (q *Queue) Submit(ctx context.Context, job Job, opts ...SubmitOption) (*JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -818,7 +818,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 
 	defer func() {
 		if r := recover(); r != nil {
-			// Panic occurred; notify handler if configured.
+			// Panic occurred. Notify handler if configured.
 			if q.panicHandler != nil {
 				q.panicHandler(r)
 			}

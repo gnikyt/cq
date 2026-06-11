@@ -129,7 +129,7 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 }
 
 // Submit accepts one job into a priority buffer and returns its completion handle.
-// ctx controls waiting for priority-buffer acceptance only; it does not cancel an accepted job.
+// ctx controls waiting for priority-buffer acceptance only. It does not cancel an accepted job.
 func (pq *PriorityQueue) Submit(ctx context.Context, job Job, priority Priority, opts ...SubmitOption) (*JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()

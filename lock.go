@@ -101,7 +101,7 @@ func (ml *MemoryLocker[T]) Get(ctx context.Context, key string) (LockValue[T], b
 }
 
 // Acquire attempts to claim a lock for key.
-// It fails if a non-expired lock already exists; otherwise it stores the new lock.
+// It fails if a non-expired lock already exists. Otherwise it stores the new lock.
 func (ml *MemoryLocker[T]) Acquire(ctx context.Context, key string, lock LockValue[T]) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

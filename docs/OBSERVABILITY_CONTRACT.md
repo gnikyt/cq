@@ -135,4 +135,4 @@ State lookup:
 - Hook panics are recovered and routed through queue panic handling.
 - Hook payload maps are cloned before callback invocation to avoid shared
   mutable state.
-- Hooks are observational; they do not alter queue execution decisions.
+- Hooks are observational. They do not alter queue execution decisions.

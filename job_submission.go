@@ -116,7 +116,7 @@ func (h *JobHandle) Cancel() bool {
 }
 
 // Wait waits for submission completion or ctx cancellation.
-// Cancelling ctx stops only the wait; it does not cancel the job.
+// Cancelling ctx stops only the wait. It does not cancel the job.
 func (h *JobHandle) Wait(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()

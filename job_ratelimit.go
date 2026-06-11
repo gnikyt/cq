@@ -75,7 +75,7 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 			return job(ctx) // Job executed.
 		}
 
-		// We are not consuming now; return reservation to limiter.
+		// We are not consuming now. Return reservation to limiter.
 		res.Cancel()
 
 		if maxReleases == 0 {

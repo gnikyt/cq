@@ -8,7 +8,7 @@ Use this quick wrapper index to choose the right building block:
 | --- | --- |
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
-| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`; surface contention with [`WithErrorOnContention`](#handling-contention) and classify it with `IsContentionError` |
+| Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`, plus contention handling with [`WithErrorOnContention`](#handling-contention) and `IsContentionError` |
 | Observe outcomes | `WithOutcome`, `WithTracing` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
@@ -434,7 +434,7 @@ Nil `job` or `locker` arguments return `cq.ErrUniqueJobRequired` or
 
 `WithoutOverlap` holds its lock until the job returns. Normal cancellation and
 shutdown still run deferred lock release. An abrupt process crash cannot run
-cleanup; in-memory locks disappear with the process, while distributed lockers
+cleanup. In-memory locks disappear with the process, while distributed lockers
 must define how orphaned locks are handled. Use `WithUnique` when lease expiry
 and renewal are part of the intended behavior.
 
@@ -482,7 +482,7 @@ see [Handling contention](#handling-contention).
 concurrent API calls per customer).
 
 **Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is
-process-local only; use a custom `KeyConcurrencyLimiter` for multi-instance
+process-local only. Use a custom `KeyConcurrencyLimiter` for multi-instance
 coordination.
 
 ```go
@@ -828,8 +828,8 @@ _, _ = queue.Submit(context.Background(), job)
 Three failure modes control what happens when a dependency fails:
 
 * `DependencyFailCancel`: Stops execution and returns an error wrapping
-  `ErrDependencyCancelled`; the main job never runs.
-* `DependencyFailSkip`: Stops execution and returns a discard outcome; the
+  `ErrDependencyCancelled`. The main job never runs.
+* `DependencyFailSkip`: Stops execution and returns a discard outcome. The
   main job never runs but is not counted as failed.
 * `DependencyFailContinue`: Ignores the failure and proceeds to the next
   dependency or job.
@@ -1047,7 +1047,7 @@ concurrently using a shared counter.
 concurrency limits, database connections, file locks, etc).
 
 **Caveat:** Operationally, when a job hits the limit it is resubmitted after a
-retry delay; the current worker is freed immediately (non-blocking). If
+retry delay. The current worker is freed immediately (non-blocking). If
 delayed submission is rejected, the wrapper returns that rejection error.
 Nil `job`, `limiter`, or `queue` arguments return
 `cq.ErrConcurrencyJobRequired`, `cq.ErrConcurrencyLimiterRequired`, or
@@ -1122,7 +1122,7 @@ The circuit has three states:
 - **Open**: Jobs rejected immediately with `cq.ErrCircuitOpen`. Transitions to
   half-open after cooldown.
 - **Half-open**: Allows one job through to test recovery. Success closes the
-  circuit; failure reopens it.
+  circuit. Failure reopens it.
 
 Half-open is enabled by default. Use `cb.SetHalfOpen(false)` to disable it
 (circuit goes directly from open to closed after cooldown). Use `cb.State()`
