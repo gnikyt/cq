@@ -470,25 +470,50 @@ For detailed usage and advanced features, see the following guides:
 
 ## Testing
 
-`make test`
+Run the full suite:
 
 ```
-ok      github.com/gnikyt/cq            18.755s coverage: 90.0% of statements
+go test ./...
+ok  	github.com/gnikyt/cq	17.117s
+```
+
+Run with race detector:
+
+```
+go test -race ./...
+ok  	github.com/gnikyt/cq	18.548s
 ```
 
 ### Benchmarks
 
-`make bench`
+Run benchmarks:
 
 ```
+go test -run=^$ -bench=. -benchmem ./...
+goos: darwin
+goarch: arm64
 cpu: Apple M5
-BenchmarkScenarios/100Req--10kJobs-10                             7    192443179 ns/op
-BenchmarkScenarios/1kReq--1kJobs-10                               7    194722393 ns/op
-BenchmarkScenarios/10kReq--100Jobs-10                             7    352322048 ns/op
-BenchmarkSingleSteadyState-10                               3063700        393.4 ns/op
+BenchmarkScenarios/100Req--10kJobs-10                      1    1662272875 ns/op
+	1061962264 B/op	16072293 allocs/op
+BenchmarkScenarios/1kReq--1kJobs-10                        1    1368792167 ns/op
+	1050823576 B/op	16017429 allocs/op
+BenchmarkScenarios/10kReq--100Jobs-10                      1    1509429666 ns/op
+	1052261440 B/op	16035472 allocs/op
+BenchmarkScenariosSteadyState/100Req--10kJobs-10           1    1392703167 ns/op
+	1051211408 B/op	16021101 allocs/op
+BenchmarkScenariosSteadyState/1kReq--1kJobs-10             1    1823602917 ns/op
+	1073376600 B/op	16144006 allocs/op
+BenchmarkScenariosSteadyState/10kReq--100Jobs-10           1    1665279959 ns/op
+	1056222408 B/op	16073399 allocs/op
+BenchmarkSingle-10                                     69946      17090 ns/op
+	84483 B/op	      34 allocs/op
+BenchmarkSingleSteadyState-10                         811827       1478 ns/op
+	1079 B/op	      17 allocs/op
 ```
 
 ## Demo
+
+*Note:* Very old demo and is very basic.
 
 ```bash
 go run example/web_direct.go
