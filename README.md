@@ -19,7 +19,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
 - Optional queue lifecycle hooks (enqueue/start/success/failure/discard/
-  reschedule + retry-attempt events)
+  reschedule plus retry-attempt events)
 - Queue-level middleware chain for all jobs
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
@@ -155,7 +155,10 @@ if _, err := pmgr.SubmitAfter(ctx, "bulk", processLater, cq.PriorityLow, time.Mi
 
 ## Wrapper Composition
 
-Wrappers let you add behavior to jobs without modifying the job itself. Compose them from **innermost to outermost** - the outermost wrapper runs first and controls the flow. This keeps job logic clean while adding retries, timeouts, tracing, and error handling declaratively.
+Wrappers let you add behavior to jobs without modifying the job itself.
+Compose them from **innermost to outermost**: the outermost wrapper runs first
+and controls the flow. This keeps job logic clean while adding retries,
+timeouts, tracing, and error handling declaratively.
 
 ```go
 job := WithOutcome(              // 3. Outermost: catches final outcome.
@@ -343,13 +346,14 @@ Batch methods return handles for accepted jobs and preserve partial-acceptance
 errors.
 
 `Reschedule` creates a fresh delayed submission while preserving the current
-job name and attributes. It adds parent ID, root ID, and reason lineage attributes and
-returns the new submission handle.
+job name and attributes. It adds parent ID, root ID, and reason lineage
+attributes and returns the new submission handle.
 
 Typed submission rejection errors:
 - `cq.ErrQueueStopped`
 - `cq.ErrQueuePaused`
 - `cq.ErrQueueFull`
+- `cq.ErrQueueJobRequired`
 
 ### Metrics
 
@@ -372,11 +376,12 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 // cq.JobStateDiscarded - Jobs marked as discarded outcomes.
 ```
 
-`queue.Stats()` returns `cq.QueueStats` with queue name (`Name`), queue state (`Stopped`, `Paused`),
-worker details (`WorkersMin`, `WorkersMax`, `RunningWorkers`, `IdleWorkers`, `Capacity`),
-and job tallies (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`,
-`DiscardedJobs`, `CancelledJobs`, `CompletedJobs`, `RescheduledJobs`, `ReleasedJobs`).
-in one snapshot call.
+`queue.Stats()` returns `cq.QueueStats` with queue name (`Name`), queue state
+(`Stopped`, `Paused`), worker details (`WorkersMin`, `WorkersMax`,
+`RunningWorkers`, `IdleWorkers`, `Capacity`), and job tallies
+(`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `DiscardedJobs`,
+`CancelledJobs`, `CompletedJobs`, `RescheduledJobs`, `ReleasedJobs`) in one
+snapshot call.
 
 ### Runtime Scaling
 
@@ -387,7 +392,8 @@ if err := queue.SetWorkerRange(2, 20); err != nil {
 ```
 
 `SetWorkerRange` starts workers immediately when `min` increases.
-When `max` decreases, running workers are not touched, the idle cleanup drains excess workers.
+When `max` decreases, running workers are not touched; idle cleanup drains
+excess workers.
 
 ### Options
 
@@ -406,10 +412,12 @@ queue := cq.NewQueue(1, 10, 100,
 // cq.WithCancelableContext(ctx, fn)  - Parent context with custom cancel function.
 // cq.WithPanicHandler(fn)            - Custom handler override for job panics.
 // cq.WithIDGenerator(fn)             - Override fallback job ID generation.
+// cq.WithQueueName(name)             - Stable queue name for observability events/stats.
 // cq.WithPauseStore(store, key)      - Share pause state across queue instances.
 // cq.WithPausePollTick(d)            - Poll interval for distributed pause sync.
 // cq.WithPauseBehavior(mode)         - Buffer or reject enqueue while paused.
 // cq.WithMiddleware(mw...)           - Apply queue-level wrappers to all jobs.
+// cq.WithHooks(hooks)                - Register queue lifecycle hooks.
 ```
 
 ### Queue Middleware
@@ -427,7 +435,10 @@ withLogging := func(next cq.Job) cq.Job {
 queue := cq.NewQueue(1, 10, 100, cq.WithMiddleware(withLogging))
 ```
 
-`WithMiddleware(a, b)` executes as `a(b(job))`, so `a` first, then `b`. This allows you to apply common middlware to all jobs which are sent to that queue instead of per-job.
+`WithMiddleware(a, b)` composes as `a(b(job))`: `a` wraps `b` (outermost) and
+`b` wraps `job` (innermost).
+This lets you apply common middleware to all jobs sent to that queue instead
+of wiring middleware per job.
 
 ### Pause / Resume
 
@@ -493,27 +504,27 @@ go test -run=^$ -bench=. -benchmem ./...
 goos: darwin
 goarch: arm64
 cpu: Apple M5
-BenchmarkScenarios/100Req--10kJobs-10                      1    1662272875 ns/op
-	1061962264 B/op	16072293 allocs/op
-BenchmarkScenarios/1kReq--1kJobs-10                        1    1368792167 ns/op
-	1050823576 B/op	16017429 allocs/op
-BenchmarkScenarios/10kReq--100Jobs-10                      1    1509429666 ns/op
-	1052261440 B/op	16035472 allocs/op
-BenchmarkScenariosSteadyState/100Req--10kJobs-10           1    1392703167 ns/op
-	1051211408 B/op	16021101 allocs/op
-BenchmarkScenariosSteadyState/1kReq--1kJobs-10             1    1823602917 ns/op
-	1073376600 B/op	16144006 allocs/op
-BenchmarkScenariosSteadyState/10kReq--100Jobs-10           1    1665279959 ns/op
-	1056222408 B/op	16073399 allocs/op
-BenchmarkSingle-10                                     69946      17090 ns/op
-	84483 B/op	      34 allocs/op
-BenchmarkSingleSteadyState-10                         811827       1478 ns/op
-	1079 B/op	      17 allocs/op
+BenchmarkScenarios/100Req--10kJobs-10                      1    1595968709 ns/op
+	987336904 B/op	12180834 allocs/op
+BenchmarkScenarios/1kReq--1kJobs-10                        1    1233305000 ns/op
+	954452224 B/op	12012438 allocs/op
+BenchmarkScenarios/10kReq--100Jobs-10                      1    1902146167 ns/op
+	960816464 B/op	12094121 allocs/op
+BenchmarkScenariosSteadyState/100Req--10kJobs-10           1    1199676209 ns/op
+	953164216 B/op	12002842 allocs/op
+BenchmarkScenariosSteadyState/1kReq--1kJobs-10             1    1206286625 ns/op
+	955462864 B/op	12018107 allocs/op
+BenchmarkScenariosSteadyState/10kReq--100Jobs-10           1    2188002542 ns/op
+	1047668752 B/op	12574643 allocs/op
+BenchmarkSingle-10                                     73831      16707 ns/op
+	84418 B/op	      30 allocs/op
+BenchmarkSingleSteadyState-10                        1000000       1369 ns/op
+	983 B/op	      13 allocs/op
 ```
 
 ## Demo
 
-*Note:* Very old demo and is very basic.
+*Note:* The demo is old and intentionally basic.
 
 ```bash
 go run example/web_direct.go
