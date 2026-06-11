@@ -45,6 +45,27 @@ func TestPriorityString(t *testing.T) {
 }
 
 func TestPriorityQueue(t *testing.T) {
+	t.Run("constructor_nil_queue_panics", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("NewPriorityQueue(nil): expected panic")
+			}
+		}()
+		_ = NewPriorityQueue(nil, 1)
+	})
+
+	t.Run("non_positive_priority_tick_uses_default", func(t *testing.T) {
+		queue := NewQueue(1, 1, 1)
+		queue.Start()
+		defer queue.Stop(true)
+
+		pq := NewPriorityQueue(queue, 1, WithPriorityTick(0))
+		defer pq.Stop(false)
+		if pq.priorityTick != defaultPriorityTick {
+			t.Fatalf("priority tick: got %v, want %v", pq.priorityTick, defaultPriorityTick)
+		}
+	})
+
 	t.Run("basic_enqueue", func(t *testing.T) {
 		queue := NewQueue(1, 5, 100)
 		queue.Start()

@@ -37,6 +37,15 @@ func TestSchedulerEvery(t *testing.T) {
 	}
 }
 
+func TestNewSchedulerNilQueuePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewScheduler(nil queue): expected panic")
+		}
+	}()
+	_ = NewScheduler(context.Background(), nil)
+}
+
 func TestSchedulerAt(t *testing.T) {
 	queue := NewQueue(1, 10, 100)
 	queue.Start()
@@ -327,6 +336,22 @@ func TestSchedulerEveryInvalidInterval(t *testing.T) {
 	_, err = scheduler.Every("negative", -1*time.Second, job)
 	if err == nil {
 		t.Error("Every(): expected error for negative interval, got nil")
+	}
+}
+
+func TestSchedulerRejectsNilJob(t *testing.T) {
+	queue := NewQueue(1, 1, 1)
+	queue.Start()
+	defer queue.Stop(true)
+
+	scheduler := NewScheduler(context.Background(), queue)
+	defer scheduler.Stop()
+
+	if handle, err := scheduler.Every("nil-job", time.Second, nil); handle != nil || !errors.Is(err, ErrScheduleJobRequired) {
+		t.Fatalf("Every(nil job): got (%v, %v), want (nil, %v)", handle, err, ErrScheduleJobRequired)
+	}
+	if handle, err := scheduler.At("nil-job-at", time.Now().Add(time.Second), nil); handle != nil || !errors.Is(err, ErrScheduleJobRequired) {
+		t.Fatalf("At(nil job): got (%v, %v), want (nil, %v)", handle, err, ErrScheduleJobRequired)
 	}
 }
 

@@ -19,9 +19,10 @@ const (
 
 // Queue submission errors.
 var (
-	ErrQueueStopped = errors.New("queue is stopped")
-	ErrQueuePaused  = errors.New("queue is paused")
-	ErrQueueFull    = errors.New("queue is full")
+	ErrQueueStopped     = errors.New("queue is stopped")
+	ErrQueuePaused      = errors.New("queue is paused")
+	ErrQueueFull        = errors.New("queue is full")
+	ErrQueueJobRequired = errors.New("queue: job required")
 )
 
 // IDGenerator creates a job ID for accepted submissions.
@@ -66,6 +67,7 @@ type Queue struct {
 	ctx       context.Context    // Queue context for workers/jobs.
 	ctxCancel context.CancelFunc // Cancels the queue context.
 	stopped   atomic.Bool        // Indicates queue shutdown has started.
+	started   atomic.Bool        // Indicates queue start has run.
 
 	workersMin          int            // Minimum worker count.
 	workersMax          int            // Maximum worker count.
@@ -203,6 +205,13 @@ func (q *Queue) Capacity() int {
 
 // Start begins the idle-worker ticker and starts the configured minimum workers.
 func (q *Queue) Start() {
+	if q.IsStopped() {
+		return // Queue is stopped.
+	}
+	if !q.started.CompareAndSwap(false, true) {
+		return // Already started.
+	}
+
 	// Start the idle-worker ticker.
 	q.workerWg.Add(1)
 	go q.cleanupIdleWorkers()
@@ -242,6 +251,7 @@ func (q *Queue) Stop(jobWait bool) {
 	q.resetWorkers()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
+	q.started.Store(false)
 	q.closeJobs()
 }
 
@@ -283,6 +293,7 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		q.resetWorkers()
 		q.paused.Store(false)
 		q.distPaused.Store(false)
+		q.started.Store(false)
 		q.closeJobs()
 		return nil
 	case <-ctx.Done():
@@ -290,6 +301,7 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		q.abandonPendingSubmissions()
 		q.paused.Store(false)
 		q.distPaused.Store(false)
+		q.started.Store(false)
 		go func() {
 			q.workerWg.Wait()
 			q.resetWorkers()
@@ -318,6 +330,7 @@ func (q *Queue) Terminate() {
 	q.ctxCancel()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
+	q.started.Store(false)
 	go func() {
 		q.workerWg.Wait()
 		q.resetWorkers()
@@ -686,6 +699,9 @@ func (q *Queue) nextJobID() string {
 // If no worker can be started, it falls back to pushing the job onto `q.jobs`.
 // When `blocking` is false, the fallback channel send is non-blocking.
 func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err error) {
+	if job == nil {
+		return false, ErrQueueJobRequired
+	}
 	if opts.acceptCtx != nil {
 		select {
 		case <-opts.acceptCtx.Done():
@@ -978,7 +994,12 @@ func (q *Queue) newWorker(initialJob Job) (ok bool) {
 
 // pollDistributedPause periodically syncs pause state from the configured store.
 func (q *Queue) pollDistributedPause() {
-	t := time.NewTicker(q.pausePollTick)
+	tick := q.pausePollTick
+	if tick <= 0 {
+		tick = defaultPausePollTick
+	}
+
+	t := time.NewTicker(tick)
 	defer t.Stop()
 	defer q.workerWg.Done()
 
@@ -1036,7 +1057,12 @@ func (q *Queue) waitWhilePaused() bool {
 // cleanupIdleWorkers periodically tries to stop extra idle workers.
 // It ticks at `workerIdleTick` and signals a worker to exit by sending nil.
 func (q *Queue) cleanupIdleWorkers() {
-	pt := time.NewTicker(q.workerIdleTick)
+	tick := q.workerIdleTick
+	if tick <= 0 {
+		tick = defaultWorkerIdleTick
+	}
+
+	pt := time.NewTicker(tick)
 	defer pt.Stop()
 	defer q.workerWg.Done()
 
@@ -1058,6 +1084,10 @@ type QueueOption func(*Queue)
 // WithWorkerIdleTick sets how often idle-worker cleanup runs.
 func WithWorkerIdleTick(tt time.Duration) QueueOption {
 	return func(q *Queue) {
+		if tt <= 0 {
+			q.workerIdleTick = defaultWorkerIdleTick
+			return
+		}
 		q.workerIdleTick = tt
 	}
 }
@@ -1112,6 +1142,10 @@ func WithPauseStore(store PauseStore, key string) QueueOption {
 // WithPausePollTick sets how often distributed pause state is refreshed.
 func WithPausePollTick(tt time.Duration) QueueOption {
 	return func(q *Queue) {
+		if tt <= 0 {
+			q.pausePollTick = defaultPausePollTick
+			return
+		}
 		q.pausePollTick = tt
 	}
 }

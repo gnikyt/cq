@@ -19,7 +19,7 @@ Behavior:
 ## Option Reference
 
 - `cq.WithWorkerIdleTick(d)`  
-  Interval for idle-worker cleanup. Default is `5*time.Second`.
+  Interval for idle-worker cleanup. Default is `5*time.Second`. Non-positive values fall back to the default.
 
 - `cq.WithContext(ctx)`  
   Parent context for queue workers and jobs. Queue derives a cancel function from this context.
@@ -43,7 +43,7 @@ Behavior:
   Enables distributed pause/resume state using a shared store. All queue instances using the same key will honor the same pause flag.
 
 - `cq.WithPausePollTick(d)`  
-  Interval for polling distributed pause state. Default is `1*time.Second`.
+  Interval for polling distributed pause state. Default is `1*time.Second`. Non-positive values fall back to the default.
 
 - `cq.WithPauseBehavior(mode)`  
   Controls submission behavior while paused:

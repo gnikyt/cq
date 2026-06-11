@@ -13,6 +13,8 @@ import (
 var (
 	ErrUniqueContended         = errors.New("cq: unique contention detected")
 	ErrWithoutOverlapContended = errors.New("cq: without overlap contention detected")
+	ErrUniqueJobRequired       = errors.New("cq: unique job required")
+	ErrUniqueLockerRequired    = errors.New("cq: unique locker required")
 )
 
 // defaultOverlapRetryTick controls how often WithoutOverlap retries acquisition.
@@ -132,6 +134,12 @@ func releaseLockByToken(ctx context.Context, locker Locker[struct{}], key string
 func WithoutOverlap(job Job, key string, locker Locker[struct{}], opts ...OverlapOption) Job {
 	cfg := resolveOverlapOptions(opts)
 	return func(ctx context.Context) (err error) {
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
 		if err := acquireOverlap(ctx, locker, key, contentionTryFromContext(ctx), cfg.retryInterval); err != nil {
 			return err
 		}
@@ -182,6 +190,13 @@ func acquireOverlap(ctx context.Context, locker Locker[struct{}], key string, tr
 func WithUnique(job Job, key string, ut time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
 	return func(ctx context.Context) (err error) {
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
+
 		lock, exists, err := locker.Get(ctx, key)
 		if err != nil {
 			return err
@@ -256,6 +271,13 @@ func WithUnique(job Job, key string, ut time.Duration, locker ReadLocker[struct{
 func WithUniqueWindow(job Job, key string, window time.Duration, locker ReadLocker[struct{}], opts ...UniqueOption) Job {
 	cfg := resolveUniqueOptions(opts)
 	return func(ctx context.Context) error {
+		if job == nil {
+			return ErrUniqueJobRequired
+		}
+		if locker == nil {
+			return ErrUniqueLockerRequired
+		}
+
 		lock, exists, err := locker.Get(ctx, key)
 		if err != nil {
 			return err

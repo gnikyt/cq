@@ -15,6 +15,7 @@ var (
 	ErrScheduleIntervalInvalid = errors.New("schedule interval must be positive")
 	ErrScheduleInPast          = errors.New("scheduled time is in the past")
 	ErrSchedulerStopped        = errors.New("scheduler is stopped")
+	ErrScheduleJobRequired     = errors.New("schedule job required")
 )
 
 // ScheduleHandle tracks one recurring or one-time schedule.
@@ -109,10 +110,17 @@ type scheduledJob struct {
 // NewScheduler creates a Scheduler that submits jobs into queue.
 // Schedules start immediately when added and stop when ctx is cancelled.
 func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
+	if queue == nil {
+		panic("cq: scheduler queue required")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Create a child context with a cancel function.
 	childCtx, cancel := context.WithCancel(ctx)
+
+	// Create a new scheduler.
 	return &Scheduler{
 		queue:     queue,
 		jobs:      make(map[string]*scheduledJob),
@@ -137,6 +145,9 @@ func (s *Scheduler) Stop() {
 
 // Every registers a recurring schedule.
 func (s *Scheduler) Every(id string, interval time.Duration, job Job, opts ...SubmitOption) (*ScheduleHandle, error) {
+	if job == nil {
+		return nil, fmt.Errorf("scheduler: every: %w", ErrScheduleJobRequired)
+	}
 	if interval <= 0 {
 		return nil, fmt.Errorf("scheduler: every: %w", ErrScheduleIntervalInvalid)
 	}
@@ -145,6 +156,9 @@ func (s *Scheduler) Every(id string, interval time.Duration, job Job, opts ...Su
 
 // At registers a one-time schedule.
 func (s *Scheduler) At(id string, at time.Time, job Job, opts ...SubmitOption) (*ScheduleHandle, error) {
+	if job == nil {
+		return nil, fmt.Errorf("scheduler: at: %w", ErrScheduleJobRequired)
+	}
 	if time.Now().After(at) {
 		return nil, fmt.Errorf("scheduler: at: %w", ErrScheduleInPast)
 	}

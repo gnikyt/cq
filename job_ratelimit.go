@@ -2,9 +2,16 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 
 	"golang.org/x/time/rate"
+)
+
+var (
+	ErrRateLimitJobRequired     = errors.New("cq: rate limit job required")
+	ErrRateLimitLimiterRequired = errors.New("cq: rate limit limiter required")
+	ErrRateLimitQueueRequired   = errors.New("cq: rate limit queue required")
 )
 
 // WithRateLimit wraps a job with rate limiting using a token bucket algorithm.
@@ -13,6 +20,12 @@ import (
 // the job returns the context error.
 func WithRateLimit(job Job, limiter *rate.Limiter) Job {
 	return func(ctx context.Context) error {
+		if job == nil {
+			return ErrRateLimitJobRequired
+		}
+		if limiter == nil {
+			return ErrRateLimitLimiterRequired
+		}
 		if err := limiter.Wait(ctx); err != nil {
 			return err
 		}
@@ -38,6 +51,16 @@ func WithRateLimitRelease(job Job, limiter *rate.Limiter, queue *Queue, maxRelea
 	var wrappedJob Job
 
 	wrappedJob = func(ctx context.Context) error {
+		if job == nil {
+			return ErrRateLimitJobRequired
+		}
+		if limiter == nil {
+			return ErrRateLimitLimiterRequired
+		}
+		if queue == nil {
+			return ErrRateLimitQueueRequired
+		}
+
 		res := limiter.Reserve()
 		if !res.OK() {
 			// Fallback to blocking path if limiter cannot reserve.

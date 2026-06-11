@@ -173,9 +173,31 @@ func TestWithoutOverlap(t *testing.T) {
 		}
 	})
 
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithoutOverlap(nil, "k", NewOverlapMemoryLocker())(context.Background())
+		if !errors.Is(err, ErrUniqueJobRequired) {
+			t.Fatalf("WithoutOverlap(nil job): got %v, want %v", err, ErrUniqueJobRequired)
+		}
+		err = WithoutOverlap(func(context.Context) error { return nil }, "k", nil)(context.Background())
+		if !errors.Is(err, ErrUniqueLockerRequired) {
+			t.Fatalf("WithoutOverlap(nil locker): got %v, want %v", err, ErrUniqueLockerRequired)
+		}
+	})
+
 }
 
 func TestWithUnique(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithUnique(nil, "k", time.Second, NewUniqueMemoryLocker())(context.Background())
+		if !errors.Is(err, ErrUniqueJobRequired) {
+			t.Fatalf("WithUnique(nil job): got %v, want %v", err, ErrUniqueJobRequired)
+		}
+		err = WithUnique(func(context.Context) error { return nil }, "k", time.Second, nil)(context.Background())
+		if !errors.Is(err, ErrUniqueLockerRequired) {
+			t.Fatalf("WithUnique(nil locker): got %v, want %v", err, ErrUniqueLockerRequired)
+		}
+	})
+
 	t.Run("bare_duplicate_returns_nil", func(t *testing.T) {
 		locker := NewUniqueMemoryLocker()
 		started := make(chan struct{})
@@ -423,6 +445,17 @@ func TestWithUnique(t *testing.T) {
 }
 
 func TestWithUniqueWindow(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithUniqueWindow(nil, "k", time.Second, NewUniqueMemoryLocker())(context.Background())
+		if !errors.Is(err, ErrUniqueJobRequired) {
+			t.Fatalf("WithUniqueWindow(nil job): got %v, want %v", err, ErrUniqueJobRequired)
+		}
+		err = WithUniqueWindow(func(context.Context) error { return nil }, "k", time.Second, nil)(context.Background())
+		if !errors.Is(err, ErrUniqueLockerRequired) {
+			t.Fatalf("WithUniqueWindow(nil locker): got %v, want %v", err, ErrUniqueLockerRequired)
+		}
+	})
+
 	t.Run("custom_token_generator_is_used", func(t *testing.T) {
 		locker := NewUniqueMemoryLocker()
 		window := 200 * time.Millisecond

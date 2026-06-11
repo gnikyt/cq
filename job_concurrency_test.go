@@ -10,6 +10,21 @@ import (
 )
 
 func TestWithConcurrencyLimit(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithConcurrencyLimit(nil, "key", 1, 0, NewConcurrencyLimiter(), NewQueue(1, 1, 1))(context.Background())
+		if !errors.Is(err, ErrConcurrencyJobRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil job): got %v, want %v", err, ErrConcurrencyJobRequired)
+		}
+		err = WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, 0, nil, NewQueue(1, 1, 1))(context.Background())
+		if !errors.Is(err, ErrConcurrencyLimiterRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil limiter): got %v, want %v", err, ErrConcurrencyLimiterRequired)
+		}
+		err = WithConcurrencyLimit(func(context.Context) error { return nil }, "key", 1, 0, NewConcurrencyLimiter(), nil)(context.Background())
+		if !errors.Is(err, ErrConcurrencyQueueRequired) {
+			t.Fatalf("WithConcurrencyLimit(nil queue): got %v, want %v", err, ErrConcurrencyQueueRequired)
+		}
+	})
+
 	t.Run("executes_when_below_limit", func(t *testing.T) {
 		queue := NewQueue(2, 5, 50)
 		queue.Start()

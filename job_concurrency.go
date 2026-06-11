@@ -2,12 +2,19 @@ package cq
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const defaultConcurrencyRetryDelay = 50 * time.Millisecond
+
+var (
+	ErrConcurrencyJobRequired     = errors.New("cq: concurrency job required")
+	ErrConcurrencyLimiterRequired = errors.New("cq: concurrency limiter required")
+	ErrConcurrencyQueueRequired   = errors.New("cq: concurrency queue required")
+)
 
 // concurrencyEntry holds the atomic active count for one key.
 type concurrencyEntry struct {
@@ -81,6 +88,16 @@ func WithConcurrencyLimit(job Job, key string, max int, retryDelay time.Duration
 
 	var wrappedJob Job
 	wrappedJob = func(ctx context.Context) error {
+		if job == nil {
+			return ErrConcurrencyJobRequired
+		}
+		if limiter == nil {
+			return ErrConcurrencyLimiterRequired
+		}
+		if queue == nil {
+			return ErrConcurrencyQueueRequired
+		}
+
 		entry, ok := limiter.acquire(key, max)
 		if !ok {
 			// At limit: free this worker, schedule retry.

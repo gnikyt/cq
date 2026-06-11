@@ -231,6 +231,29 @@ func TestQueueSubmit(t *testing.T) {
 	}
 }
 
+func TestQueueStart_Idempotent(t *testing.T) {
+	q := NewQueue(1, 1, 1)
+	q.Start()
+	q.Start() // Should be a no-op.
+	defer q.Stop(true)
+
+	if got := q.RunningWorkers(); got != 1 {
+		t.Fatalf("RunningWorkers(): got %d, want 1 after repeated Start()", got)
+	}
+
+	mustSubmit(t, q, func(context.Context) error { return nil })
+}
+
+func TestQueueOptionDurations_NonPositiveUseDefaults(t *testing.T) {
+	q := NewQueue(1, 1, 1, WithWorkerIdleTick(0), WithPausePollTick(-1*time.Second))
+	if q.workerIdleTick != defaultWorkerIdleTick {
+		t.Fatalf("worker idle tick: got %v, want %v", q.workerIdleTick, defaultWorkerIdleTick)
+	}
+	if q.pausePollTick != defaultPausePollTick {
+		t.Fatalf("pause poll tick: got %v, want %v", q.pausePollTick, defaultPausePollTick)
+	}
+}
+
 func TestQueueSubmitAfter(t *testing.T) {
 	delay := time.Duration(500 * time.Millisecond)
 
@@ -381,6 +404,20 @@ func TestQueueSubmitRejection(t *testing.T) {
 		_, err := q.Submit(context.Background(), func(ctx context.Context) error { return nil })
 		if !errors.Is(err, ErrQueuePaused) {
 			t.Fatalf("Submit(): got %v, want %v", err, ErrQueuePaused)
+		}
+	})
+
+	t.Run("nil job", func(t *testing.T) {
+		q := NewQueue(1, 1, 1)
+		q.Start()
+		defer q.Stop(true)
+
+		handle, err := q.Submit(context.Background(), nil)
+		if handle != nil {
+			t.Fatal("Submit(nil): got handle, want nil")
+		}
+		if !errors.Is(err, ErrQueueJobRequired) {
+			t.Fatalf("Submit(nil): got %v, want %v", err, ErrQueueJobRequired)
 		}
 	})
 }

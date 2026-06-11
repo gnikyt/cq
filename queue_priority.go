@@ -95,6 +95,10 @@ type PriorityQueue struct {
 // NewPriorityQueue creates a PriorityQueue around an existing Queue.
 // capacity applies to each internal priority channel.
 func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *PriorityQueue {
+	if queue == nil {
+		panic("cq: priority queue requires base queue")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	pq := &PriorityQueue{
 		highest:      make(chan prioritySubmission, capacity),
@@ -269,7 +273,12 @@ func (pq *PriorityQueue) PendingByPriority() map[Priority]int {
 // according to configured weighted attempts.
 func (pq *PriorityQueue) dispatcher() {
 	defer pq.wg.Done()
-	ticker := time.NewTicker(pq.priorityTick)
+	tick := pq.priorityTick
+	if tick <= 0 {
+		tick = defaultPriorityTick
+	}
+
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 
 	for {
@@ -431,6 +440,10 @@ func (pq *PriorityQueue) rejectPendingSubmissions(err error) {
 // WithPriorityTick sets dispatcher tick interval.
 func WithPriorityTick(tick time.Duration) PriorityQueueOption {
 	return func(pq *PriorityQueue) {
+		if tick <= 0 {
+			pq.priorityTick = defaultPriorityTick
+			return
+		}
 		pq.priorityTick = tick
 	}
 }

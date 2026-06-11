@@ -12,6 +12,17 @@ import (
 )
 
 func TestWithRateLimit(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		err := WithRateLimit(nil, rate.NewLimiter(1, 1))(context.Background())
+		if !errors.Is(err, ErrRateLimitJobRequired) {
+			t.Fatalf("WithRateLimit(nil job): got %v, want %v", err, ErrRateLimitJobRequired)
+		}
+		err = WithRateLimit(func(context.Context) error { return nil }, nil)(context.Background())
+		if !errors.Is(err, ErrRateLimitLimiterRequired) {
+			t.Fatalf("WithRateLimit(nil limiter): got %v, want %v", err, ErrRateLimitLimiterRequired)
+		}
+	})
+
 	t.Run("limits_rate", func(t *testing.T) {
 		// Allow 2 jobs per second with burst of 1.
 		limiter := rate.NewLimiter(2, 1)
@@ -127,6 +138,18 @@ func TestWithRateLimit(t *testing.T) {
 }
 
 func TestWithRateLimitRelease(t *testing.T) {
+	t.Run("nil_args", func(t *testing.T) {
+		if err := WithRateLimitRelease(nil, rate.NewLimiter(1, 1), NewQueue(1, 1, 1), 1)(context.Background()); !errors.Is(err, ErrRateLimitJobRequired) {
+			t.Fatalf("WithRateLimitRelease(nil job): got %v, want %v", err, ErrRateLimitJobRequired)
+		}
+		if err := WithRateLimitRelease(func(context.Context) error { return nil }, nil, NewQueue(1, 1, 1), 1)(context.Background()); !errors.Is(err, ErrRateLimitLimiterRequired) {
+			t.Fatalf("WithRateLimitRelease(nil limiter): got %v, want %v", err, ErrRateLimitLimiterRequired)
+		}
+		if err := WithRateLimitRelease(func(context.Context) error { return nil }, rate.NewLimiter(1, 1), nil, 1)(context.Background()); !errors.Is(err, ErrRateLimitQueueRequired) {
+			t.Fatalf("WithRateLimitRelease(nil queue): got %v, want %v", err, ErrRateLimitQueueRequired)
+		}
+	})
+
 	t.Run("releases_when_limited", func(t *testing.T) {
 		queue := NewQueue(1, 2, 10)
 		queue.Start()
