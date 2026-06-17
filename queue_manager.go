@@ -135,3 +135,8 @@ func (m *QueueManager) SubmitAfter(ctx context.Context, name string, job Job, de
 	}
 	return q.SubmitAfter(ctx, job, delay, opts...)
 }
+
+// SubmitAt routes a job to a named queue to be submitted at a specific time.
+func (m *QueueManager) SubmitAt(ctx context.Context, name string, job Job, at time.Time, opts ...SubmitOption) (*JobHandle, error) {
+	return m.SubmitAfter(ctx, name, job, time.Until(at), opts...)
+}

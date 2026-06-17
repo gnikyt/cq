@@ -111,3 +111,8 @@ func (m *PriorityQueueManager) SubmitAfter(ctx context.Context, name string, job
 	}
 	return q.SubmitAfter(ctx, job, priority, delay, opts...)
 }
+
+// SubmitAt routes a job to a named priority queue to be submitted at a specific time.
+func (m *PriorityQueueManager) SubmitAt(ctx context.Context, name string, job Job, priority Priority, at time.Time, opts ...SubmitOption) (*JobHandle, error) {
+	return m.SubmitAfter(ctx, name, job, priority, time.Until(at), opts...)
+}

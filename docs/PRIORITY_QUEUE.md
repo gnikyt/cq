@@ -68,6 +68,7 @@ defer mgr.StopAll(true)
 
 _, _ = mgr.Submit(ctx, "critical", criticalJob, cq.PriorityHighest)
 _, _ = mgr.SubmitAfter(ctx, "bulk", cleanupJob, cq.PriorityLow, time.Minute)
+_, _ = mgr.SubmitAt(ctx, "bulk", cleanupJob, cq.PriorityLow, time.Now().Add(time.Hour))
 ```
 
 #### Custom Weights

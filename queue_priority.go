@@ -248,6 +248,13 @@ func (pq *PriorityQueue) SubmitAfter(ctx context.Context, job Job, priority Prio
 	return handle, nil
 }
 
+// SubmitAt accepts responsibility for submitting a priority job at a specific time.
+// When the time arrives, priority-buffer acceptance is non-blocking.
+// If at is in the past, the job is submitted immediately.
+func (pq *PriorityQueue) SubmitAt(ctx context.Context, job Job, priority Priority, at time.Time, opts ...SubmitOption) (*JobHandle, error) {
+	return pq.SubmitAfter(ctx, job, priority, time.Until(at), opts...)
+}
+
 // CountByPriority returns queued count for one priority level.
 // It returns 0 for invalid priorities.
 func (pq *PriorityQueue) CountByPriority(priority Priority) int {

@@ -111,7 +111,7 @@ Typed submission rejections include:
 
 ## Submission Options
 
-`Submit`, `SubmitAfter`, and routed submission APIs accept `SubmitOption`s:
+`Submit`, `SubmitAfter`, `SubmitAt`, and routed submission APIs accept `SubmitOption`s:
 
 - `WithNonBlocking()`  
   Return `cq.ErrQueueFull` instead of waiting for capacity.
@@ -141,6 +141,9 @@ All submission APIs return the same cancellable `JobHandle` values:
 
 - `SubmitAfter` and `Reschedule` return handles that can cancel before delayed
   handoff.
+- `SubmitAt` submits a job at an absolute `time.Time`. It behaves identically to
+  `SubmitAfter` with the delay computed as `time.Until(at)`. If `at` is in the
+  past, the job is submitted immediately.
 - Batch methods return one independently cancellable handle per accepted job.
 - `QueueManager` and `PriorityQueueManager` return handles from their routed
   queue.

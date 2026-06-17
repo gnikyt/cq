@@ -511,6 +511,14 @@ func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, o
 	return handle, nil
 }
 
+// SubmitAt accepts responsibility for submitting job at a specific time.
+// The returned handle remains pending until that time and tracks eventual execution.
+// When the time arrives, submission is non-blocking and may resolve with ErrQueueFull.
+// If at is in the past, the job is submitted immediately.
+func (q *Queue) SubmitAt(ctx context.Context, job Job, at time.Time, opts ...SubmitOption) (*JobHandle, error) {
+	return q.SubmitAfter(ctx, job, time.Until(at), opts...)
+}
+
 // SubmitBatch submits jobs in order and returns handles for accepted jobs.
 // If submission stops partway through, accepted handles and the rejection error are returned.
 func (q *Queue) SubmitBatch(ctx context.Context, jobs []Job, opts ...SubmitOption) ([]*JobHandle, error) {
