@@ -7,7 +7,7 @@ Use this quick wrapper index to choose the right building block:
 | Goal | Wrappers |
 | --- | --- |
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
-| Bound runtime | `WithTimeout`, `WithDeadline` |
+| Bound runtime | `WithTimeout`, `WithDeadline`, `WithExpiry` |
 | Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`, plus contention handling with [`WithErrorOnContention`](#handling-contention) and `IsContentionError` |
 | Observe outcomes | `WithOutcome`, `WithTracing`, `WithProgress` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
@@ -489,6 +489,28 @@ is expected given its a deadline.
 ```go
 deadline := time.Date(2025, 12, 25, 16, 0, 0, 0, time.Local)
 job := cq.WithDeadline(actualJob, deadline)
+_, _ = queue.Submit(context.Background(), job)
+```
+
+#### Expiry
+
+**What it does:** Discards a job that waited in the queue longer than a ttl
+before starting, without running it.
+
+**When to use:** Work that is worthless when stale: OTP delivery, presence
+pings, cache warms, live notifications. A backlog should drop them, not run
+them late.
+
+**Caveat:** Operationally, expiry bounds *waiting* while `WithTimeout` bounds
+*running*... compose both when you need each bound. Expired jobs are discard
+outcomes (`errors.Is` reports `cq.ErrJobExpired` and `cq.ErrDiscard`), so
+they tally as discarded rather than failed. Compose retries inside
+`WithExpiry` if a retried job should also respect the enqueue ttl.
+
+```go
+// Discard if not started within 30 seconds of enqueue,
+// and bound execution to 5 seconds once started.
+job := cq.WithExpiry(cq.WithTimeout(sendOTP, 5*time.Second), 30*time.Second)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
