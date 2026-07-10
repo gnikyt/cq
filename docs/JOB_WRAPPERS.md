@@ -9,7 +9,7 @@ Use this quick wrapper index to choose the right building block:
 | Retry transient failures | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff` |
 | Bound runtime | `WithTimeout`, `WithDeadline` |
 | Skip or deduplicate work | `WithSkipIf`, `WithUnique`, `WithoutOverlap`, `WithConcurrencyByKey`, plus contention handling with [`WithErrorOnContention`](#handling-contention) and `IsContentionError` |
-| Observe outcomes | `WithOutcome`, `WithTracing` |
+| Observe outcomes | `WithOutcome`, `WithTracing`, `WithProgress` |
 | Build workflows | `WithChain`, `WithCheckpoint`, `WithPipeline`, `WithBatch`, `WithDependsOn` |
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
 | Protect dependencies | `WithRateLimit`, `WithCircuitBreaker`, `WithConcurrencyLimit` |
@@ -371,6 +371,80 @@ job := cq.WithTracing(
 
 To trace each retry attempt individually, place tracing inside the retry
 instead.
+
+#### Progress
+
+**What it does:** Lets a running job report incremental progress through its
+context. Every `Progress` field is optional: report completed/total units, a
+stage label only, or both. Each update is pushed to a `ProgressReporter`
+alongside the job's metadata, so observers can track long-running jobs by ID.
+
+**When to use:** Long-running jobs (imports, exports, batch syncs) surfaced
+on dashboards or ops endpoints.
+
+**Caveat:** Progress is ephemeral observability, not durable state. For
+retry-safe resume state, use `WithCheckpoint` instead. Reporters run inline
+with `SetProgress`, so keep them fast and non-blocking.
+
+```go
+reporter := cq.NewMemoryProgressReporter()
+
+job := cq.WithProgress(func(ctx context.Context) error {
+	rows := fetchRows()
+	for i, row := range rows {
+		if err := process(row); err != nil {
+			return err
+		}
+		cq.SetProgress(ctx, cq.Progress{
+			Completed: int64(i + 1),
+			Total:     int64(len(rows)),
+			Stage:     "processing",
+		})
+	}
+	return nil
+}, reporter)
+
+handle, _ := queue.Submit(context.Background(), job, cq.WithJobID("import-42"))
+
+// Elsewhere (dashboard, ops endpoint):
+if p, ok := reporter.Progress("import-42"); ok {
+	if f, known := p.Fraction(); known {
+		log.Printf("import-42: %.0f%% (%s)", f*100, p.Stage)
+	} else {
+		log.Printf("import-42: %s", p.Stage) // Unknown fraction... stage only.
+	}
+}
+```
+
+Counting is not required. Jobs that move through phases rather than units
+can report stages alone... `Fraction` returns `ok=false` so observers can
+render "currently in stage X" instead of a misleading 0% bar:
+
+```go
+job := cq.WithProgress(func(ctx context.Context) error {
+	cq.SetProgress(ctx, cq.Progress{Stage: "fetching"})
+	data, err := fetch(ctx)
+	if err != nil {
+		return err
+	}
+	cq.SetProgress(ctx, cq.Progress{Stage: "transforming"})
+	out := transform(data)
+	cq.SetProgress(ctx, cq.Progress{Stage: "uploading"})
+	return upload(ctx, out)
+}, reporter)
+```
+
+Any type implementing `ProgressReporter` can receive updates (for example, a
+Redis-backed reporter for cross-process visibility):
+
+```go
+type ProgressReporter interface {
+	ReportProgress(ctx context.Context, meta cq.JobMeta, progress cq.Progress)
+}
+```
+
+Inside the job, the latest update is also readable via
+`cq.ProgressFromContext(ctx)`.
 
 #### Skip If
 

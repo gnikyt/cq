@@ -24,7 +24,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Job tagging and batch tracking
 - Overlap prevention and uniqueness constraints
 - Workflow step checkpointing for retry-safe chains/dependencies
-- Tracing hooks for observability
+- Tracing hooks and per-job progress reporting for observability
 - Zero external dependencies for core functionality
 
 ## Feature Matrix
@@ -40,7 +40,7 @@ Use this as a quick guide before diving into detailed sections.
 | Concurrency safety | `WithoutOverlap`, `WithUnique`, `WithConcurrencyByKey` | Prevent overlap, deduplicate work, and limit concurrent execution per key |
 | Deferral and release | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` | Re-enqueue instead of blocking workers |
 | Rate and fault protection | `WithRateLimit`, `WithCircuitBreaker` | Protect upstream services under load/failure |
-| Observability and outcomes | `WithTracing`, `WithOutcome`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, and queue lifecycle transitions |
+| Observability and outcomes | `WithTracing`, `WithOutcome`, `WithProgress`, `WithHooks`, `MetaFromContext`, `LastErrorFromContext` | Track attempts, prior retry errors, durations, progress, and queue lifecycle transitions |
 | Queue-wide wrappers | `WithMiddleware` | Apply cross-cutting behavior to every enqueued job |
 | Multi-queue routing | `NewQueueManager`, `QueueManager.Submit`, `QueueManager.SubmitAfter`, `NewPriorityQueueManager`, `Register`, `StartAll`, `StopAll` | Route standard or priority jobs to named queues with isolated worker pools |
 | Prioritization and scheduling | `NewPriorityQueue`, `PriorityQueue.Submit`, `PriorityQueue.SubmitAfter`, `NewPriorityQueueManager`, `NewScheduler` | Prioritize urgent jobs, route them by name, and run recurring work with typed submission outcomes |
