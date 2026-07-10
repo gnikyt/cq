@@ -164,6 +164,26 @@ func TestQueuePauseResume_Distributed(t *testing.T) {
 	}
 }
 
+func TestQueuePause_Stopped(t *testing.T) {
+	q := NewQueue(1, 1, 10)
+	q.Start()
+	q.Stop(true)
+
+	if err := q.Pause(); !errors.Is(err, ErrQueueStopped) {
+		t.Fatalf("Pause(): got %v, want %v", err, ErrQueueStopped)
+	}
+}
+
+func TestQueueResume_Stopped(t *testing.T) {
+	q := NewQueue(1, 1, 10)
+	q.Start()
+	q.Stop(true)
+
+	if err := q.Resume(); !errors.Is(err, ErrQueueStopped) {
+		t.Fatalf("Resume(): got %v, want %v", err, ErrQueueStopped)
+	}
+}
+
 func TestQueuePauseReject_NonBlockingSubmit(t *testing.T) {
 	q := NewQueue(1, 1, 10, WithPauseBehavior(PauseReject))
 	q.Start()

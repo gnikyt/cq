@@ -347,6 +347,13 @@ func (q *Queue) IsStopped() bool {
 // Pause prevents new jobs from starting execution.
 // Submissions are still accepted, and running jobs continue.
 func (q *Queue) Pause() error {
+	q.acceptMut.RLock()
+	defer q.acceptMut.RUnlock()
+
+	if q.IsStopped() {
+		return ErrQueueStopped
+	}
+
 	q.paused.Store(true)
 	if q.pauseStore == nil || q.pauseStoreKey == "" {
 		return nil // No distributed pause store, local pause only.
@@ -360,6 +367,13 @@ func (q *Queue) Pause() error {
 
 // Resume allows new jobs to start execution again.
 func (q *Queue) Resume() error {
+	q.acceptMut.RLock()
+	defer q.acceptMut.RUnlock()
+
+	if q.IsStopped() {
+		return ErrQueueStopped
+	}
+
 	q.paused.Store(false)
 	if q.pauseStore == nil || q.pauseStoreKey == "" {
 		return nil // No distributed pause store, local resume only.

@@ -117,6 +117,9 @@ if err := queue.Resume(); err != nil {
 }
 ```
 
+Both `Pause()` and `Resume()` return `cq.ErrQueueStopped` if the queue has
+already been stopped.
+
 ## Distributed Pause Store
 
 `PauseStore` is optional and only needed when you want multiple queue instances
