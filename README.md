@@ -14,7 +14,7 @@ Inspired by Bull, Pond, Ants, and more.
 - Auto-scaling worker pool (min/max workers)
 - Composable job wrappers (retries, timeouts, backoffs, etc.)
 - Priority queue with weighted dispatch
-- Job scheduler for recurring and one-time jobs
+- Job scheduler for recurring and one-time jobs (intervals, cron expressions, or custom schedules)
 - Pause/resume queue execution (local or distributed)
 - Job metadata (ID, enqueue time, attempt count)
 - Circuit breaker for fault tolerance
@@ -281,6 +281,14 @@ schedule, err := scheduler.Every(
 )
 
 latest, submitErr, attempted := schedule.Latest()
+```
+
+Cron expressions (and custom `Schedule` implementations) are supported via
+`On`. See [docs/SCHEDULER.md](docs/SCHEDULER.md) for details.
+
+```go
+nightly, _ := cq.ParseCron("0 2 * * *") // Every day at 02:00.
+schedule, err := scheduler.On("nightly-report", nightly, reportJob)
 ```
 
 ## Queue
