@@ -205,7 +205,7 @@ func TestDependsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	dep1 := func(ctxArg context.Context) error {
-		cancel()                    // Cancel the context mid-dep.
+		cancel() // Cancel the context mid-dep.
 		select {
 		case <-ctxArg.Done():
 			return ctxArg.Err()
@@ -377,10 +377,10 @@ func TestDependsOnMultipleFailCancelDeps(t *testing.T) {
 func TestDependsOnMixedFailModes(t *testing.T) {
 	// Multiple deps with mixed fail modes: first failure using Cancel/Skip stops execution.
 	tests := []struct {
-		name           string
-		failMode1      DependencyFailMode
-		failMode2      DependencyFailMode
-		expectedErr    error
+		name              string
+		failMode1         DependencyFailMode
+		failMode2         DependencyFailMode
+		expectedErr       error
 		expectedExecCount int
 	}{
 		{
