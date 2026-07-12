@@ -33,7 +33,7 @@ Use this as a quick guide before diving into detailed sections.
 
 | Capability | Primary APIs | What it solves |
 | --- | --- | --- |
-| Queueing and workers | `NewQueue`, `Submit`, `Stop` | Run background jobs with auto-scaling workers |
+| Queueing and workers | `NewQueue`, `Submit`, `Stop`, `StopDrain` | Run background jobs with auto-scaling workers, handing back unstarted work on shutdown |
 | Reliability | `WithRetryPolicy`, `WithRetry`, `WithRetryIf`, `WithBackoff`, `WithRecover` | Handle transient failures and panic recovery |
 | Time control | `WithTimeout`, `WithDeadline`, `WithExpiry`, `SubmitAfter` | Bound execution, discard stale queued jobs, and schedule delayed runs |
 | Flow orchestration | `WithChain`, `WithPipeline`, `WithBatch`, `WithDependsOn`, `WithCheckpoint` | Build multi-step and grouped workflows with configurable dependency failure modes |
@@ -458,13 +458,31 @@ Use `cq.WithPauseBehavior(cq.PauseReject)` if you prefer rejecting enqueue while
 
 ### Stopping
 
+Pick by what should happen to jobs that have not started yet: finish them,
+lose them, or get them back.
+
+| Method | In-flight jobs | Unstarted jobs | Bounded? | Use when |
+| --- | --- | --- | --- | --- |
+| `Stop(true)` | Waits for all | Run to completion | No | Finishing every accepted job matters more than exit time |
+| `Stop(false)` | Not waited | Abandoned (`ErrJobAbandoned`) | Mostly immediate | Queued work is disposable or persisted upstream |
+| `StopContext(ctx)` | Waits up to ctx | Run if time allows, abandoned on expiry | Yes | Graceful shutdown under an external deadline (signals, etc.) |
+| `StopTimeout(d)` | Same as `StopContext` | Same as `StopContext` | Yes | Same, when you just have a duration |
+| `StopDrain(ctx)` | Waits up to ctx | Handed back as `DrainedJob`s (`ErrQueueDrained`) | Yes | Unstarted work must survive shutdown... persist and resubmit later |
+| `Terminate()` | Not waited | Abandoned | Immediate | Emergency stop; the process is going away regardless |
+
 ```go
-queue.Stop(true)   // Wait for jobs to finish.
-queue.Stop(false)  // Don't wait for queued jobs.
-queue.StopContext(ctx) // Wait for jobs or stop when ctx is done.
-queue.StopTimeout(5 * time.Second) // Wait up to timeout duration.
-queue.Terminate()  // Immediate shutdown.
+queue.Stop(true)
+queue.StopContext(ctx)
+queue.StopTimeout(5 * time.Second)
+
+// Hand back unstarted work instead of running or dropping it.
+drained, err := queue.StopDrain(ctx)
+for _, dj := range drained {
+	persistForRestart(dj.Meta, dj.Job)
+}
 ```
+
+See [docs/QUEUE_OPTIONS.md](docs/QUEUE_OPTIONS.md) for shutdown details.
 
 ## Documentation
 

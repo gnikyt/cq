@@ -23,7 +23,22 @@ var (
 	ErrQueuePaused      = errors.New("queue is paused")
 	ErrQueueFull        = errors.New("queue is full")
 	ErrQueueJobRequired = errors.New("queue: job required")
+	ErrQueueDrained     = errors.New("queue drained")
 )
+
+// queuedJob is one buffered submission awaiting a worker.
+type queuedJob struct {
+	run    Job        // Wrapped execution closure.
+	raw    Job        // Job as submitted, before queue middleware, for drain handback.
+	handle *JobHandle // Submission handle.
+}
+
+// DrainedJob is a submission handed back by StopDrain before it started executing.
+// It carries everything needed to persist or resubmit the work elsewhere.
+type DrainedJob struct {
+	Job  Job     // The job as submitted (wrappers intact, queue middleware not applied).
+	Meta JobMeta // Submission metadata (ID, name, attributes, enqueue time).
+}
 
 // IDGenerator creates a job ID for accepted submissions.
 type IDGenerator func() string
@@ -77,10 +92,10 @@ type Queue struct {
 	workersRunningTally atomic.Int32   // Reserved/active worker slots used for scaling decisions.
 	workersIdleTally    atomic.Int32   // Reserved idle worker slots available for new jobs.
 
-	jobs          chan Job       // Buffered job queue.
-	jobWg         sync.WaitGroup // Tracks accepted jobs.
-	acceptMut     sync.RWMutex   // Synchronizes submission acceptance with Stop/Terminate.
-	jobsCloseOnce sync.Once      // Ensures jobs channel is closed at most once.
+	jobs          chan *queuedJob // Buffered job queue.
+	jobWg         sync.WaitGroup  // Tracks accepted jobs.
+	acceptMut     sync.RWMutex    // Synchronizes submission acceptance with Stop/Terminate.
+	jobsCloseOnce sync.Once       // Ensures jobs channel is closed at most once.
 
 	createdJobsTally     atomic.Int64 // Total jobs accepted.
 	activeJobsTally      atomic.Int64 // Jobs currently executing.
@@ -96,6 +111,7 @@ type Queue struct {
 	idGenerator    IDGenerator             // Optional override for generating job IDs.
 	submissionsMut sync.Mutex              // Guards unresolved submissions.
 	submissions    map[*JobHandle]struct{} // Accepted submissions that are not terminal.
+	delayedJobs    map[*JobHandle]Job      // Delayed submissions awaiting their timer, for drain handback.
 
 	panicHandler    func(any)    // Optional panic handler for job panics.
 	middleware      []Middleware // Optional queue-level middleware chain.
@@ -131,13 +147,14 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 	q := &Queue{
 		workersMin:     wmin,
 		workersMax:     wmax,
-		jobs:           make(chan Job, cap),
+		jobs:           make(chan *queuedJob, cap),
 		jobWg:          sync.WaitGroup{},
 		workerWg:       sync.WaitGroup{},
 		workerIdleTick: defaultWorkerIdleTick,
 		pausePollTick:  defaultPausePollTick,
 		pauseBehavior:  PauseBuffer,
 		submissions:    make(map[*JobHandle]struct{}),
+		delayedJobs:    make(map[*JobHandle]Job),
 	}
 
 	// Apply functional options.
@@ -239,14 +256,11 @@ func (q *Queue) Stop(jobWait bool) {
 
 	q.stopped.Store(true)
 	if jobWait {
-		// Ensure graceful shutdown can drain pending jobs.
-		q.paused.Store(false)
-		q.distPaused.Store(false)
-		q.jobWg.Wait()
+		// Background context... the wait is unbounded.
+		_ = q.waitForShutdown(context.Background())
+		return
 	}
-	if !jobWait {
-		q.abandonPendingSubmissions()
-	}
+	q.abandonPendingSubmissions()
 	q.ctxCancel()
 	q.workerWg.Wait()
 	q.resetWorkers()
@@ -277,6 +291,87 @@ func (q *Queue) StopContext(ctx context.Context) error {
 	}
 
 	q.stopped.Store(true)
+	return q.waitForShutdown(ctx)
+}
+
+// StopTimeout gracefully shuts down the queue for up to tt.
+// It is equivalent to calling StopContext with a timeout context.
+func (q *Queue) StopTimeout(tt time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tt)
+	defer cancel()
+	return q.StopContext(ctx)
+}
+
+// StopDrain gracefully shuts down the queue and hands back jobs that never
+// started executing (buffered or delayed) as DrainedJob values, so callers
+// can persist or re-route unstarted work. Handed-back handles resolve with
+// ErrQueueDrained and their tallies are removed as if never accepted.
+// In-flight jobs run to completion bounded by ctx: like StopContext, a done
+// ctx abandons the wait and returns ctx.Err alongside jobs drained so far.
+func (q *Queue) StopDrain(ctx context.Context) ([]DrainedJob, error) {
+	if ctx == nil {
+		ctx = context.Background() // Default to background context.
+	}
+
+	if q.IsStopped() {
+		return nil, ErrQueueStopped
+	}
+
+	q.acceptMut.Lock()
+	defer q.acceptMut.Unlock()
+
+	if q.IsStopped() {
+		return nil, ErrQueueStopped
+	}
+	q.stopped.Store(true)
+
+	var drained []DrainedJob
+
+	// Hand back buffered jobs that no worker picked up.
+	// Receiving competes with workers, but each item goes to exactly one side.
+buffered:
+	for {
+		select {
+		case item := <-q.jobs:
+			if item == nil {
+				continue // Idle-stop sentinel... skip.
+			}
+
+			if item.handle.rejectPending(ErrQueueDrained) {
+				drained = append(drained, DrainedJob{Job: item.raw, Meta: item.handle.Meta()})
+				q.rollbackJobEnqueued()
+			} else {
+				// Already terminal (example: cancelled while buffered)... release accounting only.
+				q.pendingJobsTally.Add(-1)
+				q.cancelledJobsTally.Add(1)
+			}
+			q.untrackSubmission(item.handle)
+			q.jobWg.Done()
+		default:
+			break buffered
+		}
+	}
+
+	// Hand back delayed submissions still waiting on their timer.
+	q.submissionsMut.Lock()
+	for handle, job := range q.delayedJobs {
+		if handle.rejectPending(ErrQueueDrained) {
+			drained = append(drained, DrainedJob{Job: job, Meta: handle.Meta()})
+		}
+		delete(q.delayedJobs, handle)
+		delete(q.submissions, handle)
+	}
+	q.submissionsMut.Unlock()
+
+	// In-flight jobs finish bounded by ctx... unstarted work was handed back.
+	return drained, q.waitForShutdown(ctx)
+}
+
+// waitForShutdown waits for accepted jobs to finish bounded by ctx, then
+// completes queue shutdown. On ctx done, pending submissions are abandoned
+// and worker cleanup finishes asynchronously. Callers must hold acceptMut
+// and have set stopped.
+func (q *Queue) waitForShutdown(ctx context.Context) error {
 	// Ensure graceful shutdown can drain pending jobs.
 	q.paused.Store(false)
 	q.distPaused.Store(false)
@@ -300,6 +395,7 @@ func (q *Queue) StopContext(ctx context.Context) error {
 	case <-ctx.Done():
 		q.ctxCancel()
 		q.abandonPendingSubmissions()
+		// Re-clear pause flags... a concurrent Pause() may have set them during the wait.
 		q.paused.Store(false)
 		q.distPaused.Store(false)
 		go func() {
@@ -310,14 +406,6 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		}()
 		return ctx.Err()
 	}
-}
-
-// StopTimeout gracefully shuts down the queue for up to tt.
-// It is equivalent to calling StopContext with a timeout context.
-func (q *Queue) StopTimeout(tt time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), tt)
-	defer cancel()
-	return q.StopContext(ctx)
 }
 
 // Terminate forces an immediate shutdown.
@@ -495,6 +583,7 @@ func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, o
 	meta := q.newSubmissionMeta(cfg)
 	handle := newJobHandle(meta)
 	q.trackSubmission(handle)
+	q.trackDelayed(handle, job)
 	q.acceptMut.RUnlock()
 
 	if delay < 0 {
@@ -503,6 +592,7 @@ func (q *Queue) SubmitAfter(ctx context.Context, job Job, delay time.Duration, o
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
+		defer q.untrackDelayed(handle)
 		select {
 		case <-q.ctx.Done():
 			if handle.rejectPending(ErrQueueStopped) {
@@ -690,6 +780,20 @@ func (q *Queue) untrackSubmission(handle *JobHandle) {
 	q.submissionsMut.Unlock()
 }
 
+// trackDelayed records a delayed submission awaiting its timer.
+func (q *Queue) trackDelayed(handle *JobHandle, job Job) {
+	q.submissionsMut.Lock()
+	q.delayedJobs[handle] = job
+	q.submissionsMut.Unlock()
+}
+
+// untrackDelayed removes a delayed submission once its timer resolves.
+func (q *Queue) untrackDelayed(handle *JobHandle) {
+	q.submissionsMut.Lock()
+	delete(q.delayedJobs, handle)
+	q.submissionsMut.Unlock()
+}
+
 // abandonPendingSubmissions completes every tracked pending submission as abandoned.
 func (q *Queue) abandonPendingSubmissions() {
 	q.submissionsMut.Lock()
@@ -758,7 +862,8 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 	opts.handle.setMeta(opts.meta)
 	meta := opts.meta
 
-	// Apply queue-level middleware.
+	// Apply queue-level middleware, keeping the as-submitted job for drain handback.
+	rawJob := job
 	job = q.applyMiddleware(job)
 
 	// Wrap the job with a job metadata context.
@@ -832,6 +937,9 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		return err
 	}
 
+	// Buffered item carrying the handle and as-submitted job for drain handback.
+	item := &queuedJob{run: wrappedJob, raw: rawJob, handle: opts.handle}
+
 	// Track the job and record acceptance tallies.
 	q.jobWg.Add(1)
 	q.markJobEnqueued()
@@ -867,12 +975,12 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 		if opts.blocking {
 			if opts.acceptCtx == nil {
 				// No acceptance context provided, so block until the job is accepted.
-				q.jobs <- wrappedJob
+				q.jobs <- item
 				ok = true
 			} else {
 				// Acceptance context provided, so block until the job is accepted or the context is done.
 				select {
-				case q.jobs <- wrappedJob:
+				case q.jobs <- item:
 					ok = true
 				case <-opts.acceptCtx.Done():
 					ok = false
@@ -881,7 +989,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 			}
 		} else {
 			select {
-			case q.jobs <- wrappedJob:
+			case q.jobs <- item:
 				ok = true
 			default:
 				ok = false
@@ -988,11 +1096,11 @@ func (q *Queue) workJobs(initialJob Job) {
 		select {
 		case <-q.ctx.Done():
 			return // Context cancelled, stop worker.
-		case job := <-q.jobs:
-			if job == nil {
-				return // Received a nil job, so this worker must be idle: exit.
+		case item := <-q.jobs:
+			if item == nil {
+				return // Received a nil item, so this worker must be idle: exit.
 			}
-			q.workJob(job, false)
+			q.workJob(item.run, false)
 		}
 	}
 }

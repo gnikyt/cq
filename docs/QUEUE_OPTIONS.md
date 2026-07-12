@@ -181,3 +181,36 @@ if err := queue.StopTimeout(5 * time.Second); err != nil {
 	log.Printf("stop timeout: %v", err)
 }
 ```
+
+## Draining: Handing Back Unstarted Jobs
+
+Because cq holds nothing durably, stopping a queue normally means buffered
+jobs are simply not run. `StopDrain` is the escape hatch: it shuts the queue down
+gracefully, lets in-flight jobs finish (bounded by ctx), and hands back every
+job that never started executing so you can persist or re-route it.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+drained, err := queue.StopDrain(ctx)
+if err != nil {
+	log.Printf("drain bounded: %v", err) // In-flight wait was cut short.
+}
+for _, dj := range drained {
+	// dj.Job is the job as submitted (wrappers intact).
+	// dj.Meta carries ID, name, attributes, and enqueue time.
+	persistForRestart(dj.Meta, dj.Job)
+}
+```
+
+Details:
+
+- Buffered jobs and pending `SubmitAfter`/`SubmitAt` submissions are handed
+  back, their handles resolve with `cq.ErrQueueDrained`.
+- Handed-back jobs are removed from queue tallies as if never accepted.
+- Jobs a worker already picked up run to completion and are not handed back.
+- A done ctx behaves like `StopContext`: the in-flight wait is abandoned and
+  `ctx.Err()` is returned alongside the jobs drained so far.
+- Queue-level middleware is not baked into `dj.Job`... resubmitting to a
+  queue re-applies that queue's middleware.
