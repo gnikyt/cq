@@ -16,6 +16,7 @@ var (
 	ErrScheduleInPast          = errors.New("scheduled time is in the past")
 	ErrSchedulerStopped        = errors.New("scheduler is stopped")
 	ErrScheduleJobRequired     = errors.New("schedule job required")
+	ErrScheduleRequired        = errors.New("schedule required")
 )
 
 // ScheduleHandle tracks one recurring or one-time schedule.
@@ -101,6 +102,7 @@ type scheduledJob struct {
 	job      Job                // Job submitted when the schedule fires.
 	interval time.Duration      // Recurring interval... zero for one-time schedules.
 	runAt    time.Time          // One-time schedule timestamp.
+	schedule Schedule           // Optional Schedule implementation driving fire times.
 	opts     []SubmitOption     // Options applied to each submission.
 	ctx      context.Context    // Per-schedule lifecycle context.
 	cancel   context.CancelFunc // Cancels this schedule only.
@@ -151,7 +153,20 @@ func (s *Scheduler) Every(id string, interval time.Duration, job Job, opts ...Su
 	if interval <= 0 {
 		return nil, fmt.Errorf("scheduler: every: %w", ErrScheduleIntervalInvalid)
 	}
-	return s.add(id, job, interval, time.Time{}, opts)
+	return s.add(id, job, interval, time.Time{}, nil, opts)
+}
+
+// On registers a recurring schedule whose fire times are computed by a
+// Schedule implementation, such as a cron expression via ParseCron.
+// The schedule ends when Next returns the zero time or a non-advancing time.
+func (s *Scheduler) On(id string, schedule Schedule, job Job, opts ...SubmitOption) (*ScheduleHandle, error) {
+	if job == nil {
+		return nil, fmt.Errorf("scheduler: on: %w", ErrScheduleJobRequired)
+	}
+	if schedule == nil {
+		return nil, fmt.Errorf("scheduler: on: %w", ErrScheduleRequired)
+	}
+	return s.add(id, job, 0, time.Time{}, schedule, opts)
 }
 
 // At registers a one-time schedule.
@@ -162,7 +177,7 @@ func (s *Scheduler) At(id string, at time.Time, job Job, opts ...SubmitOption) (
 	if time.Now().After(at) {
 		return nil, fmt.Errorf("scheduler: at: %w", ErrScheduleInPast)
 	}
-	return s.add(id, job, 0, at, opts)
+	return s.add(id, job, 0, at, nil, opts)
 }
 
 // Remove cancels and removes a schedule by ID.
@@ -203,7 +218,7 @@ func (s *Scheduler) List() []string {
 }
 
 // add registers and starts one schedule.
-func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time, opts []SubmitOption) (*ScheduleHandle, error) {
+func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time, schedule Schedule, opts []SubmitOption) (*ScheduleHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped {
@@ -224,6 +239,7 @@ func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time
 		job:      job,
 		interval: interval,
 		runAt:    at,
+		schedule: schedule,
 		opts:     append([]SubmitOption(nil), opts...),
 		ctx:      ctx,
 		cancel:   cancel,
@@ -232,9 +248,12 @@ func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time
 	handle.cancel = func() bool { return s.remove(sj) }
 	s.jobs[id] = sj
 	s.wg.Add(1)
-	if interval > 0 {
+	switch {
+	case schedule != nil:
+		go s.runSchedule(sj)
+	case interval > 0:
 		go s.runRecurring(sj)
-	} else {
+	default:
 		go s.runOnce(sj)
 	}
 	return handle, nil
@@ -277,6 +296,7 @@ func (s *Scheduler) submit(sj *scheduledJob) {
 func (s *Scheduler) runRecurring(sj *scheduledJob) {
 	defer s.wg.Done()
 	defer s.removeCompleted(sj)
+
 	ticker := time.NewTicker(sj.interval)
 	defer ticker.Stop()
 	for {
@@ -289,12 +309,38 @@ func (s *Scheduler) runRecurring(sj *scheduledJob) {
 	}
 }
 
+// runSchedule runs one Schedule-driven recurring schedule.
+// The schedule completes when Next returns the zero time or fails to advance.
+func (s *Scheduler) runSchedule(sj *scheduledJob) {
+	defer s.wg.Done()
+	defer s.removeCompleted(sj)
+
+	for {
+		now := time.Now()
+		next := sj.schedule.Next(now)
+		if next.IsZero() || !next.After(now) {
+			return // No future fire time... schedule is complete.
+		}
+
+		timer := time.NewTimer(time.Until(next))
+		select {
+		case <-sj.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			s.submit(sj)
+		}
+	}
+}
+
 // runOnce waits until runAt, submits once, then removes the schedule.
 func (s *Scheduler) runOnce(sj *scheduledJob) {
 	defer s.wg.Done()
 	defer s.removeCompleted(sj)
+
 	timer := time.NewTimer(time.Until(sj.runAt))
 	defer timer.Stop()
+
 	select {
 	case <-sj.ctx.Done():
 		return

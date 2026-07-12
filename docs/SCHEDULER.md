@@ -67,10 +67,42 @@ Schedule registration errors:
 - `cq.ErrScheduleIntervalInvalid`
 - `cq.ErrScheduleInPast`
 - `cq.ErrSchedulerStopped`
+- `cq.ErrScheduleRequired`
 
-## Cron-Like Scheduling
+## Cron Scheduling
 
-Cron expressions can be supported externally by calculating each next run and
-registering it with `At`. After the returned schedule handle reaches `Done`,
-calculate and register the next occurrence. This keeps cron parsing and
-persistence outside the in-memory scheduler.
+`On` registers a recurring schedule driven by a `Schedule` implementation.
+`ParseCron` provides a zero-dependency implementation for standard five-field
+cron expressions:
+
+```go
+nightly, err := cq.ParseCron("0 2 * * *") // Every day at 02:00.
+if err != nil {
+	log.Fatal(err)
+}
+
+report, err := scheduler.On("nightly-report", nightly, reportJob)
+```
+
+Supported syntax: `*`, values, ranges (`a-b`), steps (`*/n`, `a-b/n`), lists
+(`a,b-c`), month and day names (`jan`-`dec`, `sun`-`sat`), and the `@hourly`,
+`@daily`, `@midnight`, `@weekly`, `@monthly`, `@yearly`/`@annually`
+descriptors. Invalid expressions return
+`cq.ErrCronExprInvalid` where `MustParseCron` panics instead.
+
+### Custom Schedules
+
+Any type implementing `Schedule` can drive `On`:
+
+```go
+type Schedule interface {
+	// Next returns the next fire time strictly after `after`.
+	// Returning the zero time (or a time not after `after`) ends the schedule.
+	Next(after time.Time) time.Time
+}
+```
+
+This is the extension point for third-party cron libraries, business-day
+calendars, or jittered schedules. When `Next` returns the zero time the
+schedule completes: it is removed from the scheduler and its handle's `Done`
+channel closes.
