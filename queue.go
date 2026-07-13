@@ -92,10 +92,10 @@ type Queue struct {
 	workersRunningTally atomic.Int32   // Reserved/active worker slots used for scaling decisions.
 	workersIdleTally    atomic.Int32   // Reserved idle worker slots available for new jobs.
 
-	jobs          chan *queuedJob // Buffered job queue.
-	jobWg         sync.WaitGroup  // Tracks accepted jobs.
-	acceptMut     sync.RWMutex    // Synchronizes submission acceptance with Stop/Terminate.
-	jobsCloseOnce sync.Once       // Ensures jobs channel is closed at most once.
+	jobs          chan queuedJob // Buffered job queue.
+	jobWg         sync.WaitGroup // Tracks accepted jobs.
+	acceptMut     sync.RWMutex   // Synchronizes submission acceptance with Stop/Terminate.
+	jobsCloseOnce sync.Once      // Ensures jobs channel is closed at most once.
 
 	createdJobsTally     atomic.Int64 // Total jobs accepted.
 	activeJobsTally      atomic.Int64 // Jobs currently executing.
@@ -147,7 +147,7 @@ func NewQueue(wmin int, wmax int, cap int, opts ...QueueOption) *Queue {
 	q := &Queue{
 		workersMin:     wmin,
 		workersMax:     wmax,
-		jobs:           make(chan *queuedJob, cap),
+		jobs:           make(chan queuedJob, cap),
 		jobWg:          sync.WaitGroup{},
 		workerWg:       sync.WaitGroup{},
 		workerIdleTick: defaultWorkerIdleTick,
@@ -333,7 +333,7 @@ buffered:
 	for {
 		select {
 		case item := <-q.jobs:
-			if item == nil {
+			if item.handle == nil {
 				continue // Idle-stop sentinel... skip.
 			}
 
@@ -933,7 +933,7 @@ func (q *Queue) acceptSubmission(job Job, opts submissionOptions) (ok bool, err 
 	}
 
 	// Buffered item carrying the handle and as-submitted job for drain handback.
-	item := &queuedJob{run: wrappedJob, raw: rawJob, handle: opts.handle}
+	item := queuedJob{run: wrappedJob, raw: rawJob, handle: opts.handle}
 
 	// Track the job and record acceptance tallies.
 	q.jobWg.Add(1)
@@ -1092,8 +1092,8 @@ func (q *Queue) workJobs(initialJob Job) {
 		case <-q.ctx.Done():
 			return // Context cancelled, stop worker.
 		case item := <-q.jobs:
-			if item == nil {
-				return // Received a nil item, so this worker must be idle: exit.
+			if item.handle == nil {
+				return // Received the idle-stop sentinel, so this worker must be idle: exit.
 			}
 			q.workJob(item.run, false)
 		}
@@ -1200,7 +1200,7 @@ func (q *Queue) cleanupIdleWorkers() {
 			return // Context cancelled, stop idle worker ticker.
 		case <-pt.C:
 			if ok := q.reserveIdleWorkerStop(); ok {
-				q.jobs <- nil // Send nil to signal an idle worker to exit.
+				q.jobs <- queuedJob{} // Send the sentinel to signal an idle worker to exit.
 			}
 		}
 	}
