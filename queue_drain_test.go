@@ -134,6 +134,78 @@ func TestStopDrainHandsBackDelayedSubmissions(t *testing.T) {
 	}
 }
 
+func TestStopDrainResubmitWithJobMeta(t *testing.T) {
+	// No workers... the job stays buffered for drain.
+	queue := NewQueue(0, 0, 10)
+	queue.Start()
+
+	_, err := queue.Submit(context.Background(), func(ctx context.Context) error {
+		return nil
+	}, WithJobID("drain-1"), WithJobName("drained"), WithJobAttribute("team", "operations"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	drained, err := queue.StopDrain(context.Background())
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(drained) != 1 {
+		t.Fatalf("StopDrain(): got %d drained jobs, want 1", len(drained))
+	}
+
+	requeue := NewQueue(1, 1, 10)
+	requeue.Start()
+	defer requeue.Stop(true)
+
+	handle, err := requeue.Submit(context.Background(), drained[0].Job, WithJobMeta(drained[0].Meta))
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	meta := handle.Meta()
+	if meta.ID != "drain-1" {
+		t.Errorf("Meta().ID: got %q, want %q", meta.ID, "drain-1")
+	}
+	if meta.Name != "drained" {
+		t.Errorf("Meta().Name: got %q, want %q", meta.Name, "drained")
+	}
+	if meta.Attributes["team"] != "operations" {
+		t.Errorf("Meta().Attributes[team]: got %q, want %q", meta.Attributes["team"], "operations")
+	}
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(): got %v, want nil", err)
+	}
+}
+
+func TestSubmitAfterDelayedTrackingCleared(t *testing.T) {
+	queue := NewQueue(1, 1, 10)
+	queue.Start()
+	defer queue.Stop(true)
+
+	handle, err := queue.SubmitAfter(context.Background(), func(ctx context.Context) error {
+		return nil
+	}, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("submit after: %v", err)
+	}
+	if err := handle.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait(): got %v, want nil", err)
+	}
+
+	// The untrack runs in the timer goroutine after handle resolution, so poll.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		queue.submissionsMut.Lock()
+		n := len(queue.delayedJobs)
+		queue.submissionsMut.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("len(delayedJobs): got non-zero after timer fired, want 0")
+}
+
 func TestStopDrainContextTimeout(t *testing.T) {
 	queue := NewQueue(1, 1, 10)
 	queue.Start()

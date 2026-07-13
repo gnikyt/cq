@@ -387,17 +387,12 @@ func (q *Queue) waitForShutdown(ctx context.Context) error {
 		q.ctxCancel()
 		q.workerWg.Wait()
 		q.resetWorkers()
-		q.paused.Store(false)
-		q.distPaused.Store(false)
 		q.started.Store(false)
 		q.closeJobs()
 		return nil
 	case <-ctx.Done():
 		q.ctxCancel()
 		q.abandonPendingSubmissions()
-		// Re-clear pause flags... a concurrent Pause() may have set them during the wait.
-		q.paused.Store(false)
-		q.distPaused.Store(false)
 		go func() {
 			q.workerWg.Wait()
 			q.resetWorkers()

@@ -256,6 +256,18 @@ func WithJobAttribute(key string, value string) SubmitOption {
 	}
 }
 
+// WithJobMeta seeds one submission's identity from existing metadata,
+// setting the ID, name, and attributes. The enqueue time is not carried
+// over... a resubmission is a new enqueue. Use it to resubmit drained
+// jobs with their identity intact.
+func WithJobMeta(meta JobMeta) SubmitOption {
+	return func(cfg *submitConfig) {
+		cfg.id = meta.ID
+		cfg.name = meta.Name
+		cfg.attributes = cloneStringMap(meta.Attributes)
+	}
+}
+
 // WithNonBlocking makes Submit return ErrQueueFull instead of waiting for capacity.
 func WithNonBlocking() SubmitOption {
 	return func(cfg *submitConfig) {
