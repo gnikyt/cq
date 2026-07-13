@@ -104,10 +104,10 @@ func (f *fakeSchedule) Next(after time.Time) time.Time {
 	return time.Time{}
 }
 
-func TestJittered(t *testing.T) {
+func TestJitterSchedule(t *testing.T) {
 	base := MustParseCron("0 * * * *")
 	max := 5 * time.Minute
-	js := Jittered(base, max)
+	js := JitterSchedule(base, max)
 
 	after := time.Date(2026, time.July, 10, 10, 7, 30, 0, time.UTC)
 	want := base.Next(after)
@@ -119,18 +119,18 @@ func TestJittered(t *testing.T) {
 	}
 }
 
-func TestJitteredPassthrough(t *testing.T) {
+func TestJitterSchedulePassthrough(t *testing.T) {
 	base := MustParseCron("0 0 31 2 *") // Impossible... Next returns zero.
-	js := Jittered(base, time.Minute)
+	js := JitterSchedule(base, time.Minute)
 	if got := js.Next(time.Date(2026, time.July, 10, 0, 0, 0, 0, time.UTC)); !got.IsZero() {
 		t.Fatalf("Next(): got %v, want zero time passthrough", got)
 	}
 
-	if got := Jittered(base, 0); got != Schedule(base) {
-		t.Fatalf("Jittered(): got %v, want base schedule for non-positive max", got)
+	if got := JitterSchedule(base, 0); got != Schedule(base) {
+		t.Fatalf("JitterSchedule(): got %v, want base schedule for non-positive max", got)
 	}
-	if got := Jittered(nil, time.Minute); got != nil {
-		t.Fatalf("Jittered(): got %v, want nil for nil schedule", got)
+	if got := JitterSchedule(nil, time.Minute); got != nil {
+		t.Fatalf("JitterSchedule(): got %v, want nil for nil schedule", got)
 	}
 }
 

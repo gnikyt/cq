@@ -3,6 +3,7 @@ package cq
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
@@ -257,6 +258,33 @@ func parseCronField(field string, min int, max int, names map[string]int) (bits 
 		}
 	}
 	return bits, star, nil
+}
+
+// jitterSchedule wraps a Schedule, delaying each fire by a random duration.
+type jitterSchedule struct {
+	base Schedule
+	max  time.Duration
+}
+
+// JitterSchedule returns a Schedule that delays each fire time of `s` by a
+// uniformly random duration in [0, max), spreading out fleets of schedules
+// sharing the same expression. `max` should be smaller than the gap between
+// fires, otherwise fires may be skipped. A non-positive max returns `s`.
+func JitterSchedule(s Schedule, max time.Duration) Schedule {
+	if s == nil || max <= 0 {
+		return s
+	}
+	return &jitterSchedule{base: s, max: max}
+}
+
+// Next returns the base schedule's next fire time plus random jitter.
+// Zero and non-advancing times pass through to preserve schedule completion.
+func (j *jitterSchedule) Next(after time.Time) time.Time {
+	next := j.base.Next(after)
+	if next.IsZero() || !next.After(after) {
+		return next
+	}
+	return next.Add(rand.N(j.max))
 }
 
 // parseCronValue parses one cron field value, resolving names when provided.
