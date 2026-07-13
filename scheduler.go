@@ -77,11 +77,36 @@ func (h *ScheduleHandle) recordSubmission(handle *JobHandle, err error) {
 	h.mu.Unlock()
 }
 
-// finish marks the schedule terminal.
-func (h *ScheduleHandle) finish() {
+// finish marks the schedule terminal, reporting whether this call did it.
+func (h *ScheduleHandle) finish() bool {
+	finished := false
 	h.doneOnce.Do(func() {
 		close(h.done)
+		finished = true
 	})
+	return finished
+}
+
+// SchedulerHooks are optional callbacks for schedule lifecycle events.
+// Callbacks must be safe for concurrent use and should not block.
+type SchedulerHooks struct {
+	// OnFire runs after every submission attempt with the schedule ID,
+	// the accepted JobHandle (nil when rejected), and the rejection error.
+	OnFire func(id string, handle *JobHandle, err error)
+	// OnComplete runs once when a schedule becomes terminal
+	// (cancelled, removed, or self-completed).
+	OnComplete func(id string)
+}
+
+// SchedulerOption configures optional scheduler behavior.
+type SchedulerOption func(*Scheduler)
+
+// WithSchedulerHooks registers scheduler lifecycle hooks.
+// It can be passed multiple times... all registered hooks are executed.
+func WithSchedulerHooks(hooks SchedulerHooks) SchedulerOption {
+	return func(s *Scheduler) {
+		s.hooks = append(s.hooks, hooks)
+	}
 }
 
 // Scheduler manages recurring and one-time job submissions.
@@ -95,6 +120,8 @@ type Scheduler struct {
 	mu      sync.RWMutex             // Guards schedules and stopped.
 	jobs    map[string]*scheduledJob // Registered schedules by ID.
 	stopped bool                     // Indicates explicit scheduler shutdown.
+
+	hooks []SchedulerHooks // Optional lifecycle callbacks.
 }
 
 // scheduledJob contains one registered schedule.
@@ -111,7 +138,7 @@ type scheduledJob struct {
 
 // NewScheduler creates a Scheduler that submits jobs into queue.
 // Schedules start immediately when added and stop when ctx is cancelled.
-func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
+func NewScheduler(ctx context.Context, queue *Queue, opts ...SchedulerOption) *Scheduler {
 	if queue == nil {
 		panic("cq: scheduler queue required")
 	}
@@ -123,12 +150,19 @@ func NewScheduler(ctx context.Context, queue *Queue) *Scheduler {
 	childCtx, cancel := context.WithCancel(ctx)
 
 	// Create a new scheduler.
-	return &Scheduler{
+	s := &Scheduler{
 		queue:     queue,
 		jobs:      make(map[string]*scheduledJob),
 		ctx:       childCtx,
 		ctxCancel: cancel,
 	}
+
+	// Apply functional options.
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
 }
 
 // Stop stops all schedules and waits for scheduler goroutines to exit.
@@ -271,7 +305,9 @@ func (s *Scheduler) remove(sj *scheduledJob) bool {
 		return false
 	}
 	sj.cancel()
-	sj.handle.finish()
+	if sj.handle.finish() {
+		s.notifyComplete(sj.handle.id)
+	}
 	return true
 }
 
@@ -283,13 +319,29 @@ func (s *Scheduler) removeCompleted(sj *scheduledJob) {
 	}
 	s.mu.Unlock()
 	sj.cancel()
-	sj.handle.finish()
+	if sj.handle.finish() {
+		s.notifyComplete(sj.handle.id)
+	}
 }
 
 // submit records one schedule-triggered submission attempt.
 func (s *Scheduler) submit(sj *scheduledJob) {
 	handle, err := s.queue.Submit(sj.ctx, sj.job, sj.opts...)
 	sj.handle.recordSubmission(handle, err)
+	for _, hooks := range s.hooks {
+		if hooks.OnFire != nil {
+			hooks.OnFire(sj.handle.id, handle, err)
+		}
+	}
+}
+
+// notifyComplete runs OnComplete hooks for a terminal schedule.
+func (s *Scheduler) notifyComplete(id string) {
+	for _, hooks := range s.hooks {
+		if hooks.OnComplete != nil {
+			hooks.OnComplete(id)
+		}
+	}
 }
 
 // runRecurring runs one recurring schedule.

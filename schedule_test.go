@@ -104,6 +104,36 @@ func (f *fakeSchedule) Next(after time.Time) time.Time {
 	return time.Time{}
 }
 
+func TestJittered(t *testing.T) {
+	base := MustParseCron("0 * * * *")
+	max := 5 * time.Minute
+	js := Jittered(base, max)
+
+	after := time.Date(2026, time.July, 10, 10, 7, 30, 0, time.UTC)
+	want := base.Next(after)
+	for range 50 {
+		got := js.Next(after)
+		if got.Before(want) || !got.Before(want.Add(max)) {
+			t.Fatalf("Next(): got %v, want within [%v, %v)", got, want, want.Add(max))
+		}
+	}
+}
+
+func TestJitteredPassthrough(t *testing.T) {
+	base := MustParseCron("0 0 31 2 *") // Impossible... Next returns zero.
+	js := Jittered(base, time.Minute)
+	if got := js.Next(time.Date(2026, time.July, 10, 0, 0, 0, 0, time.UTC)); !got.IsZero() {
+		t.Fatalf("Next(): got %v, want zero time passthrough", got)
+	}
+
+	if got := Jittered(base, 0); got != Schedule(base) {
+		t.Fatalf("Jittered(): got %v, want base schedule for non-positive max", got)
+	}
+	if got := Jittered(nil, time.Minute); got != nil {
+		t.Fatalf("Jittered(): got %v, want nil for nil schedule", got)
+	}
+}
+
 func TestSchedulerOnValidation(t *testing.T) {
 	queue := NewQueue(1, 2, 16)
 	queue.Start()
@@ -162,6 +192,59 @@ func TestSchedulerOnRunsAndCompletes(t *testing.T) {
 	defer mu.Unlock()
 	if runs != 2 {
 		t.Errorf("got runs=%d, want 2", runs)
+	}
+}
+
+func TestSchedulerHooks(t *testing.T) {
+	queue := NewQueue(1, 2, 16)
+	queue.Start()
+	defer queue.Stop(true)
+
+	fires := make(chan string, 4)
+	completes := make(chan string, 4)
+	s := NewScheduler(context.Background(), queue, WithSchedulerHooks(SchedulerHooks{
+		OnFire: func(id string, handle *JobHandle, err error) {
+			if handle == nil || err != nil {
+				t.Errorf("OnFire(%q): got (%v, %v), want accepted handle", id, handle, err)
+			}
+			fires <- id
+		},
+		OnComplete: func(id string) {
+			completes <- id
+		},
+	}))
+	defer s.Stop()
+
+	sched := &fakeSchedule{times: []time.Time{time.Now().Add(30 * time.Millisecond)}}
+	handle, err := s.On("hooked", sched, func(ctx context.Context) error { return nil })
+	if err != nil {
+		t.Fatalf("On(): %v", err)
+	}
+
+	select {
+	case id := <-fires:
+		if id != "hooked" {
+			t.Errorf("OnFire id: got %q, want %q", id, "hooked")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnFire hook never ran")
+	}
+
+	<-handle.Done()
+	select {
+	case id := <-completes:
+		if id != "hooked" {
+			t.Errorf("OnComplete id: got %q, want %q", id, "hooked")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnComplete hook never ran")
+	}
+
+	// Completion is once-only... no duplicate notifications.
+	select {
+	case id := <-completes:
+		t.Fatalf("OnComplete ran twice: %q", id)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
