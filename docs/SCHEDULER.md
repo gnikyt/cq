@@ -61,6 +61,31 @@ scheduler.List()
 scheduler.Count()
 ```
 
+## Scheduler Hooks
+
+`WithSchedulerHooks` registers optional lifecycle callbacks on `NewScheduler`.
+`OnFire` runs after every submission attempt (accepted or rejected), and
+`OnComplete` runs once when a schedule becomes terminal for any reason:
+cancelled, removed, self-completed, or scheduler stop.
+
+```go
+s := cq.NewScheduler(ctx, queue, cq.WithSchedulerHooks(cq.SchedulerHooks{
+	OnFire: func(id string, handle *cq.JobHandle, err error) {
+		if err != nil {
+			log.Printf("schedule %s: submission rejected: %v", id, err)
+		}
+	},
+	OnComplete: func(id string) {
+		log.Printf("schedule %s: finished", id)
+	},
+}))
+```
+
+Callbacks must be safe for concurrent use and should not block: `OnFire` runs
+on the schedule's timer goroutine, so a slow callback delays that schedule's
+next fire. `WithSchedulerHooks` can be passed multiple times and all
+registered hooks are executed.
+
 Schedule registration errors:
 
 - `cq.ErrScheduleExists`
@@ -106,3 +131,17 @@ This is the extension point for third-party cron libraries, business-day
 calendars, or jittered schedules. When `Next` returns the zero time the
 schedule completes: it is removed from the scheduler and its handle's `Done`
 channel closes.
+
+### Jitter
+
+`JitterSchedule` wraps any `Schedule`, delaying each fire by a uniformly random
+duration to a maximum of `max`. Use it to spread out fleets of processes sharing the
+same expression:
+
+```go
+nightly, _ := cq.ParseCron("0 2 * * *")
+report, err := scheduler.On("nightly-report", cq.JitterSchedule(nightly, 10*time.Minute), reportJob)
+```
+
+Keep `max` smaller than the gap between fires, otherwise a delayed fire can
+land past the next one and skip it.

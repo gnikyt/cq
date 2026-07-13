@@ -214,3 +214,13 @@ Details:
   `ctx.Err()` is returned alongside the jobs drained so far.
 - Queue-level middleware is not baked into `dj.Job`... resubmitting to a
   queue re-applies that queue's middleware.
+- To resubmit with identity intact, pass `cq.WithJobMeta(dj.Meta)`: the ID,
+  name, and attributes carry over, while the enqueue time resets since a
+  resubmission is a new enqueue.
+
+```go
+for _, dj := range drained {
+	_, err := other.Submit(ctx, dj.Job, cq.WithJobMeta(dj.Meta))
+	// ...
+}
+```
