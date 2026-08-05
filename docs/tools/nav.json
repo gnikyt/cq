@@ -1,0 +1,101 @@
+{
+  "site": {
+    "title": "Composable Queue",
+    "short": "cq",
+    "version": "v2",
+    "repo": "https://github.com/gnikyt/cq"
+  },
+  "groups": [
+    {
+      "title": "Getting Started",
+      "hideCards": true,
+      "items": [
+        { "title": "Overview", "output": "index.html" },
+        {
+          "title": "Quick Start",
+          "source": "../README.md",
+          "section": "Quick Start",
+          "output": "quick-start.html",
+          "blurb": "Install cq and run your first auto-scaling queue, including named and priority queues."
+        },
+        {
+          "title": "Common Recipes",
+          "source": "../README.md",
+          "section": "Common Recipes",
+          "output": "common-recipes.html",
+          "blurb": "Practical, copy-paste patterns: reliable API calls, retry-safe chains, idempotent work, and scheduling."
+        }
+      ]
+    },
+    {
+      "title": "Core Features",
+      "items": [
+        {
+          "title": "Queue Submissions",
+          "source": "QUEUE_SUBMISSIONS.md",
+          "output": "queue-submissions.html",
+          "blurb": "Submission acceptance and JobHandle behavior — waiting, results, cancellation, and routed/delayed/priority handles."
+        },
+        {
+          "title": "Job Wrappers",
+          "source": "JOB_WRAPPERS.md",
+          "output": "job-wrappers.html",
+          "blurb": "The full wrapper reference: retries, timeouts, outcomes, tracing, rate limiting, circuit breakers, and workflow composition."
+        }
+      ]
+    },
+    {
+      "title": "Advanced Topics",
+      "items": [
+        {
+          "title": "Queue Routing",
+          "source": "QUEUE_ROUTING.md",
+          "output": "queue-routing.html",
+          "blurb": "Register named queues and route jobs explicitly with QueueManager and isolated worker pools."
+        },
+        {
+          "title": "Priority Queue",
+          "source": "PRIORITY_QUEUE.md",
+          "output": "priority-queue.html",
+          "blurb": "Weighted fair queuing with priority levels, named priority routing, and graceful drain on shutdown."
+        },
+        {
+          "title": "Scheduler",
+          "source": "SCHEDULER.md",
+          "output": "scheduler.html",
+          "blurb": "Recurring and one-time job scheduling — intervals, absolute times, and cron-like behavior via external parsers."
+        },
+        {
+          "title": "Custom Locker",
+          "source": "CUSTOM_LOCKER.md",
+          "output": "custom-locker.html",
+          "blurb": "Distributed lock implementations for WithUnique and WithoutOverlap, including a Redis example."
+        },
+        {
+          "title": "Custom Concurrency Limiter",
+          "source": "CUSTOM_CONCURRENCY_LIMITER.md",
+          "output": "custom-concurrency-limiter.html",
+          "blurb": "Distributed limits for WithConcurrencyByKey with a SQLite implementation example."
+        },
+        {
+          "title": "Custom Checkpoint Store",
+          "source": "CUSTOM_CHECKPOINT_STORE.md",
+          "output": "custom-checkpoint-store.html",
+          "blurb": "Distributed checkpoint implementations for WithCheckpoint with Redis and SQLite examples."
+        },
+        {
+          "title": "Queue Options",
+          "source": "QUEUE_OPTIONS.md",
+          "output": "queue-options.html",
+          "blurb": "Queue construction and runtime options: worker idle cleanup, cancellation strategy, panic handling, and custom IDs."
+        },
+        {
+          "title": "Observability Contract",
+          "source": "OBSERVABILITY_CONTRACT.md",
+          "output": "observability-contract.html",
+          "blurb": "Lifecycle and telemetry guarantees for hooks and stats — ordering rules, JobEvent semantics, and counter caveats."
+        }
+      ]
+    }
+  ]
+}

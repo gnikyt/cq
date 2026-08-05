@@ -14,7 +14,7 @@ Use this quick wrapper index to choose the right building block:
 | Defer and requeue | `WithRelease`, `WithReleaseSelf`, `WithRateLimitRelease` |
 | Protect dependencies | `WithRateLimit`, `WithCircuitBreaker`, `WithConcurrencyLimit` |
 
-#### Basic Function
+## Basic Function
 
 **What it does:** Defines the base `Job` shape and a cancellation-aware
 implementation.
@@ -35,7 +35,7 @@ job := func(ctx context.Context) error {
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Job Metadata
+## Job Metadata
 
 **What it does:** Exposes per-job metadata through context (ID, enqueue time,
 attempt), plus previous retry error when applicable.
@@ -124,7 +124,7 @@ Notes:
 - On attempt `N > 0`, it returns the error from attempt `N-1`.
 - This context value is in-process retry state, not durable restart state.
 
-#### Retries
+## Retries
 
 **What it does:** Re-runs failed jobs for a bounded number of attempts.
 
@@ -178,7 +178,7 @@ job := cq.WithRetryIf(func(ctx context.Context) error {
 })
 ```
 
-#### Backoff
+## Backoff
 
 **What it does:** Adds delay strategy between retries to reduce pressure on
 dependencies.
@@ -211,7 +211,7 @@ _, _ = queue.Submit(context.Background(), job)
 Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`,
 `JitterBackoff`
 
-#### Outcome Handler
+## Outcome Handler
 
 **What it does:** Runs callbacks for completion, failure, or discard outcomes.
 
@@ -274,7 +274,7 @@ job := func(ctx context.Context) error {
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Outcome Markers
+## Outcome Markers
 
 **What it does:** Marks errors as retryable, permanent, or discardable
 explicitly.
@@ -325,7 +325,7 @@ Available outcome markers:
 - `cq.ErrDiscard` / `cq.AsDiscard(err)` - Errors that should be discarded
   (example: duplicate processing, already completed, idempotent no-op).
 
-#### Tracing
+## Tracing
 
 **What it does:** Emits lifecycle signals for timing and success/failure
 instrumentation.
@@ -372,7 +372,7 @@ job := cq.WithTracing(
 To trace each retry attempt individually, place tracing inside the retry
 instead.
 
-#### Progress
+## Progress
 
 **What it does:** Lets a running job report incremental progress through its
 context. Every `Progress` field is optional: report completed/total units, a
@@ -446,7 +446,7 @@ type ProgressReporter interface {
 Inside the job, the latest update is also readable via
 `cq.ProgressFromContext(ctx)`.
 
-#### Skip If
+## Skip If
 
 **What it does:** Conditionally bypasses execution when a predicate returns
 true.
@@ -463,7 +463,7 @@ job := cq.WithSkipIf(actualJob, func(ctx context.Context) bool {
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Timeout
+## Timeout
 
 **What it does:** Cancels a job context if execution exceeds a duration.
 
@@ -477,7 +477,7 @@ job := cq.WithTimeout(actualJob, 5*time.Minute)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Deadline
+## Deadline
 
 **What it does:** Cancels a job context at a fixed absolute time.
 
@@ -492,7 +492,7 @@ job := cq.WithDeadline(actualJob, deadline)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Expiry
+## Expiry
 
 **What it does:** Discards a job that waited in the queue longer than a ttl
 before starting, without running it.
@@ -514,7 +514,7 @@ job := cq.WithExpiry(cq.WithTimeout(sendOTP, 5*time.Second), 30*time.Second)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Overlap Prevention
+## Overlap Prevention
 
 **What it does:** `WithoutOverlap` runs jobs for the same key **one after
 another**. It retries atomic lock acquisition until the previous run
@@ -570,7 +570,7 @@ underlying job goroutine may continue running until it respects `ctx.Done()`.
 For **overlap contention** that should be routed elsewhere instead of waiting,
 see [Handling contention](#handling-contention).
 
-#### Concurrency By Key
+## Concurrency By Key
 
 **What it does:** Caps how many jobs with the same key can execute concurrently.
 
@@ -606,7 +606,7 @@ implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a
 semaphore per key). To route contended runs elsewhere, see
 [Handling contention](#handling-contention).
 
-#### Unique Jobs
+## Unique Jobs
 
 **What it does:** Deduplicates jobs by key within a configured time window.
 
@@ -660,7 +660,7 @@ job := cq.WithUnique(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Chains
+## Chains
 
 **What it does:** Executes a fixed sequence of jobs and stops on first error.
 
@@ -675,7 +675,7 @@ job := cq.WithChain(step1, step2, step3)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Checkpoint
+## Checkpoint
 
 **What it does:** Skips a step when it was already completed for the same
 checkpoint key, and supports loading/saving step payload data across retries.
@@ -769,7 +769,7 @@ step := cq.WithCheckpoint(
 )
 ```
 
-#### Pipeline
+## Pipeline
 
 **What it does:** Executes sequential steps with typed channel-based data
 passing.
@@ -798,7 +798,7 @@ job := cq.WithPipeline(step1, step2)
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Batch
+## Batch
 
 **What it does:** Wraps a job set with group-level progress and completion
 callbacks.
@@ -901,7 +901,7 @@ batchJobs, _ := cq.WithBatch(
 _, _ = queue.SubmitBatch(context.Background(), batchJobs)
 ```
 
-#### Dependencies
+## Dependencies
 
 **What it does:** Executes dependency jobs sequentially before the main job,
 with configurable failure behavior per dependency.
@@ -966,7 +966,7 @@ job := cq.WithDependsOn(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Release
+## Release
 
 **What it does:** Resubmits jobs after delay when a predicate-matched error
 occurs.
@@ -1016,7 +1016,7 @@ future submission failures or cancel the rescheduled job before it runs.
 Built-in release wrappers report immediate reschedule registration errors. They
 do not wait for the delayed submission to finish.
 
-#### Release Self
+## Release Self
 
 **What it does:** Lets job code request its own delayed resubmission.
 
@@ -1063,7 +1063,7 @@ Logic:
 * Multiple requests in one run use last-write-wins delay.
 * `RequestRelease` returns `false` when no `WithReleaseSelf` context is present.
 
-#### Recover
+## Recover
 
 **What it does:** Converts panics in job code into returned errors.
 
@@ -1079,7 +1079,7 @@ job := cq.WithRecover(func(ctx context.Context) error {
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-#### Tagged
+## Tagged
 
 **What it does:** Attaches tags so related jobs can be tracked or canceled
 together.
@@ -1099,7 +1099,7 @@ registry.CancelForTag("user:123")
 registry.CancelForTag("export")
 ```
 
-#### Rate Limit
+## Rate Limit
 
 **What it does:** Applies token-bucket throttling before job execution using
 Go builtins.
@@ -1134,7 +1134,7 @@ that rejection error. `maxReleases` controls how many times this defer/
 resubmit can happen (`0` means unlimited). Once exhausted, it falls back to
 blocking `WithRateLimit` behavior.
 
-#### Concurrency Limit
+## Concurrency Limit
 
 **What it does:** Limits how many jobs sharing the same key can execute
 concurrently using a shared counter.
@@ -1202,7 +1202,7 @@ active := limiter.ActiveFor("api-payments")
 log.Printf("Active jobs for api-payments: %d", active)
 ```
 
-#### Circuit Breaker
+## Circuit Breaker
 
 **What it does:** Short-circuits calls after consecutive failures to protect
 dependencies.
@@ -1275,7 +1275,7 @@ for _, orderID := range orderIDs {
 This pattern isolates failing dependency traffic from the main queue. Use with
 your normal replay/DLQ strategy for long-term failed work handling.
 
-#### Handling contention
+## Handling contention
 
 Bare `WithoutOverlap` retries atomic acquisition until the key is free. Bare
 `WithUnique` and `WithUniqueWindow` quietly discard duplicates. Wrap them with
@@ -1332,7 +1332,7 @@ case <-ctx.Done():
 > `WithoutOverlap`, `WithUnique`, and `WithUniqueWindow` switches to try
 > semantics. Usually only the outermost wrapper needs `WithErrorOnContention`.
 
-#### Custom Wrapper
+## Custom Wrapper
 
 **What it does:** Shows how to build composable custom wrappers with the
 decorator pattern.

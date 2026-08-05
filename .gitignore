@@ -1,2 +1,6 @@
 dist/*
 !dist/.gitkeep
+
+# Generated HTML docs (build output — run `make docs`, deployed via CI).
+# The Markdown sources, generator, and hand-authored assets are tracked.
+docs/html/*.html

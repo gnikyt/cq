@@ -1,6 +1,8 @@
 BINARY_NAME=cq
 PKG=github.com/gnikyt/cq/v2
 
+.PHONY: all build test test-coverage test-race bench docs clean
+
 all: clean build test
 
 build:
@@ -17,6 +19,9 @@ test-race:
 
 bench:
 	go test -benchmem -bench=. -benchtime=2x ${PKG}
+
+docs:
+	cd docs/tools && go run ./gen
 
 clean:
 	go clean
