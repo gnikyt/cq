@@ -1,7 +1,8 @@
 # Docs generator
 
 Renders the Markdown docs in [`../`](../) into a single self-contained HTML page
-at `../html/index.html` (all CSS and JS inlined).
+at `../index.html` (all CSS and JS inlined). The `docs/` folder is what GitHub
+Pages serves, so that file is the site's landing page.
 
 This is a **separate Go module** so its one dependency
 ([goldmark](https://github.com/yuin/goldmark)) never enters the library's
@@ -24,8 +25,9 @@ cd docs/tools && go run ./gen
 ## Layout
 
 - [`nav.json`](nav.json) — single source of truth for navigation. Each item
-  names its Markdown `source`, an `output` name (used to derive the in-page
-  anchor), and a card `blurb`.
+  names its Markdown `source`, an `anchor` (the in-page section id it renders
+  under), and a card `blurb`. Non-doc links (e.g. the Overview entry) use an
+  explicit `href` instead.
 - [`templates/layout.tmpl`](templates/layout.tmpl) — the page shell.
 - [`assets/docs.css`](assets/docs.css), [`assets/docs.js`](assets/docs.js) —
   hand-authored styles and behavior, inlined into the output at build time.
@@ -50,9 +52,9 @@ cd docs/tools && go run ./gen
 ## Adding a page
 
 Add an entry under the appropriate group in `nav.json` with `title`, `source`,
-`output`, and `blurb`, then run `make docs`.
+`anchor`, and `blurb`, then run `make docs`.
 
 ## Editing content
 
 Edit the Markdown in [`../`](../) and re-run `make docs`. The generated
-`../html/` output is build-only (git-ignored) — do not edit it by hand.
+`../index.html` output is build-only (git-ignored) — do not edit it by hand.

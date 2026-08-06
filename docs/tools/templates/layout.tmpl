@@ -1,9 +1,9 @@
 {{define "intro-lead" -}}
 <p class="lead">
-          Complete reference documentation for <strong>{{.Site.Short}}</strong> — a lightweight,
-          auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then
-          compose behavior with wrappers for retries, timeouts, tracing, and more.
-        </p>
+  Complete reference documentation for <strong>{{.Site.Short}}</strong> — a lightweight,
+  auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then
+  compose behavior with wrappers for retries, timeouts, tracing, and more.
+</p>
 {{- end}}
 
 {{define "page" -}}
@@ -17,15 +17,17 @@
   <style>{{.CSS}}</style>
   <noscript>
     <style>
-      /* Without JS the router can't run — reveal every section so the content
-         stays readable as one long document. */
-      .doc-section[hidden] { display: block !important; }
+      .doc-section[hidden] {
+        display: block !important;
+      }
       .doc-section + .doc-section {
         margin-top: 40px;
         padding-top: 32px;
         border-top: 1px solid var(--border);
       }
-      .toc { display: none !important; }
+      .toc {
+        display: none !important;
+      }
     </style>
   </noscript>
 </head>
@@ -58,8 +60,10 @@
       {{range .Nav}}<nav class="nav-group">
         <h4>{{.Title}}</h4>
         <ul>
-          {{range .Items}}<li><a href="{{.Href}}">{{.Title}}</a></li>
-          {{end}}</ul>
+          {{range .Items}}
+            <li><a href="{{.Href}}">{{.Title}}</a></li>
+          {{end}}
+        </ul>
       </nav>
       {{end}}
     </aside>

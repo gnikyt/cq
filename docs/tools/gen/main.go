@@ -1,14 +1,3 @@
-// Command gen renders the cq Markdown docs into a single self-contained HTML
-// page (docs/html/index.html) with CSS and JS inlined.
-//
-// It lives in its own module (docs/tools) so goldmark never touches the
-// library's dependency-free go.mod. Run it from docs/tools:
-//
-//	go run ./gen            # uses -root=../.. (repo root)
-//
-// nav.json is the single source of truth for navigation. Each doc is rendered
-// from its Markdown, concatenated as a hidden <section>, and revealed one at a
-// time by a client-side router. The Markdown remains the source of truth.
 package main
 
 import (
@@ -42,8 +31,8 @@ type rawItem struct {
 	Title   string `json:"title"`
 	Source  string `json:"source"`
 	Section string `json:"section"` // extract just this "## <section>" block from Source
-	Output  string `json:"output"`  // used to derive the in-page anchor (slug)
-	Href    string `json:"href"`
+	Anchor  string `json:"anchor"`  // in-page section id this doc renders under
+	Href    string `json:"href"`    // explicit link target (e.g. "#top"); used when Anchor is empty
 	Blurb   string `json:"blurb"`
 }
 
@@ -108,9 +97,6 @@ type pageData struct {
 	Sections []docSection
 }
 
-// slug is the in-page anchor / section id for an output filename.
-func slug(output string) string { return strings.TrimSuffix(output, ".html") }
-
 func main() {
 	root := flag.String("root", "../..", "repository root")
 	flag.Parse()
@@ -120,7 +106,7 @@ func main() {
 	tmplGlob := filepath.Join(toolsDir, "templates", "*.tmpl")
 	assetsDir := filepath.Join(toolsDir, "assets")
 	mdDir := filepath.Join(*root, "docs")
-	outDir := filepath.Join(*root, "docs", "html")
+	outDir := filepath.Join(*root, "docs")
 
 	man, err := loadManifest(navPath)
 	if err != nil {
@@ -144,8 +130,8 @@ func main() {
 	linkMap := map[string]string{}
 	for _, g := range man.Groups {
 		for _, it := range g.Items {
-			if it.Source != "" && it.Section == "" && it.Output != "" {
-				linkMap[filepath.Base(it.Source)] = "#" + slug(it.Output)
+			if it.Source != "" && it.Section == "" && it.Anchor != "" {
+				linkMap[filepath.Base(it.Source)] = "#" + it.Anchor
 			}
 		}
 	}
@@ -159,7 +145,7 @@ func main() {
 			}
 			body := convertDoc(md, filepath.Join(mdDir, it.Source), it.Section)
 			docs = append(docs, sdoc{
-				id:    slug(it.Output),
+				id:    it.Anchor,
 				title: it.Title,
 				html:  rewriteLinks(body, linkMap),
 			})
@@ -250,11 +236,8 @@ func buildNav(man manifest) []navGroup {
 		items := make([]navItem, 0, len(g.Items))
 		for _, it := range g.Items {
 			href := it.Href
-			switch {
-			case it.Output == "index.html":
-				href = "#top"
-			case it.Output != "":
-				href = "#" + slug(it.Output)
+			if it.Anchor != "" {
+				href = "#" + it.Anchor
 			}
 			items = append(items, navItem{Title: it.Title, Href: href})
 		}
@@ -275,7 +258,7 @@ func buildCards(man manifest) []cardGroup {
 			if it.Source == "" {
 				continue
 			}
-			cards = append(cards, card{Title: it.Title, Href: "#" + slug(it.Output), Blurb: it.Blurb})
+			cards = append(cards, card{Title: it.Title, Href: "#" + it.Anchor, Blurb: it.Blurb})
 		}
 		if len(cards) > 0 {
 			out = append(out, cardGroup{Title: g.Title, Cards: cards})
