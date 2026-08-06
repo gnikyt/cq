@@ -21,7 +21,7 @@ implementation.
 
 **When to use:** Any job implementation.
 
-**Caveat:** Operationally, jobs stop promptly only if they check `ctx.Err()`
+**Caveat:** Jobs stop promptly only if they check `ctx.Err()`
 or use context-aware operations.
 
 ```go
@@ -42,7 +42,7 @@ attempt), plus previous retry error when applicable.
 
 **When to use:** Structured logging, tracing correlation, retry-aware logic.
 
-**Caveat:** Operationally, `Attempt` starts at 0 and increments only with
+**Caveat:** `Attempt` starts at 0 and increments only with
 retry wrappers.
 
 ```go
@@ -131,7 +131,7 @@ Notes:
 **When to use:** Transient failures such as timeout, throttling, or temporary
 outages.
 
-**Caveat:** Operationally, retries can duplicate side effects unless work is
+**Caveat:** Retries can duplicate side effects unless work is
 idempotent.
 
 Use `WithRetryPolicy` as the default path:
@@ -185,7 +185,7 @@ dependencies.
 
 **When to use:** Any retry loop that should avoid immediate hammering.
 
-**Caveat:** Operationally, backoff has no effect unless composed with retries.
+**Caveat:** Backoff has no effect unless composed with retries.
 
 With policy-based retries, backoff is usually configured in
 `RetryPolicy.Backoff`:
@@ -217,7 +217,7 @@ Built-in backoff functions: `ExponentialBackoff`, `FibonacciBackoff`,
 
 **When to use:** Metrics, DLQ forwarding, notifications, and audit hooks.
 
-**Caveat:** Operationally, callbacks run inline with job completion...
+**Caveat:** Callbacks run inline with job completion...
 throughput impact depends on callback implementation.
 
 ```go
@@ -282,7 +282,7 @@ explicitly.
 **When to use:** You need deterministic behavior with
 `WithRetry`/`WithRetryIf`, and explicit discard semantics with `WithOutcome`.
 
-**Caveat:** Operationally, markers are consumed by retry wrappers
+**Caveat:** Markers are consumed by retry wrappers
 (`WithRetry`, `WithRetryIf`) and by `WithOutcome` for discard handling.
 
 ```go
@@ -332,7 +332,7 @@ instrumentation.
 
 **When to use:** Integrating observability platforms or custom telemetry.
 
-**Caveat:** Operationally, wrapper placement changes measured duration scope
+**Caveat:** Wrapper placement changes measured duration scope
 (single attempt vs total retries).
 
 ```go
@@ -453,7 +453,7 @@ true.
 
 **When to use:** Feature flags, maintenance mode, or unmet preconditions.
 
-**Caveat:** Operationally, skipped jobs return `nil` and count as intentional
+**Caveat:** Skipped jobs return `nil` and count as intentional
 no-ops.
 
 ```go
@@ -469,7 +469,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 **When to use:** Preventing runaway jobs from occupying workers indefinitely.
 
-**Caveat:** Operationally, timeout/deadline signals cancel the context, but
+**Caveat:** Timeout/deadline signals cancel the context, but
 job code stops only where it checks the context.
 
 ```go
@@ -483,7 +483,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 **When to use:** Time-sensitive work with a hard business cutoff.
 
-**Caveat:** Operationally, queue wait time consumes deadline budget, but that
+**Caveat:** Queue wait time consumes deadline budget, but that
 is expected given its a deadline.
 
 ```go
@@ -501,7 +501,7 @@ before starting, without running it.
 pings, cache warms, live notifications. A backlog should drop them, not run
 them late.
 
-**Caveat:** Operationally, expiry bounds *waiting* while `WithTimeout` bounds
+**Caveat:** Expiry bounds *waiting* while `WithTimeout` bounds
 *running*... compose both when you need each bound. Expired jobs are discard
 outcomes (`errors.Is` reports `cq.ErrJobExpired` and `cq.ErrDiscard`), so
 they tally as discarded rather than failed. Compose retries inside
@@ -577,7 +577,7 @@ see [Handling contention](#handling-contention).
 **When to use:** Per-tenant or per-resource protection (for example: max 5
 concurrent API calls per customer).
 
-**Caveat:** Operationally, the built-in `NewMemoryKeyConcurrencyLimiter` is
+**Caveat:** The built-in `NewMemoryKeyConcurrencyLimiter` is
 process-local only. Use a custom `KeyConcurrencyLimiter` for multi-instance
 coordination.
 
@@ -606,13 +606,27 @@ implement a blocking `KeyConcurrencyLimiter` (for example one that waits on a
 semaphore per key). To route contended runs elsewhere, see
 [Handling contention](#handling-contention).
 
+> **`WithConcurrencyByKey` vs [`WithConcurrencyLimit`](#concurrency-limit):**
+> both cap concurrent runs per key, but they react to the limit oppositely.
+>
+> | | `WithConcurrencyByKey` | `WithConcurrencyLimit` |
+> | --- | --- | --- |
+> | When the limit is hit | Returns `ErrConcurrencyByKeyLimited` (the job errors) | Auto-releases and resubmits after a retry delay (returns `nil`) |
+> | Who handles contention | You do — retry, route, or fail it | The wrapper does — deferral is automatic |
+> | Limiter interface | `KeyConcurrencyLimiter` | `ConcurrencyLimiter` |
+> | Needs a queue reference | No | Yes (to resubmit) |
+>
+> Reach for `WithConcurrencyByKey` when you want to observe and decide on
+> contention yourself; reach for `WithConcurrencyLimit` for fire-and-forget
+> deferral.
+
 ## Unique Jobs
 
 **What it does:** Deduplicates jobs by key within a configured time window.
 
 **When to use:** Idempotent workloads where repeated work should be skipped.
 
-**Caveat:** Operationally, uniqueness controls deduplication only, not run
+**Caveat:** Uniqueness controls deduplication only, not run
 duration.
 Nil `job` or `locker` arguments return `cq.ErrUniqueJobRequired` or
 `cq.ErrUniqueLockerRequired`.
@@ -666,7 +680,7 @@ _, _ = queue.Submit(context.Background(), job)
 
 **When to use:** Ordered workflows with step dependencies.
 
-**Caveat:** Operationally, chains provide no data handoff and no built-in
+**Caveat:** Chains provide no data handoff and no built-in
 checkpointing... use `WithPipeline` for data passing and `WithCheckpoint` for
 retry-safe step gating.
 
@@ -683,7 +697,7 @@ checkpoint key, and supports loading/saving step payload data across retries.
 **When to use:** Retry-safe chains/dependencies where previously successful
 steps should not run again.
 
-**Caveat:** Operationally, correctness depends on stable key resolution and
+**Caveat:** Correctness depends on stable key resolution and
 durable checkpoint storage in distributed environments.
 
 ```go
@@ -776,7 +790,7 @@ passing.
 
 **When to use:** Multi-step flows where output from one step feeds the next.
 
-**Caveat:** Operationally, pipeline steps must coordinate channel
+**Caveat:** Pipeline steps must coordinate channel
 sends/receives... unmatched operations can block execution.
 
 ```go
@@ -806,7 +820,7 @@ callbacks.
 **When to use:** Bulk operations where aggregate completion and error tracking
 matter.
 
-**Caveat:** Operationally, expensive batch callbacks can throttle completion
+**Caveat:** Expensive batch callbacks can throttle completion
 throughput.
 
 ```go
@@ -909,7 +923,7 @@ with configurable failure behavior per dependency.
 **When to use:** Sequential workflows where some steps are optional or should
 be skipped/ignored on failure.
 
-**Caveat:** Operationally, dependencies run sequentially (one after another).
+**Caveat:** Dependencies run sequentially (one after another).
 For concurrent dependencies, wrap them in `WithChain` inside a `Dep()` call.
 
 ```go
@@ -974,7 +988,7 @@ occurs.
 **When to use:** Retry-later semantics such as rate limits or temporary
 upstream failures.
 
-**Caveat:** Operationally, releases can run indefinitely without
+**Caveat:** Releases can run indefinitely without
 `maxReleases` bounds. If delayed submission is rejected, the wrapper returns
 that rejection error.
 
@@ -1022,7 +1036,7 @@ do not wait for the delayed submission to finish.
 
 **When to use:** Jobs that decide at runtime to defer themselves.
 
-**Caveat:** Operationally, multiple release requests in one run use
+**Caveat:** Multiple release requests in one run use
 last-write-wins delay.
 
 ```go
@@ -1069,7 +1083,7 @@ Logic:
 
 **When to use:** You need custom panic handling per job path.
 
-**Caveat:** Operationally, wrapper-level recovery plus queue recovery can
+**Caveat:** Wrapper-level recovery plus queue recovery can
 duplicate error reporting.
 
 ```go
@@ -1086,7 +1100,7 @@ together.
 
 **When to use:** Multi-tenant workflows or operation-wide cancellation.
 
-**Caveat:** Operationally, cancellation scope includes all jobs matching the
+**Caveat:** Cancellation scope includes all jobs matching the
 tag.
 
 ```go
@@ -1106,7 +1120,7 @@ Go builtins.
 
 **When to use:** Respecting external quotas and protecting shared dependencies.
 
-**Caveat:** Operationally, `WithRateLimit` blocks workers unless release mode
+**Caveat:** `WithRateLimit` blocks workers unless release mode
 is used.
 Nil `job`, `limiter`, or `queue` (release mode) arguments return
 `cq.ErrRateLimitJobRequired`, `cq.ErrRateLimitLimiterRequired`, or
@@ -1142,12 +1156,16 @@ concurrently using a shared counter.
 **When to use:** Restricting parallel access to a shared resource (API with
 concurrency limits, database connections, file locks, etc).
 
-**Caveat:** Operationally, when a job hits the limit it is resubmitted after a
+**Caveat:** When a job hits the limit it is resubmitted after a
 retry delay. The current worker is freed immediately (non-blocking). If
 delayed submission is rejected, the wrapper returns that rejection error.
 Nil `job`, `limiter`, or `queue` arguments return
 `cq.ErrConcurrencyJobRequired`, `cq.ErrConcurrencyLimiterRequired`, or
 `cq.ErrConcurrencyQueueRequired`.
+
+> **Not [`WithConcurrencyByKey`](#concurrency-by-key):** that wrapper returns an
+> error on contention and leaves handling to you; this one auto-releases and
+> resubmits. See the comparison table in that section.
 
 ```go
 limiter := cq.NewConcurrencyLimiter()
@@ -1209,7 +1227,7 @@ dependencies.
 
 **When to use:** Isolating unstable upstreams and reducing cascading failures.
 
-**Caveat:** Operationally, poor breaker thresholds can cause false opens or
+**Caveat:** Poor breaker thresholds can cause false opens or
 delayed protection.
 
 The circuit has three states:
@@ -1339,7 +1357,7 @@ decorator pattern.
 
 **When to use:** You need behavior not covered by built-in wrappers.
 
-**Caveat:** Operationally, custom wrappers must preserve context propagation
+**Caveat:** Custom wrappers must preserve context propagation
 and error semantics.
 
 ```go

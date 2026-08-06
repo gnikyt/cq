@@ -49,7 +49,7 @@ cleanup.Cancel()
 
 `Latest` reports queue acceptance failures such as `cq.ErrQueueFull` or
 `cq.ErrQueueStopped`. Cancelling a schedule prevents future submission attempts.
-it does not cancel jobs already accepted by the queue. Use the `JobHandle`
+It does not cancel jobs already accepted by the queue. Use the `JobHandle`
 returned by `Latest` to cancel one accepted occurrence.
 
 The scheduler also supports lookup and centralized removal:

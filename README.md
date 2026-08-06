@@ -161,15 +161,15 @@ and controls the flow. This keeps job logic clean while adding retries,
 timeouts, tracing, and error handling declaratively.
 
 ```go
-job := WithOutcome(              // 3. Outermost: catches final outcome.
-	WithRetryPolicy(            // 2. Preferred retry wrapper.
-		WithTimeout(             // 1. Innermost: runs with timeout.
+job := cq.WithOutcome(           // 3. Outermost: catches final outcome.
+	cq.WithRetryPolicy(         // 2. Preferred retry wrapper.
+		cq.WithTimeout(          // 1. Innermost: runs with timeout.
 				actualJob,
 				5*time.Minute,
 			),
-		RetryPolicy{
+		cq.RetryPolicy{
 			MaxAttempts: 3,
-			Backoff:     ExponentialBackoff,
+			Backoff:     cq.ExponentialBackoff,
 		},
 	),
 	onComplete,
@@ -328,6 +328,7 @@ handle, err := queue.Submit(ctx, job)
 handle, err = queue.Submit(ctx, job, cq.WithNonBlocking())
 
 scheduled, err := queue.SubmitAfter(ctx, job, 2*time.Minute)
+scheduledAt, err := queue.SubmitAt(ctx, job, time.Now().Add(time.Hour))
 handles, err := queue.SubmitBatch(ctx, jobs)
 scheduledHandles, err := queue.SubmitBatchAfter(ctx, jobs, 30*time.Second)
 
@@ -350,6 +351,8 @@ body from running, but does not immediately reclaim its internal queue slot.
 `SubmitAfter` accepts scheduling responsibility immediately. Its handle remains
 pending during the delay, then reports the eventual execution result or a future
 rejection such as `ErrQueueStopped`, `ErrQueuePaused`, or `ErrQueueFull`.
+`SubmitAt` is the absolute-time form of `SubmitAfter` (delay computed as
+`time.Until(at)`, a past time submits immediately).
 Batch methods return handles for accepted jobs and preserve partial-acceptance
 errors.
 
