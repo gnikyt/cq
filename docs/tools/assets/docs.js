@@ -137,22 +137,59 @@
   const slugify = (t) =>
     t.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
 
-  const buildAnchorsAndToc = () => {
-    const content = document.querySelector(".content-inner");
-    const tocList = document.querySelector(".toc ul");
-    if (!content) return [];
+  // Ensure a heading has an id and a hover "#" anchor. When prefix is given
+  // (single-page build) the id is namespaced so it stays unique across docs.
+  const ensureAnchor = (h, prefix) => {
+    if (prefix) h.id = `${prefix}--${slugify(h.textContent)}`;
+    else if (!h.id) h.id = slugify(h.textContent);
 
-    const entries = [];
-    for (const h of content.querySelectorAll("h2, h3")) {
-      if (!h.id) h.id = slugify(h.textContent);
-
+    if (!h.querySelector(".anchor")) {
       const anchor = document.createElement("a");
       anchor.className = "anchor";
       anchor.href = `#${h.id}`;
       anchor.setAttribute("aria-label", "Link to this section");
       anchor.textContent = "#";
       h.appendChild(anchor);
+    }
+  };
 
+  // Collapsed by default; reveals the "Show all" toggle only when the TOC
+  // overflows its column. Expanding swaps the fade for a real scrollbar.
+  const setTocToggleLabel = (toggle, expanded) => {
+    const label = toggle.querySelector(".toc__toggle-label");
+    if (label) label.textContent = expanded ? "Show less ⌃" : "Show all ⌄";
+  };
+
+  const updateTocOverflow = () => {
+    const toc = document.querySelector(".toc");
+    const scroll = toc?.querySelector(".toc__scroll");
+    const toggle = toc?.querySelector(".toc__toggle");
+    if (!toc || !scroll || !toggle) return;
+    toc.classList.remove("expanded");
+    toggle.setAttribute("aria-expanded", "false");
+    setTocToggleLabel(toggle, false);
+    toggle.hidden = scroll.scrollHeight <= scroll.clientHeight + 1;
+  };
+
+  const initTocToggle = () => {
+    const toc = document.querySelector(".toc");
+    const toggle = toc?.querySelector(".toc__toggle");
+    toggle?.addEventListener("click", () => {
+      const expanded = toc.classList.toggle("expanded");
+      toggle.setAttribute("aria-expanded", String(expanded));
+      setTocToggleLabel(toggle, expanded);
+    });
+    window.addEventListener("resize", updateTocOverflow, { passive: true });
+  };
+
+  // Populate the on-page TOC from a root element's headings; returns entries.
+  const buildToc = (root) => {
+    const tocList = document.querySelector(".toc ul");
+    if (tocList) tocList.innerHTML = "";
+    const entries = [];
+    if (!root) return entries;
+
+    for (const h of root.querySelectorAll("h2, h3")) {
       if (tocList) {
         const li = document.createElement("li");
         const link = document.createElement("a");
@@ -164,28 +201,32 @@
         entries.push({ id: h.id, link, el: h });
       }
     }
+    const toc = document.querySelector(".toc");
+    if (toc) toc.style.display = entries.length ? "" : "none";
+    updateTocOverflow();
     return entries;
   };
 
-  /* ---------------- Scrollspy ---------------- */
-  const initScrollspy = (entries) => {
-    if (!entries.length || !("IntersectionObserver" in window)) return;
+  /* ---------------- Scrollspy ----------------
+     Highlights the last heading scrolled past the header line, so there is
+     always exactly one active entry. Returns a teardown function. */
+  const HEADER_OFFSET = 88;
 
-    const visible = new Set();
-    const obs = new IntersectionObserver(
-      (records) => {
-        for (const r of records) {
-          if (r.isIntersecting) visible.add(r.target.id);
-          else visible.delete(r.target.id);
-        }
-        const current = entries.find((e) => visible.has(e.id))?.id ?? null;
-        for (const e of entries) {
-          e.link.classList.toggle("active", e.id === current);
-        }
-      },
-      { rootMargin: "-72px 0px -70% 0px", threshold: 0 }
-    );
-    for (const e of entries) obs.observe(e.el);
+  const initScrollspy = (entries) => {
+    if (!entries.length) return () => {};
+
+    const onScroll = () => {
+      let current = entries[0].id;
+      for (const e of entries) {
+        if (e.el.getBoundingClientRect().top <= HEADER_OFFSET) current = e.id;
+        else break;
+      }
+      for (const e of entries) e.link.classList.toggle("active", e.id === current);
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
   };
 
   /* ---------------- Mobile nav ---------------- */
@@ -201,11 +242,80 @@
     }
   };
 
+  /* ---------------- Multi-page mode ---------------- */
+  const initMultiPage = () => {
+    const content = document.querySelector(".content-inner");
+    if (!content) return;
+    for (const h of content.querySelectorAll("h2, h3")) ensureAnchor(h);
+    initScrollspy(buildToc(content));
+  };
+
+  /* ---------------- Single-page mode (client-side router) ----------------
+     All docs live in the DOM as .doc-section; only the routed one is shown. */
+  const initSinglePage = (sections) => {
+    for (const s of sections) {
+      for (const h of s.querySelectorAll("h2, h3")) ensureAnchor(h, s.id);
+    }
+
+    const sidebarLinks = [...document.querySelectorAll(".sidebar a")];
+    const known = (id) => sections.some((s) => s.id === id);
+    let activeId = null;
+    let spy = null;
+
+    const show = (id) => {
+      if (!known(id)) id = "top";
+      if (id === activeId) return;
+      const isInitial = activeId === null;
+
+      for (const s of sections) s.hidden = s.id !== id;
+      for (const a of sidebarLinks) {
+        a.classList.toggle("active", a.getAttribute("href") === `#${id}`);
+      }
+      const active = document.getElementById(id);
+      spy?.();
+      spy = initScrollspy(buildToc(active));
+      activeId = id;
+      window.scrollTo(0, 0);
+
+      // Move focus to the doc heading so keyboard/screen-reader users follow
+      // the switch (but not on first load, which would steal initial focus).
+      if (!isInitial) {
+        const heading = active.querySelector("h1, h2");
+        if (heading) {
+          heading.setAttribute("tabindex", "-1");
+          heading.focus({ preventScroll: true });
+        }
+      }
+    };
+
+    const route = () => {
+      const raw = decodeURIComponent(location.hash.slice(1));
+      if (raw.includes("--")) {
+        const docId = raw.split("--")[0];
+        if (known(docId)) {
+          show(docId);
+          document.getElementById(raw)?.scrollIntoView();
+        }
+        return;
+      }
+      // Empty or known doc id routes; unknown hashes (e.g. the skip link) are
+      // left alone so they cannot hijack the router.
+      if (raw === "" || known(raw)) show(raw || "top");
+    };
+
+    window.addEventListener("hashchange", route);
+    route();
+    if (!activeId) show("top");
+  };
+
   /* ---------------- Boot ---------------- */
   document.addEventListener("DOMContentLoaded", () => {
     document.querySelector(".theme-toggle")?.addEventListener("click", toggleTheme);
     enhanceCodeBlocks();
-    initScrollspy(buildAnchorsAndToc());
+    initTocToggle();
+    const sections = [...document.querySelectorAll(".doc-section")];
+    if (sections.length) initSinglePage(sections);
+    else initMultiPage();
     initNav();
   });
 })();

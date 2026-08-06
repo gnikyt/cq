@@ -494,11 +494,7 @@ See [docs/QUEUE_OPTIONS.md](docs/QUEUE_OPTIONS.md) for shutdown details.
 
 ## Documentation
 
-A browsable **HTML version** of these docs (searchable navigation, on-page
-contents, copy-able code blocks, light/dark themes) is published to GitHub Pages
-at **<https://gnikyt.github.io/cq/>**. To build it locally, run `make docs` and
-open `docs/html/index.html`. The pages are generated from the Markdown below, so
-the Markdown remains the source of truth.
+A browsable **HTML version** of these docs is published to GitHub Pages at **<https://gnikyt.github.io/cq/>**. It is generated from the Markdown below, so the Markdown remains the source of truth.
 
 For detailed usage and advanced features, see the following guides:
 

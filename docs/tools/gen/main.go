@@ -1,3 +1,14 @@
+// Command gen renders the cq Markdown docs into a single self-contained HTML
+// page (docs/html/index.html) with CSS and JS inlined.
+//
+// It lives in its own module (docs/tools) so goldmark never touches the
+// library's dependency-free go.mod. Run it from docs/tools:
+//
+//	go run ./gen            # uses -root=../.. (repo root)
+//
+// nav.json is the single source of truth for navigation. Each doc is rendered
+// from its Markdown, concatenated as a hidden <section>, and revealed one at a
+// time by a client-side router. The Markdown remains the source of truth.
 package main
 
 import (
@@ -18,6 +29,8 @@ import (
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
+// ---- manifest (nav.json) ----
+
 type site struct {
 	Title   string `json:"title"`
 	Short   string `json:"short"`
@@ -29,14 +42,14 @@ type rawItem struct {
 	Title   string `json:"title"`
 	Source  string `json:"source"`
 	Section string `json:"section"` // extract just this "## <section>" block from Source
-	Output  string `json:"output"`
+	Output  string `json:"output"`  // used to derive the in-page anchor (slug)
 	Href    string `json:"href"`
 	Blurb   string `json:"blurb"`
 }
 
 type rawGroup struct {
 	Title     string    `json:"title"`
-	HideCards bool      `json:"hideCards"` // omit this group from the landing card grid
+	HideCards bool      `json:"hideCards"` // omit this group from the home card grid
 	Items     []rawItem `json:"items"`
 }
 
@@ -45,10 +58,11 @@ type manifest struct {
 	Groups []rawGroup `json:"groups"`
 }
 
+// ---- template models ----
+
 type navItem struct {
-	Title  string
-	Href   string
-	Active bool
+	Title string
+	Href  string
 }
 
 type navGroup struct {
@@ -72,24 +86,39 @@ type link struct {
 	Href  string
 }
 
-type pageData struct {
-	Site       site
-	Title      string
-	Desc       string
-	GroupTitle string
-	Content    template.HTML
-	Nav        []navGroup
-	Prev       *link
-	Next       *link
-	Cards      []cardGroup
+type docSection struct {
+	ID      string
+	Content template.HTML
 }
+
+// sdoc is a rendered doc awaiting pager wiring.
+type sdoc struct {
+	id    string
+	title string
+	html  string
+}
+
+type pageData struct {
+	Site     site
+	Desc     string
+	CSS      template.CSS
+	JS       template.JS
+	Nav      []navGroup
+	Cards    []cardGroup
+	Sections []docSection
+}
+
+// slug is the in-page anchor / section id for an output filename.
+func slug(output string) string { return strings.TrimSuffix(output, ".html") }
 
 func main() {
 	root := flag.String("root", "../..", "repository root")
 	flag.Parse()
 
-	navPath := filepath.Join(*root, "docs", "tools", "nav.json")
-	tmplGlob := filepath.Join(*root, "docs", "tools", "templates", "*.tmpl")
+	toolsDir := filepath.Join(*root, "docs", "tools")
+	navPath := filepath.Join(toolsDir, "nav.json")
+	tmplGlob := filepath.Join(toolsDir, "templates", "*.tmpl")
+	assetsDir := filepath.Join(toolsDir, "assets")
 	mdDir := filepath.Join(*root, "docs")
 	outDir := filepath.Join(*root, "docs", "html")
 
@@ -109,88 +138,78 @@ func main() {
 		goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 	)
 
-	// Pager chain: the landing, then every content page in manifest order.
-	// linkMap rewrites cross-references to docs Markdown files (e.g.
-	// SCHEDULER.md) into their generated HTML output (scheduler.html).
-	chain := []link{{Title: "Documentation", Href: "index.html"}}
+	// Cross-references to docs Markdown (e.g. SCHEDULER.md) become in-page
+	// anchors (#scheduler). Only whole-file sources map cleanly by basename;
+	// section extracts share a source (README.md) and would collide.
 	linkMap := map[string]string{}
 	for _, g := range man.Groups {
 		for _, it := range g.Items {
-			if it.Source != "" {
-				chain = append(chain, link{Title: it.Title, Href: it.Output})
-			}
-			// Only whole-file docs sources are safe to map by basename;
-			// section extracts share a source (README.md) and would collide.
 			if it.Source != "" && it.Section == "" && it.Output != "" {
-				linkMap[filepath.Base(it.Source)] = it.Output
+				linkMap[filepath.Base(it.Source)] = "#" + slug(it.Output)
 			}
 		}
 	}
 
-	count := 0
-
-	// Content pages.
+	// Render each doc in manifest order.
+	var docs []sdoc
 	for _, g := range man.Groups {
 		for _, it := range g.Items {
 			if it.Source == "" {
 				continue
 			}
-			src, err := os.ReadFile(filepath.Join(mdDir, it.Source))
-			if err != nil {
-				log.Fatalf("read %s: %v", it.Source, err)
-			}
-
-			// A section extract pulls one "## <section>" block from a larger
-			// file (e.g. the root README) and promotes it to a standalone page.
-			if it.Section != "" {
-				src, err = extractSection(src, it.Section)
-				if err != nil {
-					log.Fatalf("%s: %v", it.Source, err)
-				}
-				src = shiftHeadingsUp(src)
-			}
-
-			var body bytes.Buffer
-			if err := md.Convert(src, &body); err != nil {
-				log.Fatalf("convert %s: %v", it.Source, err)
-			}
-			html := rewriteLinks(body.String(), linkMap)
-
-			desc := it.Blurb
-			if desc == "" {
-				desc = it.Title + " — " + man.Site.Short + " documentation"
-			}
-
-			data := pageData{
-				Site:       man.Site,
-				Title:      it.Title,
-				Desc:       desc,
-				GroupTitle: g.Title,
-				Content:    template.HTML(html), //nolint:gosec // trusted local docs
-				Nav:        buildNav(man, it.Output),
-				Prev:       neighbor(chain, it.Output, -1),
-				Next:       neighbor(chain, it.Output, +1),
-			}
-			if err := render(tmpl, "page", filepath.Join(outDir, it.Output), data); err != nil {
-				log.Fatalf("render %s: %v", it.Output, err)
-			}
-			count++
+			body := convertDoc(md, filepath.Join(mdDir, it.Source), it.Section)
+			docs = append(docs, sdoc{
+				id:    slug(it.Output),
+				title: it.Title,
+				html:  rewriteLinks(body, linkMap),
+			})
 		}
 	}
 
-	// Landing page.
-	landing := pageData{
-		Site:  man.Site,
-		Desc:  "Reference documentation for " + man.Site.Short + ", a lightweight, auto-scaling queue for processing Go functions as jobs.",
-		Nav:   buildNav(man, "index.html"),
-		Cards: buildCards(man),
+	// Wrap each doc as a section with a Previous / Next pager.
+	sections := make([]docSection, 0, len(docs))
+	for i, d := range docs {
+		prev := &link{Title: "Documentation", Href: "#top"}
+		if i > 0 {
+			prev = &link{Title: docs[i-1].title, Href: "#" + docs[i-1].id}
+		}
+		var next *link
+		if i < len(docs)-1 {
+			next = &link{Title: docs[i+1].title, Href: "#" + docs[i+1].id}
+		}
+		sections = append(sections, docSection{
+			ID:      d.id,
+			Content: template.HTML(d.html + pagerHTML(prev, next)), //nolint:gosec // trusted local docs
+		})
 	}
-	if err := render(tmpl, "landing", filepath.Join(outDir, "index.html"), landing); err != nil {
-		log.Fatalf("render index.html: %v", err)
-	}
-	count++
 
-	fmt.Printf("generated %d pages into %s\n", count, outDir)
+	css, err := os.ReadFile(filepath.Join(assetsDir, "docs.css"))
+	if err != nil {
+		log.Fatalf("read docs.css: %v", err)
+	}
+	js, err := os.ReadFile(filepath.Join(assetsDir, "docs.js"))
+	if err != nil {
+		log.Fatalf("read docs.js: %v", err)
+	}
+
+	data := pageData{
+		Site:     man.Site,
+		Desc:     "Reference documentation for " + man.Site.Short + ", a lightweight, auto-scaling queue for processing Go functions as jobs.",
+		CSS:      template.CSS(css), //nolint:gosec // our own stylesheet
+		JS:       template.JS(js),   //nolint:gosec // our own script
+		Nav:      buildNav(man),
+		Cards:    buildCards(man),
+		Sections: sections,
+	}
+
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		log.Fatalf("mkdir %s: %v", outDir, err)
+	}
+	out := filepath.Join(outDir, "index.html")
+	if err := render(tmpl, out, data); err != nil {
+		log.Fatalf("render %s: %v", out, err)
+	}
+	fmt.Printf("generated %s (%d docs)\n", out, len(docs))
 }
 
 func loadManifest(path string) (manifest, error) {
@@ -203,26 +222,48 @@ func loadManifest(path string) (manifest, error) {
 	return man, err
 }
 
-func buildNav(man manifest, current string) []navGroup {
+// convertDoc reads a Markdown source and renders it to HTML. When section is
+// set, only that "## <section>" block is extracted and promoted to a page.
+func convertDoc(md goldmark.Markdown, path, section string) string {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("read %s: %v", path, err)
+	}
+	if section != "" {
+		src, err = extractSection(src, section)
+		if err != nil {
+			log.Fatalf("%s: %v", path, err)
+		}
+		src = shiftHeadingsUp(src)
+	}
+	var body bytes.Buffer
+	if err := md.Convert(src, &body); err != nil {
+		log.Fatalf("convert %s: %v", path, err)
+	}
+	return body.String()
+}
+
+// buildNav resolves each sidebar item to its in-page anchor.
+func buildNav(man manifest) []navGroup {
 	groups := make([]navGroup, 0, len(man.Groups))
 	for _, g := range man.Groups {
 		items := make([]navItem, 0, len(g.Items))
 		for _, it := range g.Items {
 			href := it.Href
-			if it.Output != "" {
-				href = it.Output
+			switch {
+			case it.Output == "index.html":
+				href = "#top"
+			case it.Output != "":
+				href = "#" + slug(it.Output)
 			}
-			items = append(items, navItem{
-				Title:  it.Title,
-				Href:   href,
-				Active: it.Output != "" && it.Output == current,
-			})
+			items = append(items, navItem{Title: it.Title, Href: href})
 		}
 		groups = append(groups, navGroup{Title: g.Title, Items: items})
 	}
 	return groups
 }
 
+// buildCards builds the home card grid from groups that hold content pages.
 func buildCards(man manifest) []cardGroup {
 	var out []cardGroup
 	for _, g := range man.Groups {
@@ -234,26 +275,13 @@ func buildCards(man manifest) []cardGroup {
 			if it.Source == "" {
 				continue
 			}
-			cards = append(cards, card{Title: it.Title, Href: it.Output, Blurb: it.Blurb})
+			cards = append(cards, card{Title: it.Title, Href: "#" + slug(it.Output), Blurb: it.Blurb})
 		}
 		if len(cards) > 0 {
 			out = append(out, cardGroup{Title: g.Title, Cards: cards})
 		}
 	}
 	return out
-}
-
-func neighbor(chain []link, output string, offset int) *link {
-	for i, l := range chain {
-		if l.Href == output {
-			j := i + offset
-			if j >= 0 && j < len(chain) {
-				return &chain[j]
-			}
-			return nil
-		}
-	}
-	return nil
 }
 
 // extractSection returns the lines from a "## <section>" heading up to (but
@@ -312,9 +340,27 @@ func shiftHeadingsUp(md []byte) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
+// pagerHTML renders the Previous/Next footer for a doc section.
+func pagerHTML(prev, next *link) string {
+	var b strings.Builder
+	b.WriteString(`<div class="pager">`)
+	if prev != nil {
+		b.WriteString(`<a href="` + prev.Href + `"><span class="dir">← Previous</span>` + template.HTMLEscapeString(prev.Title) + `</a>`)
+	} else {
+		b.WriteString(`<span></span>`)
+	}
+	if next != nil {
+		b.WriteString(`<a class="next" href="` + next.Href + `"><span class="dir">Next →</span>` + template.HTMLEscapeString(next.Title) + `</a>`)
+	} else {
+		b.WriteString(`<span></span>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
 var mdHref = regexp.MustCompile(`href="([^"]+?\.md)(#[^"]*)?"`)
 
-// rewriteLinks repoints links to docs Markdown files at their HTML output.
+// rewriteLinks repoints links to docs Markdown files at their in-page anchor.
 func rewriteLinks(html string, m map[string]string) string {
 	return mdHref.ReplaceAllStringFunc(html, func(s string) string {
 		sub := mdHref.FindStringSubmatch(s)
@@ -325,9 +371,9 @@ func rewriteLinks(html string, m map[string]string) string {
 	})
 }
 
-func render(tmpl *template.Template, name, out string, data pageData) error {
+func render(tmpl *template.Template, out string, data pageData) error {
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, "page", data); err != nil {
 		return err
 	}
 	return os.WriteFile(out, buf.Bytes(), 0o644)

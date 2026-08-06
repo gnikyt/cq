@@ -87,8 +87,31 @@
     box-sizing: border-box;
 }
 
-html {
-    scroll-behavior: smooth;
+@media (prefers-reduced-motion: no-preference) {
+    html {
+        scroll-behavior: smooth;
+    }
+}
+
+/* Skip link: visible only when focused. */
+.skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 100;
+    padding: 8px 14px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #001b21;
+    font-size: 14px;
+    font-weight: 600;
+    transform: translateY(-150%);
+    transition: transform 0.15s;
+}
+.skip-link:focus {
+    transform: translateY(0);
+    text-decoration: none;
+    outline: 2px solid var(--text);
 }
 
 body {
@@ -208,6 +231,11 @@ a:hover {
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--toc-w);
     max-width: 1360px;
     margin: 0 auto;
+}
+
+/* Single-page build: one document shown at a time (client-side router). */
+.doc-section[hidden] {
+    display: none;
 }
 
 /* ---------- Sidebar ---------- */
@@ -603,8 +631,63 @@ a:hover {
     top: var(--header-h);
     align-self: start;
     height: calc(100vh - var(--header-h));
-    overflow-y: auto;
+    overflow: hidden;
+}
+
+/* Collapsed: the list is clipped (no scrollbar); a faded toggle hints at more. */
+.toc__scroll {
+    height: 100%;
+    overflow: hidden;
     padding: 40px 20px 48px 8px;
+    scrollbar-width: none;
+}
+.toc__scroll::-webkit-scrollbar {
+    display: none;
+}
+
+/* Expanded: reveal the scrollbar and let the list scroll. */
+.toc.expanded .toc__scroll {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    padding-bottom: 52px;
+}
+.toc.expanded .toc__scroll::-webkit-scrollbar {
+    display: block;
+    width: 8px;
+}
+.toc.expanded .toc__scroll::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+}
+
+/* Faded "show all / show less" control; JS reveals it only when overflowing. */
+.toc__toggle {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 66px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 0 0 12px;
+    margin: 0;
+    border: 0;
+    background: linear-gradient(to bottom, transparent, var(--bg) 60%);
+    color: var(--text-faint);
+    font: 700 11px/1 var(--font-sans);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+.toc__toggle:hover {
+    color: var(--text);
+}
+.toc.expanded .toc__toggle {
+    height: auto;
+    padding: 10px 0;
+    background: var(--bg);
+    border-top: 1px solid var(--border-soft);
 }
 
 .toc h4 {

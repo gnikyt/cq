@@ -1,9 +1,41 @@
-{{define "header" -}}
-<header class="site-header">
+{{define "intro-lead" -}}
+<p class="lead">
+          Complete reference documentation for <strong>{{.Site.Short}}</strong> — a lightweight,
+          auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then
+          compose behavior with wrappers for retries, timeouts, tracing, and more.
+        </p>
+{{- end}}
+
+{{define "page" -}}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{.Site.Short}} — {{.Site.Title}} documentation</title>
+  <meta name="description" content="{{.Desc}}" />
+  <style>{{.CSS}}</style>
+  <noscript>
+    <style>
+      /* Without JS the router can't run — reveal every section so the content
+         stays readable as one long document. */
+      .doc-section[hidden] { display: block !important; }
+      .doc-section + .doc-section {
+        margin-top: 40px;
+        padding-top: 32px;
+        border-top: 1px solid var(--border);
+      }
+      .toc { display: none !important; }
+    </style>
+  </noscript>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
     <button class="icon-btn menu-btn" aria-label="Toggle navigation">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
     </button>
-    <a class="brand" href="index.html">
+    <a class="brand" href="#top">
       <span class="logo">{{.Site.Short}}</span>
       <span>{{.Site.Title}}</span>
       <span class="tag">{{.Site.Version}}</span>
@@ -18,113 +50,62 @@
       </button>
     </div>
   </header>
-{{- end}}
 
-{{define "sidebar" -}}
-<aside class="sidebar">
+  <div class="backdrop"></div>
+
+  <div class="layout">
+    <aside class="sidebar">
       {{range .Nav}}<nav class="nav-group">
         <h4>{{.Title}}</h4>
         <ul>
-          {{range .Items}}<li><a href="{{.Href}}"{{if .Active}} class="active"{{end}}>{{.Title}}</a></li>
+          {{range .Items}}<li><a href="{{.Href}}">{{.Title}}</a></li>
           {{end}}</ul>
       </nav>
       {{end}}
     </aside>
-{{- end}}
 
-{{define "page" -}}
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{{.Title}} — {{.Site.Short}}</title>
-  <meta name="description" content="{{.Desc}}" />
-  <link rel="stylesheet" href="assets/docs.css" />
-</head>
-<body>
-  {{template "header" .}}
-
-  <div class="backdrop"></div>
-
-  <div class="layout">
-    {{template "sidebar" .}}
-
-    <main class="content">
+    <main class="content" id="main-content" tabindex="-1">
       <div class="content-inner">
-        <div class="breadcrumb"><a href="index.html">Documentation</a> / {{.GroupTitle}}</div>
+        <section id="top" class="doc-section">
+          <div class="breadcrumb">Documentation</div>
+          <h1>Documentation</h1>
+          {{template "intro-lead" .}}
+
+          <blockquote>
+            <strong>New here?</strong> Start with the
+            <a href="#quick-start">Quick Start</a> for installation and a runnable
+            example, then browse <a href="#common-recipes">Common Recipes</a> for
+            practical patterns. Tip: this page works offline, and your browser's
+            find (Ctrl/Cmd&nbsp;+&nbsp;F) searches every topic at once.
+          </blockquote>
+          {{range .Cards}}
+          <h2>{{.Title}}</h2>
+          <div class="card-grid">
+            {{range .Cards}}<a class="card" href="{{.Href}}">
+              <h3>{{.Title}}</h3>
+              <p>{{.Blurb}}</p>
+            </a>
+            {{end}}</div>
+          {{end}}
+        </section>
+        {{range .Sections}}
+        <section id="{{.ID}}" class="doc-section" hidden>
 {{.Content}}
-        <div class="pager">
-          {{if .Prev}}<a href="{{.Prev.Href}}"><span class="dir">← Previous</span>{{.Prev.Title}}</a>{{else}}<span></span>{{end}}
-          {{if .Next}}<a class="next" href="{{.Next.Href}}"><span class="dir">Next →</span>{{.Next.Title}}</a>{{else}}<span></span>{{end}}
-        </div>
+        </section>
+        {{end}}
       </div>
     </main>
 
     <aside class="toc">
-      <h4>On this page</h4>
-      <ul></ul>
-    </aside>
-  </div>
-
-  <script src="assets/docs.js"></script>
-</body>
-</html>
-{{- end}}
-
-{{define "landing" -}}
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{{.Site.Short}} — {{.Site.Title}} documentation</title>
-  <meta name="description" content="{{.Desc}}" />
-  <link rel="stylesheet" href="assets/docs.css" />
-</head>
-<body>
-  {{template "header" .}}
-
-  <div class="backdrop"></div>
-
-  <div class="layout">
-    {{template "sidebar" .}}
-
-    <main class="content">
-      <div class="content-inner">
-        <div class="breadcrumb">Documentation</div>
-        <h1>Documentation</h1>
-        <p class="lead">
-          Complete reference documentation for <strong>{{.Site.Short}}</strong>... a lightweight,
-          auto-scaling queue for processing Go functions as jobs. Keep jobs simple, then
-          compose behavior with wrappers for retries, timeouts, tracing, and more.
-        </p>
-
-        <blockquote>
-          <strong>New here?</strong> Start with the
-          <a href="quick-start.html">Quick Start</a> for installation and a runnable
-          example, then browse <a href="common-recipes.html">Common Recipes</a> for
-          practical patterns.
-        </blockquote>
-{{range .Cards}}
-        <h2>{{.Title}}</h2>
-        <div class="card-grid">
-          {{range .Cards}}<a class="card" href="{{.Href}}">
-            <h3>{{.Title}}</h3>
-            <p>{{.Blurb}}</p>
-          </a>
-          {{end}}</div>
-{{end}}
+      <div class="toc__scroll">
+        <h4>On this page</h4>
+        <ul></ul>
       </div>
-    </main>
-
-    <aside class="toc">
-      <h4>On this page</h4>
-      <ul></ul>
+      <button class="toc__toggle" type="button" hidden aria-expanded="false"><span class="toc__toggle-label">Show all</span></button>
     </aside>
   </div>
 
-  <script src="assets/docs.js"></script>
+  <script>{{.JS}}</script>
 </body>
 </html>
 {{- end}}
