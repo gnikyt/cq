@@ -3,8 +3,12 @@
     "title": "Composable Queue",
     "short": "cq",
     "version": "v2",
-    "repo": "https://github.com/gnikyt/cq"
+    "repo": "https://github.com/gnikyt/cq",
+    "description": "Reference documentation for cq, a lightweight, auto-scaling queue for processing Go functions as jobs."
   },
+  "sourceDir": ".",
+  "output": "index.html",
+  "home": "# Documentation\n\n<p class=\"lead\">\nComplete reference documentation for <strong>cq</strong> — a lightweight,\nauto-scaling queue for processing Go functions as jobs. Keep jobs simple, then\ncompose behavior with wrappers for retries, timeouts, tracing, and more.\n</p>\n\n> **New here?** Start with the [Quick Start](#quick-start) for installation and a\n> runnable example, then browse [Common Recipes](#common-recipes) for practical\n> patterns. Tip: this page works offline, and your browser's find (Ctrl/Cmd + F)\n> searches every topic at once.\n",
   "groups": [
     {
       "title": "Getting Started",
