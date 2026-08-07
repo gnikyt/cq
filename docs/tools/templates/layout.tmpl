@@ -33,6 +33,7 @@
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
+
   <header class="site-header">
     <button class="icon-btn menu-btn" aria-label="Toggle navigation">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
@@ -82,6 +83,7 @@
             practical patterns. Tip: this page works offline, and your browser's
             find (Ctrl/Cmd&nbsp;+&nbsp;F) searches every topic at once.
           </blockquote>
+
           {{range .Cards}}
           <h2>{{.Title}}</h2>
           <div class="card-grid">
@@ -92,6 +94,7 @@
             {{end}}</div>
           {{end}}
         </section>
+
         {{range .Sections}}
         <section id="{{.ID}}" class="doc-section" hidden>
 {{.Content}}

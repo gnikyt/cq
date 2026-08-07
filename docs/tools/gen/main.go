@@ -18,8 +18,6 @@ import (
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 )
 
-// ---- manifest (nav.json) ----
-
 type site struct {
 	Title   string `json:"title"`
 	Short   string `json:"short"`
@@ -30,15 +28,15 @@ type site struct {
 type rawItem struct {
 	Title   string `json:"title"`
 	Source  string `json:"source"`
-	Section string `json:"section"` // extract just this "## <section>" block from Source
-	Anchor  string `json:"anchor"`  // in-page section id this doc renders under
-	Href    string `json:"href"`    // explicit link target (e.g. "#top"); used when Anchor is empty
+	Section string `json:"section"` // Extract just this "## <section>" block from Source.
+	Anchor  string `json:"anchor"`  // In-page section id this doc renders under.
+	Href    string `json:"href"`    // Explicit link target (e.g. "#top"); used when Anchor is empty.
 	Blurb   string `json:"blurb"`
 }
 
 type rawGroup struct {
 	Title     string    `json:"title"`
-	HideCards bool      `json:"hideCards"` // omit this group from the home card grid
+	HideCards bool      `json:"hideCards"` // Omit this group from the home card grid.
 	Items     []rawItem `json:"items"`
 }
 
@@ -46,8 +44,6 @@ type manifest struct {
 	Site   site       `json:"site"`
 	Groups []rawGroup `json:"groups"`
 }
-
-// ---- template models ----
 
 type navItem struct {
 	Title string
@@ -80,7 +76,6 @@ type docSection struct {
 	Content template.HTML
 }
 
-// sdoc is a rendered doc awaiting pager wiring.
 type sdoc struct {
 	id    string
 	title string
@@ -124,8 +119,8 @@ func main() {
 		goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 	)
 
-	// Cross-references to docs Markdown (e.g. SCHEDULER.md) become in-page
-	// anchors (#scheduler). Only whole-file sources map cleanly by basename;
+	// Cross-references to docs Markdown (such as SCHEDULER.md) become in-page
+	// anchors (#scheduler). Only whole-file sources map cleanly by basename,
 	// section extracts share a source (README.md) and would collide.
 	linkMap := map[string]string{}
 	for _, g := range man.Groups {
@@ -165,7 +160,7 @@ func main() {
 		}
 		sections = append(sections, docSection{
 			ID:      d.id,
-			Content: template.HTML(d.html + pagerHTML(prev, next)), //nolint:gosec // trusted local docs
+			Content: template.HTML(d.html + pagerHTML(prev, next)), //nolint:gosec // trusted local docs.
 		})
 	}
 
@@ -181,8 +176,8 @@ func main() {
 	data := pageData{
 		Site:     man.Site,
 		Desc:     "Reference documentation for " + man.Site.Short + ", a lightweight, auto-scaling queue for processing Go functions as jobs.",
-		CSS:      template.CSS(css), //nolint:gosec // our own stylesheet
-		JS:       template.JS(js),   //nolint:gosec // our own script
+		CSS:      template.CSS(css), //nolint:gosec // our own stylesheet.
+		JS:       template.JS(js),   //nolint:gosec // our own script.
 		Nav:      buildNav(man),
 		Cards:    buildCards(man),
 		Sections: sections,
@@ -317,7 +312,7 @@ func shiftHeadingsUp(md []byte) []byte {
 			h++
 		}
 		if h >= 2 && h < len(l) && l[h] == ' ' {
-			lines[i] = l[1:] // drop one '#'
+			lines[i] = l[1:] // Drop one '#'.
 		}
 	}
 	return []byte(strings.Join(lines, "\n"))
