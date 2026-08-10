@@ -34,7 +34,7 @@ This document outlines the process and guidelines for contributing.
 
 ### Prerequisites
 
-- Go 1.23 or higher
+- Go 1.24 or higher
 - make (optional, for convenience commands)
 
 ### Clone and Setup

@@ -6,6 +6,7 @@ PKG=github.com/gnikyt/cq/v2
 all: clean build test
 
 build:
+	mkdir -p ./dist
 	go build -o ./dist/${BINARY_NAME} ${PKG}
 
 test:
