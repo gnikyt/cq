@@ -1,11 +1,11 @@
-name: Docs
+name: HTML Doc Generator
 
 on:
   push:
     branches: [ master ]
     paths:
       - 'docs/**'
-      - '.github/workflows/docs.yml'
+      - '.github/workflows/html_doc.yml'
   workflow_dispatch:
 
 # Allow the deploy job to publish to GitHub Pages.
@@ -34,7 +34,7 @@ jobs:
           cache: false
 
       - name: Generate HTML docs
-        run: go run github.com/gnikyt/onedoc/cmd/onedoc@latest -config docs/onedoc.json
+        run: make docs
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
