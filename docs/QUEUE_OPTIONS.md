@@ -38,11 +38,13 @@ Behavior:
 
 - `cq.WithHooks(hooks)`  
   Registers optional queue lifecycle callbacks (`OnEnqueue`, `OnStart`,
-  `OnSuccess`, `OnFailure`, `OnDiscard`, `OnReschedule`, `OnAttemptStart`,
-  `OnAttemptSuccess`, `OnAttemptFailure`) for observability integrations.
+  `OnSuccess`, `OnFailure`, `OnDiscard`, `OnAbandon`, `OnReschedule`,
+  `OnAttemptStart`, `OnAttemptSuccess`, `OnAttemptFailure`) for observability
+  integrations.
   `OnEnqueue` receives the acceptance context, execution hooks receive the job
   context, and `OnReschedule` receives the rescheduling job context.
-  Discarded outcomes emit `OnDiscard` (not `OnFailure`). Result-hook contexts
+  Discarded outcomes emit `OnDiscard` (not `OnFailure`). Jobs that shutdown
+  ends before they start emit `OnAbandon`. Result-hook contexts
   may already be cancelled. Use `context.WithoutCancel(ctx)` when reporting
   must outlive job cancellation. You can pass `WithHooks` multiple times.
   Callbacks are appended and all are executed. See
@@ -208,6 +210,8 @@ Details:
 
 - Buffered jobs and pending `SubmitAfter`/`SubmitAt` submissions are handed
   back, their handles resolve with `cq.ErrQueueDrained`.
+- Each handed-back job also emits the `OnAbandon` hook, so observers see a
+  terminal event instead of a job stuck in `created`.
 - Handed-back jobs are removed from queue tallies as if never accepted.
 - Jobs a worker already picked up run to completion and are not handed back.
 - A done ctx behaves like `StopContext`: the in-flight wait is abandoned and
