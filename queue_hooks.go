@@ -15,6 +15,7 @@ const (
 	hookSuccess        hookName = "success"
 	hookFailure        hookName = "failure"
 	hookDiscard        hookName = "discard"
+	hookAbandon        hookName = "abandon"
 	hookReschedule     hookName = "reschedule"
 	hookAttemptStart   hookName = "attempt_start"
 	hookAttemptSuccess hookName = "attempt_success"
@@ -50,6 +51,7 @@ type Hooks struct {
 	OnSuccess        func(context.Context, JobEvent)
 	OnFailure        func(context.Context, JobEvent)
 	OnDiscard        func(context.Context, JobEvent)
+	OnAbandon        func(context.Context, JobEvent)
 	OnReschedule     func(context.Context, JobEvent)
 	OnAttemptStart   func(context.Context, JobEvent)
 	OnAttemptSuccess func(context.Context, JobEvent)
@@ -107,6 +109,17 @@ func (q *Queue) dispatchEnqueue(ctx context.Context, meta JobMeta) {
 	event := eventFromMetaWithoutTiming(meta, q.name, JobStateCreated, nil)
 	for _, hooks := range q.hooks {
 		q.emitHook(ctx, hookEnqueue, hooks.OnEnqueue, event)
+	}
+}
+
+// dispatchAbandoned dispatches the abandon hook for jobs ended before starting.
+// Shutdown collects these under acceptMut and dispatches once it is released...
+// a hook calling back into the queue would otherwise deadlock.
+func (q *Queue) dispatchAbandoned(events []JobEvent) {
+	for _, event := range events {
+		for _, hooks := range q.hooks {
+			q.emitHook(q.ctx, hookAbandon, hooks.OnAbandon, event)
+		}
 	}
 }
 
@@ -211,6 +224,12 @@ func contextWithRetryAttemptEmitter(ctx context.Context, emitter retryAttemptEmi
 func retryAttemptEmitterFromContext(ctx context.Context) (retryAttemptEmitter, bool) {
 	emitter, ok := ctx.Value(retryAttemptEmitterKey{}).(retryAttemptEmitter)
 	return emitter, ok
+}
+
+// abandonEvent creates a JobEvent for a job that shutdown ended before it ever
+// started. err distinguishes the cause (ErrQueueDrained, ErrJobAbandoned).
+func (q *Queue) abandonEvent(meta JobMeta, err error) JobEvent {
+	return eventFromMetaWithoutTiming(meta, q.name, JobStateAbandoned, err)
 }
 
 // eventFromMetaWithoutTiming creates a JobEvent from the given metadata, state, and error without timing information.

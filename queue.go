@@ -251,16 +251,20 @@ func (q *Queue) Start() {
 // when `jobWait` is true, waits for worker goroutines to exit, resets worker
 // tallies, and closes the jobs channel.
 func (q *Queue) Stop(jobWait bool) {
+	// Deferred LIFO: acceptMut unlocks first, then hooks run unlocked.
+	var events []JobEvent
+	defer func() { q.dispatchAbandoned(events) }()
+
 	q.acceptMut.Lock()
 	defer q.acceptMut.Unlock()
 
 	q.stopped.Store(true)
 	if jobWait {
 		// Background context... the wait is unbounded.
-		_ = q.waitForShutdown(context.Background())
+		events, _ = q.waitForShutdown(context.Background())
 		return
 	}
-	q.abandonPendingSubmissions()
+	events = q.abandonPendingSubmissions()
 	q.ctxCancel()
 	q.workerWg.Wait()
 	q.resetWorkers()
@@ -283,6 +287,10 @@ func (q *Queue) StopContext(ctx context.Context) error {
 		return ErrQueueStopped
 	}
 
+	// Deferred LIFO: acceptMut unlocks first, then hooks run unlocked.
+	var events []JobEvent
+	defer func() { q.dispatchAbandoned(events) }()
+
 	q.acceptMut.Lock()
 	defer q.acceptMut.Unlock()
 
@@ -291,7 +299,8 @@ func (q *Queue) StopContext(ctx context.Context) error {
 	}
 
 	q.stopped.Store(true)
-	return q.waitForShutdown(ctx)
+	events, err := q.waitForShutdown(ctx)
+	return err
 }
 
 // StopTimeout gracefully shuts down the queue for up to tt.
@@ -317,6 +326,10 @@ func (q *Queue) StopDrain(ctx context.Context) ([]DrainedJob, error) {
 		return nil, ErrQueueStopped
 	}
 
+	// Deferred LIFO: acceptMut unlocks first, then hooks run unlocked.
+	var events []JobEvent
+	defer func() { q.dispatchAbandoned(events) }()
+
 	q.acceptMut.Lock()
 	defer q.acceptMut.Unlock()
 
@@ -338,7 +351,9 @@ buffered:
 			}
 
 			if item.handle.rejectPending(ErrQueueDrained) {
-				drained = append(drained, DrainedJob{Job: item.raw, Meta: item.handle.Meta()})
+				meta := item.handle.Meta()
+				drained = append(drained, DrainedJob{Job: item.raw, Meta: meta})
+				events = append(events, q.abandonEvent(meta, ErrQueueDrained))
 				q.rollbackJobEnqueued()
 			} else {
 				// Already terminal (example: cancelled while buffered)... release accounting only.
@@ -356,7 +371,9 @@ buffered:
 	q.submissionsMut.Lock()
 	for handle, job := range q.delayedJobs {
 		if handle.rejectPending(ErrQueueDrained) {
-			drained = append(drained, DrainedJob{Job: job, Meta: handle.Meta()})
+			meta := handle.Meta()
+			drained = append(drained, DrainedJob{Job: job, Meta: meta})
+			events = append(events, q.abandonEvent(meta, ErrQueueDrained))
 		}
 		delete(q.delayedJobs, handle)
 		delete(q.submissions, handle)
@@ -364,14 +381,17 @@ buffered:
 	q.submissionsMut.Unlock()
 
 	// In-flight jobs finish bounded by ctx... unstarted work was handed back.
-	return drained, q.waitForShutdown(ctx)
+	waitEvents, err := q.waitForShutdown(ctx)
+	events = append(events, waitEvents...)
+	return drained, err
 }
 
 // waitForShutdown waits for accepted jobs to finish bounded by ctx, then
 // completes queue shutdown. On ctx done, pending submissions are abandoned
 // and worker cleanup finishes asynchronously. Callers must hold acceptMut
-// and have set stopped.
-func (q *Queue) waitForShutdown(ctx context.Context) error {
+// and have set stopped. Abandon hook events are returned rather than
+// dispatched... callers dispatch them after releasing acceptMut.
+func (q *Queue) waitForShutdown(ctx context.Context) ([]JobEvent, error) {
 	// Ensure graceful shutdown can drain pending jobs.
 	q.paused.Store(false)
 	q.distPaused.Store(false)
@@ -389,28 +409,32 @@ func (q *Queue) waitForShutdown(ctx context.Context) error {
 		q.resetWorkers()
 		q.started.Store(false)
 		q.closeJobs()
-		return nil
+		return nil, nil
 	case <-ctx.Done():
 		q.ctxCancel()
-		q.abandonPendingSubmissions()
+		events := q.abandonPendingSubmissions()
 		go func() {
 			q.workerWg.Wait()
 			q.resetWorkers()
 			q.started.Store(false)
 			q.closeJobs()
 		}()
-		return ctx.Err()
+		return events, ctx.Err()
 	}
 }
 
 // Terminate forces an immediate shutdown.
 // Unlike Stop, it does not wait for jobs or worker goroutines to finish.
 func (q *Queue) Terminate() {
+	// Deferred LIFO: acceptMut unlocks first, then hooks run unlocked.
+	var events []JobEvent
+	defer func() { q.dispatchAbandoned(events) }()
+
 	q.acceptMut.Lock()
 	defer q.acceptMut.Unlock()
 
 	q.stopped.Store(true)
-	q.abandonPendingSubmissions()
+	events = q.abandonPendingSubmissions()
 	q.ctxCancel()
 	q.paused.Store(false)
 	q.distPaused.Store(false)
@@ -790,13 +814,20 @@ func (q *Queue) untrackDelayed(handle *JobHandle) {
 }
 
 // abandonPendingSubmissions completes every tracked pending submission as abandoned.
-func (q *Queue) abandonPendingSubmissions() {
+// It returns the hook events for the abandoned jobs... callers dispatch them
+// after releasing acceptMut.
+func (q *Queue) abandonPendingSubmissions() []JobEvent {
 	q.submissionsMut.Lock()
 	defer q.submissionsMut.Unlock()
+
+	var events []JobEvent
 	for handle := range q.submissions {
-		handle.abandon()
+		if handle.abandon() {
+			events = append(events, q.abandonEvent(handle.Meta(), ErrJobAbandoned))
+		}
 		delete(q.submissions, handle)
 	}
+	return events
 }
 
 // unmarkWorkerIdle records a worker leaving idle state.

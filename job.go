@@ -8,20 +8,21 @@ import (
 type JobState int
 
 const (
-	JobStateCreated JobState = iota
-	JobStatePending
-	JobStateActive
-	JobStateFailed
-	JobStateCancelled
-	JobStateCompleted
-	JobStateDiscarded
+	JobStateCreated   JobState = iota // Accepted by the queue.
+	JobStatePending                   // Waiting for a worker.
+	JobStateActive                    // Executing on a worker.
+	JobStateFailed                    // Execution returned an error.
+	JobStateCancelled                 // Cancelled through its handle.
+	JobStateCompleted                 // Execution returned no error.
+	JobStateDiscarded                 // Execution ended as a discarded outcome.
+	JobStateAbandoned                 // Shutdown ended it before it ever started... no tally.
 )
 
 // String implements fmt.Stringer.
 func (js JobState) String() string {
-	return [7]string{
+	return [8]string{
 		"created", "pending", "active", "failed",
-		"cancelled", "completed", "discarded",
+		"cancelled", "completed", "discarded", "abandoned",
 	}[js]
 }
 
