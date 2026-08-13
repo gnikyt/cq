@@ -157,3 +157,40 @@ func BenchmarkSingleSteadyState(b *testing.B) {
 		wg.Wait()
 	}
 }
+
+// BenchmarkSingleSteadyStateWithHooks measures the hook dispatch path, where
+// each event copies the job's attributes before reaching a callback.
+func BenchmarkSingleSteadyStateWithHooks(b *testing.B) {
+	hooks := Hooks{
+		OnEnqueue: func(_ context.Context, _ JobEvent) {},
+		OnStart:   func(_ context.Context, _ JobEvent) {},
+		OnSuccess: func(_ context.Context, _ JobEvent) {},
+	}
+	q := NewQueue(benchmarkWorkersMin, benchmarkWorkersMax, benchmarkQueueCap, WithHooks(hooks))
+	q.Start()
+	b.Cleanup(func() {
+		q.Stop(true)
+	})
+
+	attributes := map[string]string{
+		"tenant":  "acme",
+		"region":  "us-east-1",
+		"trace":   "0af7651916cd43dd8448eb211c80319c",
+		"payload": `{"user_id":42,"template":"welcome","locale":"en-CA"}`,
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		tf := Job(func(ctx context.Context) error {
+			rand.Float64()
+			wg.Done()
+			return nil
+		})
+
+		_, _ = q.Submit(context.Background(), tf, WithJobAttributes(attributes))
+		wg.Wait()
+	}
+}

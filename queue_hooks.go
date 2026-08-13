@@ -59,6 +59,8 @@ type Hooks struct {
 }
 
 // eventFromMeta creates a JobEvent from the given metadata, state, and error.
+// Attributes are carried by reference from the queue-owned metadata... emitHook
+// clones them per callback, so no hook ever sees a shared map.
 func eventFromMeta(
 	meta JobMeta,
 	queueName string,
@@ -71,7 +73,7 @@ func eventFromMeta(
 		ID:         meta.ID,
 		Name:       meta.Name,
 		QueueName:  queueName,
-		Attributes: cloneStringMap(meta.Attributes),
+		Attributes: meta.Attributes,
 		EnqueuedAt: meta.EnqueuedAt,
 		StartedAt:  startedAt,
 		FinishedAt: finishedAt,
