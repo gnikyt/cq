@@ -1104,7 +1104,7 @@ together.
 tag.
 
 ```go
-registry := cq.NewJobRegistry()
+registry := cq.NewJobTagRegistry()
 job := cq.WithTagged(actualJob, registry, "user:123", "export")
 _, _ = queue.Submit(context.Background(), job)
 

@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-func TestJobRegistry(t *testing.T) {
+func TestJobTagRegistry(t *testing.T) {
 	t.Run("basic_operations", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		// Create cancel functions.
 		_, cancel1 := context.WithCancel(context.Background())
@@ -40,7 +40,7 @@ func TestJobRegistry(t *testing.T) {
 	})
 
 	t.Run("cancel_by_tag", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		ctx1, cancel1 := context.WithCancel(context.Background())
 		ctx2, cancel2 := context.WithCancel(context.Background())
@@ -73,7 +73,7 @@ func TestJobRegistry(t *testing.T) {
 	})
 
 	t.Run("cancel_all", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		ctx1, cancel1 := context.WithCancel(context.Background())
 		_, cancel2 := context.WithCancel(context.Background())
@@ -98,7 +98,7 @@ func TestJobRegistry(t *testing.T) {
 	})
 
 	t.Run("tags_list", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		_, cancel1 := context.WithCancel(context.Background())
 		_, cancel2 := context.WithCancel(context.Background())
@@ -115,7 +115,7 @@ func TestJobRegistry(t *testing.T) {
 	})
 
 	t.Run("next_id", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		id1 := registry.NextID()
 		id2 := registry.NextID()
@@ -128,7 +128,7 @@ func TestJobRegistry(t *testing.T) {
 
 func TestWithTagged(t *testing.T) {
 	t.Run("job_executes", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 		var executed bool
 
 		job := WithTagged(func(ctx context.Context) error {
@@ -151,7 +151,7 @@ func TestWithTagged(t *testing.T) {
 	})
 
 	t.Run("cancel_by_tag", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 		started := make(chan bool)
 		cancelled := make(chan bool)
 
@@ -180,7 +180,7 @@ func TestWithTagged(t *testing.T) {
 	})
 
 	t.Run("multiple_tags", func(t *testing.T) {
-		registry := NewJobRegistry()
+		registry := NewJobTagRegistry()
 
 		job := WithTagged(func(ctx context.Context) error {
 			time.Sleep(10 * time.Millisecond)

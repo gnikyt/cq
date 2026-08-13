@@ -7,24 +7,24 @@ import (
 	"sync/atomic"
 )
 
-// JobRegistry tracks jobs by tag for cancellation and observability.
+// JobTagRegistry tracks jobs by tag for cancellation and observability.
 // Jobs can be registered under multiple tags and cancelled by any of them.
-type JobRegistry struct {
+type JobTagRegistry struct {
 	jobs   map[string]map[string]context.CancelFunc // tag -> jobID -> cancelFunc.
 	mut    sync.RWMutex                             // Mutex for protecting the jobs map.
 	nextID atomic.Int64                             // Atomic counter for generating unique job IDs.
 }
 
-// NewJobRegistry creates a new JobRegistry for tracking tagged jobs.
-func NewJobRegistry() *JobRegistry {
-	return &JobRegistry{
+// NewJobTagRegistry creates a new JobTagRegistry for tracking tagged jobs.
+func NewJobTagRegistry() *JobTagRegistry {
+	return &JobTagRegistry{
 		jobs: make(map[string]map[string]context.CancelFunc),
 	}
 }
 
 // Register adds a job to the registry under the given tags.
 // jobID uniquely identifies the job and cancelCtx is used to cancel it.
-func (jr *JobRegistry) Register(jobID string, tags []string, cancelCtx context.CancelFunc) {
+func (jr *JobTagRegistry) Register(jobID string, tags []string, cancelCtx context.CancelFunc) {
 	jr.mut.Lock()
 	defer jr.mut.Unlock()
 
@@ -38,7 +38,7 @@ func (jr *JobRegistry) Register(jobID string, tags []string, cancelCtx context.C
 
 // Unregister removes a job from all provided tags.
 // Call this when a job completes or fails.
-func (jr *JobRegistry) Unregister(jobID string, tags []string) {
+func (jr *JobTagRegistry) Unregister(jobID string, tags []string) {
 	jr.mut.Lock()
 	defer jr.mut.Unlock()
 
@@ -55,7 +55,7 @@ func (jr *JobRegistry) Unregister(jobID string, tags []string) {
 
 // CancelForTag cancels all jobs for the given tag.
 // Returns the number of jobs that were cancelled.
-func (jr *JobRegistry) CancelForTag(tag string) int {
+func (jr *JobTagRegistry) CancelForTag(tag string) int {
 	jr.mut.Lock()
 	defer jr.mut.Unlock()
 
@@ -72,7 +72,7 @@ func (jr *JobRegistry) CancelForTag(tag string) int {
 
 // CancelAll cancels all registered jobs.
 // Returns the number of jobs that were cancelled.
-func (jr *JobRegistry) CancelAll() int {
+func (jr *JobTagRegistry) CancelAll() int {
 	jr.mut.Lock()
 	defer jr.mut.Unlock()
 
@@ -88,7 +88,7 @@ func (jr *JobRegistry) CancelAll() int {
 }
 
 // CountForTag returns the number of jobs currently registered with the given tag.
-func (jr *JobRegistry) CountForTag(tag string) int {
+func (jr *JobTagRegistry) CountForTag(tag string) int {
 	jr.mut.RLock()
 	defer jr.mut.RUnlock()
 
@@ -99,7 +99,7 @@ func (jr *JobRegistry) CountForTag(tag string) int {
 }
 
 // Tags returns all currently registered tag names.
-func (jr *JobRegistry) Tags() []string {
+func (jr *JobTagRegistry) Tags() []string {
 	jr.mut.RLock()
 	defer jr.mut.RUnlock()
 
@@ -111,7 +111,7 @@ func (jr *JobRegistry) Tags() []string {
 }
 
 // NextID generates a unique job ID.
-func (jr *JobRegistry) NextID() string {
+func (jr *JobTagRegistry) NextID() string {
 	id := jr.nextID.Add(1)
 	return fmt.Sprintf("job-%d", id)
 }
