@@ -43,6 +43,13 @@ func (r JobResult) Duration() time.Duration {
 	return r.FinishedAt.Sub(r.StartedAt)
 }
 
+// Submission describes one accepted job that has not reached a terminal state.
+// It is what Queue.Submissions reports.
+type Submission struct {
+	Meta  JobMeta  // Identity of the submitted job.
+	State JobState // JobStatePending while waiting, JobStateActive once started.
+}
+
 // JobHandle tracks one accepted queue submission.
 type JobHandle struct {
 	meta JobMeta
@@ -82,6 +89,23 @@ func (h *JobHandle) Meta() JobMeta {
 // Done returns a channel closed when the submission reaches a terminal state.
 func (h *JobHandle) Done() <-chan struct{} {
 	return h.done
+}
+
+// observedState maps the handle's internal state onto a JobState for
+// observability. ok is false once the submission is terminal, which callers
+// reporting in-flight work should skip... a finished handle stays tracked
+// briefly until its untrack runs.
+func (h *JobHandle) observedState() (state JobState, ok bool) {
+	switch h.state.Load() {
+	case submissionPending:
+		return JobStatePending, true
+	case submissionRunning, submissionCompleting:
+		// Completing has started and is writing its outcome... Done is not
+		// closed and Result is not readable yet, so it is still in flight.
+		return JobStateActive, true
+	default:
+		return JobStateCompleted, false
+	}
 }
 
 // Cancel prevents pending execution or requests cancellation of a running job.

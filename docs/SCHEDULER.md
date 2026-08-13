@@ -59,7 +59,29 @@ scheduler.Has("cleanup")
 scheduler.Remove("cleanup")
 scheduler.List()
 scheduler.Count()
+scheduler.Describe()
 ```
+
+`Describe` is `List` with detail, sorted by ID. Each `cq.ScheduleInfo` reports
+what drives the schedule (`Kind` of `interval`, `schedule`, or `once`, with
+`Interval` or `RunAt` set to match), when it next expects to fire
+(`NextFireAt`), how many submission attempts it has made (`Submissions`), and
+the rejection from the latest attempt (`LastErr`, nil when it was accepted).
+
+```go
+for _, info := range scheduler.Describe() {
+	log.Printf("%s (%s) fires next at %s after %d attempts",
+		info.ID, info.Kind, info.NextFireAt.Format(time.Kitchen), info.Submissions)
+}
+
+// cleanup (interval) fires next at 3:15PM after 12 attempts
+// nightly-report (schedule) fires next at 3:00AM after 0 attempts
+// warmup (once) fires next at 9:36AM after 0 attempts
+```
+
+`NextFireAt` is zero until the schedule's goroutine begins waiting, and is a
+snapshot rather than a guarantee: a schedule removed or stopped before that
+time never fires.
 
 ## Scheduler Hooks
 

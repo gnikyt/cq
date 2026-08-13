@@ -4,9 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+// ScheduleKind describes what drives a schedule's fire times.
+type ScheduleKind string
+
+const (
+	ScheduleKindInterval ScheduleKind = "interval" // Fixed interval from Every.
+	ScheduleKindSchedule ScheduleKind = "schedule" // Schedule implementation from On.
+	ScheduleKindOnce     ScheduleKind = "once"     // Single fire from At.
 )
 
 // Scheduler errors.
@@ -134,6 +144,38 @@ type scheduledJob struct {
 	ctx      context.Context    // Per-schedule lifecycle context.
 	cancel   context.CancelFunc // Cancels this schedule only.
 	handle   *ScheduleHandle    // Public schedule lifecycle handle.
+
+	nextAt atomic.Int64 // Next expected fire as unix nanos... zero when unknown.
+}
+
+// setNextAt records when this schedule expects to fire next.
+func (sj *scheduledJob) setNextAt(tt time.Time) {
+	if tt.IsZero() {
+		sj.nextAt.Store(0)
+		return
+	}
+	sj.nextAt.Store(tt.UnixNano())
+}
+
+// nextFireAt returns the recorded next fire time, zero when unknown.
+func (sj *scheduledJob) nextFireAt() time.Time {
+	nanos := sj.nextAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
+// ScheduleInfo is a snapshot of one registered schedule.
+type ScheduleInfo struct {
+	ID       string        // Schedule identifier.
+	Kind     ScheduleKind  // What drives the fire times.
+	Interval time.Duration // Recurring interval, zero unless Kind is interval.
+	RunAt    time.Time     // One-time fire time, zero unless Kind is once.
+
+	NextFireAt  time.Time // Next expected fire, zero before the first wait begins.
+	Submissions uint64    // Submission attempts made so far.
+	LastErr     error     // Rejection from the latest attempt, nil when it was accepted.
 }
 
 // NewScheduler creates a Scheduler that submits jobs into queue.
@@ -251,6 +293,46 @@ func (s *Scheduler) List() []string {
 	return ids
 }
 
+// Describe returns a snapshot of every registered schedule, sorted by ID.
+// It is List with the detail an operator or dashboard needs: what drives each
+// schedule, when it fires next, and how its latest submission went.
+func (s *Scheduler) Describe() []ScheduleInfo {
+	s.mu.RLock()
+	infos := make([]ScheduleInfo, 0, len(s.jobs))
+	for id, sj := range s.jobs {
+		info := ScheduleInfo{
+			ID:          id,
+			Kind:        sj.kind(),
+			Interval:    sj.interval,
+			RunAt:       sj.runAt,
+			NextFireAt:  sj.nextFireAt(),
+			Submissions: sj.handle.SubmissionAttempts(),
+		}
+		if _, err, attempted := sj.handle.Latest(); attempted {
+			info.LastErr = err
+		}
+		infos = append(infos, info)
+	}
+	s.mu.RUnlock()
+
+	sort.Slice(infos, func(i int, j int) bool {
+		return infos[i].ID < infos[j].ID
+	})
+	return infos
+}
+
+// kind reports what drives this schedule's fire times.
+func (sj *scheduledJob) kind() ScheduleKind {
+	switch {
+	case sj.schedule != nil:
+		return ScheduleKindSchedule
+	case sj.interval > 0:
+		return ScheduleKindInterval
+	default:
+		return ScheduleKindOnce
+	}
+}
+
 // add registers and starts one schedule.
 func (s *Scheduler) add(id string, job Job, interval time.Duration, at time.Time, schedule Schedule, opts []SubmitOption) (*ScheduleHandle, error) {
 	s.mu.Lock()
@@ -351,12 +433,14 @@ func (s *Scheduler) runRecurring(sj *scheduledJob) {
 
 	ticker := time.NewTicker(sj.interval)
 	defer ticker.Stop()
+	sj.setNextAt(time.Now().Add(sj.interval))
 	for {
 		select {
 		case <-sj.ctx.Done():
 			return
 		case <-ticker.C:
 			s.submit(sj)
+			sj.setNextAt(time.Now().Add(sj.interval))
 		}
 	}
 }
@@ -374,6 +458,7 @@ func (s *Scheduler) runSchedule(sj *scheduledJob) {
 			return // No future fire time... schedule is complete.
 		}
 
+		sj.setNextAt(next)
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-sj.ctx.Done():
@@ -390,6 +475,7 @@ func (s *Scheduler) runOnce(sj *scheduledJob) {
 	defer s.wg.Done()
 	defer s.removeCompleted(sj)
 
+	sj.setNextAt(sj.runAt)
 	timer := time.NewTimer(time.Until(sj.runAt))
 	defer timer.Stop()
 

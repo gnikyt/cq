@@ -374,6 +374,7 @@ queue.IdleWorkers()              // Current idle workers.
 queue.Capacity()                 // Job channel capacity.
 queue.WorkerRange()              // (min, max) workers.
 queue.Stats()                    // Single-call queue snapshot.
+queue.Submissions()              // Accepted jobs not yet terminal.
 queue.SetWorkerRange(2, 20)      // Update (min, max) at runtime.
 queue.TallyOf(cq.JobStateFailed) // Count by state.
 
@@ -393,6 +394,24 @@ queue.TallyOf(cq.JobStateFailed) // Count by state.
 (`CreatedJobs`, `PendingJobs`, `ActiveJobs`, `FailedJobs`, `DiscardedJobs`,
 `CancelledJobs`, `CompletedJobs`, `RescheduledJobs`, `ReleasedJobs`) in one
 snapshot call.
+
+`queue.Submissions()` lists the jobs behind those tallies: every accepted
+submission that has not reached a terminal state, oldest enqueue first. Each
+`cq.Submission` carries the job's `Meta` and a `State` of `cq.JobStatePending`
+while it waits or `cq.JobStateActive` once a worker has started it. Tallies
+answer "how many", this answers "which ones". Jobs sharing an enqueue timestamp
+fall back to ID order, which only reads chronologically for ordered ID schemes
+such as the default counter.
+
+```go
+for _, submission := range queue.Submissions() {
+	log.Printf("%s (%s) is %s", submission.Meta.ID, submission.Meta.Name, submission.State)
+}
+
+// 41 (import-rows) is active
+// 42 (import-rows) is pending
+// 43 (send-email) is pending
+```
 
 ### Runtime Scaling
 

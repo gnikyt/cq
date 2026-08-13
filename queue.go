@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -527,6 +528,38 @@ func (q *Queue) RunningWorkers() int {
 // IdleWorkers atomically returns the number of idle workers.
 func (q *Queue) IdleWorkers() int {
 	return int(q.workersIdleTally.Load())
+}
+
+// Submissions returns a snapshot of accepted jobs that have not reached a
+// terminal state, oldest enqueue first. State is JobStatePending for jobs
+// still waiting and JobStateActive for jobs a worker has started. Jobs that
+// finished but are not untracked yet are omitted.
+//
+// Jobs sharing an enqueue timestamp are ordered by ID, which is only
+// meaningful for ordered ID schemes such as the default counter. Ordering
+// within such a tie is arbitrary but stable for random IDs.
+//
+// It is a snapshot for observability, not a live view... entries may be
+// terminal by the time the caller reads them.
+func (q *Queue) Submissions() []Submission {
+	q.submissionsMut.Lock()
+	submissions := make([]Submission, 0, len(q.submissions))
+	for handle := range q.submissions {
+		state, ok := handle.observedState()
+		if !ok {
+			continue // Terminal, awaiting untrack.
+		}
+		submissions = append(submissions, Submission{Meta: handle.Meta(), State: state})
+	}
+	q.submissionsMut.Unlock()
+
+	sort.Slice(submissions, func(i int, j int) bool {
+		if submissions[i].Meta.EnqueuedAt.Equal(submissions[j].Meta.EnqueuedAt) {
+			return submissions[i].Meta.ID < submissions[j].Meta.ID
+		}
+		return submissions[i].Meta.EnqueuedAt.Before(submissions[j].Meta.EnqueuedAt)
+	})
+	return submissions
 }
 
 // Stats returns a snapshot of queue state, worker counts, and job tallies.
