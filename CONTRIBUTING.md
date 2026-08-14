@@ -67,7 +67,6 @@ go test -bench=. -benchmem
 .
 ├── README.md           # Main documentation
 ├── docs/               # Detailed guides
-├── example/            # Example applications
 ├── *.go               # Core implementation
 ├── *_test.go          # Tests
 └── Makefile           # Build commands

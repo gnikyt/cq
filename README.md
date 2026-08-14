@@ -572,18 +572,17 @@ BenchmarkSingleSteadyState-10                        1000000       1369 ns/op
 	983 B/op	      13 allocs/op
 ```
 
-## Demo
+## Dashboard & Demo
 
-*Note:* The demo is old and intentionally basic.
+There is a [cq-dashboard](https://github.com/gnikyt/cq-dashboard) project. It is a separate, optional module that records cq's lifecycle hooks to a database and serves them as a web UI: job history with per-attempt retry detail, reschedule and release lineage, live worker and buffer stats, schedules, and a grouped failures view. It has its own go.mod, so cq's core stays dependency-free whether or not you use it. Hooks hand events to a buffered writer and never block a worker.
 
-```bash
-go run example/web_direct.go
-```
+Below is an example of running the dashboard in demo mode: `go run ./cmd/demo -addr :8080`.
 
-```bash
-for i in {1..500}; do
-  curl -s -X POST localhost:8080/order -d '{"demo":"yes"}' -H "Content-Type: application/json"
-done
-```
+![Overview page showing queue stats, throughput, in-flight jobs, and schedules](docs/images/dashboard-overview.png)
+*Overview: live queue stats, throughput, in-flight jobs, and schedules.*
 
-![](example/example.gif)
+![Jobs page listing every execution with state, timing, and attempt counts](docs/images/dashboard-jobs.png)
+*Jobs: every execution recorded, filterable by queue, attribute, and state.*
+
+![Job detail page showing submission timings, attributes, attempts, and lineage](docs/images/dashboard-job-detail.png)
+*Job detail: per-attempt results, errors, and the reschedule/release lineage chain.*
