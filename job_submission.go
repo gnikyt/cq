@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -307,4 +308,16 @@ func cloneStringMap(values map[string]string) map[string]string {
 	cloned := make(map[string]string, len(values))
 	maps.Copy(cloned, values)
 	return cloned
+}
+
+// sortSubmissions orders submissions by enqueue time, oldest first, breaking
+// ties by job ID. Tie ordering is only meaningful for ordered ID schemes such
+// as the default counter, but stays stable for random IDs.
+func sortSubmissions(submissions []Submission) {
+	sort.Slice(submissions, func(i int, j int) bool {
+		if submissions[i].Meta.EnqueuedAt.Equal(submissions[j].Meta.EnqueuedAt) {
+			return submissions[i].Meta.ID < submissions[j].Meta.ID
+		}
+		return submissions[i].Meta.EnqueuedAt.Before(submissions[j].Meta.EnqueuedAt)
+	})
 }

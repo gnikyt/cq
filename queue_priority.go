@@ -86,10 +86,11 @@ type PriorityQueue struct {
 	ctxCancel context.CancelFunc // Cancels lifecycle context.
 	stopped   atomic.Bool        // Indicates priority queue shutdown has started.
 
-	wg             sync.WaitGroup          // Waits for dispatcher shutdown.
-	acceptMut      sync.RWMutex            // Synchronizes acceptance with Stop.
-	submissionsMut sync.Mutex              // Guards unresolved priority submissions.
-	submissions    map[*JobHandle]struct{} // Submissions not yet forwarded or terminal.
+	wg                 sync.WaitGroup                    // Waits for dispatcher shutdown.
+	acceptMut          sync.RWMutex                      // Synchronizes acceptance with Stop.
+	submissionsMut     sync.Mutex                        // Guards unresolved priority submissions.
+	submissions        map[*JobHandle]struct{}           // Submissions not yet forwarded or terminal.
+	delayedSubmissions map[*JobHandle]prioritySubmission // Delayed submissions awaiting their timer, for StopDrain handback.
 }
 
 // NewPriorityQueue creates a PriorityQueue around an existing Queue.
@@ -115,9 +116,10 @@ func NewPriorityQueue(queue *Queue, capacity int, opts ...PriorityQueueOption) *
 			low:     defaultWeightLow,
 			lowest:  defaultWeightLowest,
 		},
-		ctx:         ctx,
-		ctxCancel:   cancel,
-		submissions: make(map[*JobHandle]struct{}),
+		ctx:                ctx,
+		ctxCancel:          cancel,
+		submissions:        make(map[*JobHandle]struct{}),
+		delayedSubmissions: make(map[*JobHandle]prioritySubmission),
 	}
 	for _, opt := range opts {
 		opt(pq)
@@ -217,6 +219,7 @@ func (pq *PriorityQueue) SubmitAfter(ctx context.Context, job Job, priority Prio
 	handle := newJobHandle(meta)
 	submission := prioritySubmission{job: job, meta: meta, handle: handle}
 	pq.trackSubmission(handle)
+	pq.trackDelayed(submission)
 	pq.acceptMut.RUnlock()
 	if delay < 0 {
 		delay = 0
@@ -224,6 +227,9 @@ func (pq *PriorityQueue) SubmitAfter(ctx context.Context, job Job, priority Prio
 	timer := time.NewTimer(delay)
 	go func() {
 		defer timer.Stop()
+		// Once the timer resolves the submission is no longer "delayed": it has
+		// either entered a buffer or been rejected/handed back.
+		defer pq.untrackDelayed(handle)
 		select {
 		case <-pq.ctx.Done():
 			if handle.rejectPending(ErrPriorityQueueStopped) {
@@ -274,6 +280,30 @@ func (pq *PriorityQueue) PendingByPriority() map[Priority]int {
 		PriorityLow:     len(pq.low),
 		PriorityLowest:  len(pq.lowest),
 	}
+}
+
+// Submissions returns a snapshot of jobs still held in the priority buffers,
+// oldest enqueue first. Once a job is forwarded to the base queue it leaves
+// this set and appears in the base queue's Submissions instead, so combine
+// both for a full picture (deduplicating by Meta.ID during the brief forward
+// window). Buffered jobs report JobStatePending.
+//
+// It is a snapshot for observability, not a live view... entries may be
+// forwarded or terminal by the time the caller reads them.
+func (pq *PriorityQueue) Submissions() []Submission {
+	pq.submissionsMut.Lock()
+	submissions := make([]Submission, 0, len(pq.submissions))
+	for handle := range pq.submissions {
+		state, ok := handle.observedState()
+		if !ok {
+			continue // Terminal, awaiting untrack.
+		}
+		submissions = append(submissions, Submission{Meta: handle.Meta(), State: state})
+	}
+	pq.submissionsMut.Unlock()
+
+	sortSubmissions(submissions)
+	return submissions
 }
 
 // dispatcher periodically forwards jobs from priority buffers to base queue
@@ -420,10 +450,117 @@ func (pq *PriorityQueue) Drain() int {
 	return drained
 }
 
+// StopDrain stops the priority queue and its base queue, handing back jobs
+// that never started so callers can persist or re-route them. Priority-buffered
+// jobs, delayed submissions, and the base queue's unstarted jobs come back as
+// DrainedJob values whose handles resolve with ErrQueueDrained. In-flight jobs
+// finish bounded by ctx, and each handed-back job emits an OnAbandon hook event.
+//
+// It is the priority-queue counterpart of Queue.StopDrain. Unlike Stop it
+// always stops the base queue, since forwarded-but-unstarted jobs can only be
+// handed back by draining it.
+func (pq *PriorityQueue) StopDrain(ctx context.Context) ([]DrainedJob, error) {
+	// Deferred LIFO: acceptMut unlocks first, then abandon hooks run unlocked.
+	var events []JobEvent
+	defer func() { pq.queue.dispatchAbandoned(events) }()
+
+	pq.acceptMut.Lock()
+	defer pq.acceptMut.Unlock()
+
+	if pq.stopped.Load() {
+		return nil, ErrPriorityQueueStopped
+	}
+	pq.stopped.Store(true)
+
+	// Hand back delayed submissions first, while the lifecycle context is still
+	// alive... cancelling it first would race their timer goroutines into the
+	// ErrPriorityQueueStopped rejection path instead of a clean handback.
+	drained, delayedEvents := pq.drainDelayed()
+	events = append(events, delayedEvents...)
+
+	// Stop the dispatcher so it cannot forward while we drain the buffers.
+	// After Wait the priority channels are stable (no concurrent trySubmit).
+	pq.ctxCancel()
+	pq.wg.Wait()
+
+	// Hand back everything still waiting in the priority channels.
+	bufferedDrained, bufferedEvents := pq.drainBuffered()
+	drained = append(drained, bufferedDrained...)
+	events = append(events, bufferedEvents...)
+
+	// Drain the base queue: hands back forwarded-but-unstarted jobs and waits
+	// for in-flight jobs bounded by ctx.
+	baseDrained, err := pq.queue.StopDrain(ctx)
+	drained = append(drained, baseDrained...)
+	return drained, err
+}
+
+// drainDelayed removes and hands back every delayed submission still waiting on
+// its timer, with an abandon event per job. Must be called before cancelling
+// the lifecycle context.
+func (pq *PriorityQueue) drainDelayed() ([]DrainedJob, []JobEvent) {
+	var drained []DrainedJob
+	var events []JobEvent
+	pq.submissionsMut.Lock()
+	for handle, submission := range pq.delayedSubmissions {
+		if handle.rejectPending(ErrQueueDrained) {
+			meta := handle.Meta()
+			drained = append(drained, DrainedJob{Job: submission.job, Meta: meta})
+			events = append(events, pq.queue.abandonEvent(meta, ErrQueueDrained))
+		}
+		delete(pq.delayedSubmissions, handle)
+		delete(pq.submissions, handle)
+	}
+	pq.submissionsMut.Unlock()
+	return drained, events
+}
+
+// drainBuffered removes and hands back every submission still waiting in the
+// priority channels, with an abandon event per job. The caller must have
+// stopped the dispatcher first.
+func (pq *PriorityQueue) drainBuffered() ([]DrainedJob, []JobEvent) {
+	var drained []DrainedJob
+	var events []JobEvent
+	channels := []chan prioritySubmission{pq.highest, pq.high, pq.medium, pq.low, pq.lowest}
+	for _, ch := range channels {
+	drainChannel:
+		for {
+			select {
+			case submission := <-ch:
+				if submission.handle.rejectPending(ErrQueueDrained) {
+					meta := submission.handle.Meta()
+					drained = append(drained, DrainedJob{Job: submission.job, Meta: meta})
+					events = append(events, pq.queue.abandonEvent(meta, ErrQueueDrained))
+				}
+				pq.untrackSubmission(submission.handle)
+			default:
+				break drainChannel
+			}
+		}
+	}
+	return drained, events
+}
+
 // trackSubmission records a submission waiting in a priority buffer or delay.
 func (pq *PriorityQueue) trackSubmission(handle *JobHandle) {
 	pq.submissionsMut.Lock()
 	pq.submissions[handle] = struct{}{}
+	pq.submissionsMut.Unlock()
+}
+
+// trackDelayed records a delayed submission awaiting its timer, so StopDrain
+// can hand it back before it reaches a priority buffer.
+func (pq *PriorityQueue) trackDelayed(submission prioritySubmission) {
+	pq.submissionsMut.Lock()
+	pq.delayedSubmissions[submission.handle] = submission
+	pq.submissionsMut.Unlock()
+}
+
+// untrackDelayed removes a delayed submission once its timer resolves (it has
+// entered a buffer, been handed back, or been rejected).
+func (pq *PriorityQueue) untrackDelayed(handle *JobHandle) {
+	pq.submissionsMut.Lock()
+	delete(pq.delayedSubmissions, handle)
 	pq.submissionsMut.Unlock()
 }
 

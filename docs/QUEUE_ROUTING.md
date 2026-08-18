@@ -30,6 +30,19 @@ _, _ = mgr.SubmitAfter(context.Background(), "low", bulkJob, 30*time.Second)
   bulk work).
 - Manage queue lifecycle from one place (`StartAll`, `StopAll`, `Names`).
 
+## Inspecting Across Queues
+
+`QueueManager.Submissions()` returns a `map[string][]cq.Submission` keyed by
+queue name... a fleet-wide snapshot of pending and active jobs. Each queue's
+slice matches what its own `Queue.Submissions()` reports; a queue with no live
+submissions maps to an empty slice.
+
+```go
+for name, subs := range mgr.Submissions() {
+	log.Printf("%s: %d in flight", name, len(subs))
+}
+```
+
 ## Notes
 
 - `QueueManager` is orchestration-only... each queue still keeps its own

@@ -126,3 +126,116 @@ func TestSubmissionsEmptyForIdleQueue(t *testing.T) {
 		t.Errorf("Submissions(): got %d, want 0", len(submissions))
 	}
 }
+
+func TestPriorityQueueSubmissions(t *testing.T) {
+	pq, base := newStalledPriorityQueue(t)
+	defer pq.Stop(true)
+	defer base.Stop(false)
+
+	mustPrioritySubmit(t, pq, func(ctx context.Context) error { return nil }, PriorityHigh, WithJobName("a"))
+	mustPrioritySubmit(t, pq, func(ctx context.Context) error { return nil }, PriorityLow, WithJobName("b"))
+
+	subs := pq.Submissions()
+	if len(subs) != 2 {
+		t.Fatalf("Submissions(): got %d, want 2", len(subs))
+	}
+	for _, s := range subs {
+		if s.State != JobStatePending {
+			t.Errorf("Submissions(): got state %v, want pending", s.State)
+		}
+		if s.Meta.ID == "" || (s.Meta.Name != "a" && s.Meta.Name != "b") {
+			t.Errorf("Submissions(): unexpected meta %+v", s.Meta)
+		}
+	}
+}
+
+func TestPriorityQueueSubmissionsEmpty(t *testing.T) {
+	pq, base := newStalledPriorityQueue(t)
+	defer pq.Stop(true)
+	defer base.Stop(false)
+
+	if got := pq.Submissions(); len(got) != 0 {
+		t.Fatalf("Submissions(): got %d, want 0", len(got))
+	}
+}
+
+func TestQueueManagerSubmissions(t *testing.T) {
+	fast := NewQueue(0, 0, 16) // No workers... submissions stay pending.
+	fast.Start()
+	slow := NewQueue(0, 0, 16)
+	slow.Start()
+
+	mgr := NewQueueManager()
+	if err := mgr.Register("fast", fast); err != nil {
+		t.Fatalf("Register(fast): %v", err)
+	}
+	if err := mgr.Register("slow", slow); err != nil {
+		t.Fatalf("Register(slow): %v", err)
+	}
+	defer mgr.StopAll(false)
+
+	mustSubmit(t, fast, func(ctx context.Context) error { return nil })
+	mustSubmit(t, slow, func(ctx context.Context) error { return nil })
+	mustSubmit(t, slow, func(ctx context.Context) error { return nil })
+
+	all := mgr.Submissions()
+	if len(all) != 2 {
+		t.Fatalf("Submissions(): got %d queues, want 2", len(all))
+	}
+	if got := len(all["fast"]); got != 1 {
+		t.Errorf("Submissions()[fast]: got %d, want 1", got)
+	}
+	if got := len(all["slow"]); got != 2 {
+		t.Errorf("Submissions()[slow]: got %d, want 2", got)
+	}
+}
+
+func TestQueueManagerSubmissionsEmptyQueueMapsToEmptySlice(t *testing.T) {
+	idle := NewQueue(1, 1, 16)
+	idle.Start()
+	mgr := NewQueueManager()
+	if err := mgr.Register("idle", idle); err != nil {
+		t.Fatalf("Register(idle): %v", err)
+	}
+	defer mgr.StopAll(false)
+
+	all := mgr.Submissions()
+	got, ok := all["idle"]
+	if !ok {
+		t.Fatal("Submissions(): idle queue missing from map")
+	}
+	if len(got) != 0 {
+		t.Errorf("Submissions()[idle]: got %d, want 0", len(got))
+	}
+}
+
+func TestPriorityQueueManagerSubmissions(t *testing.T) {
+	pqa, basea := newStalledPriorityQueue(t)
+	pqb, baseb := newStalledPriorityQueue(t)
+	defer basea.Stop(false)
+	defer baseb.Stop(false)
+
+	mgr := NewPriorityQueueManager()
+	if err := mgr.Register("a", pqa); err != nil {
+		t.Fatalf("Register(a): %v", err)
+	}
+	if err := mgr.Register("b", pqb); err != nil {
+		t.Fatalf("Register(b): %v", err)
+	}
+	defer mgr.StopAll(false)
+
+	mustPrioritySubmit(t, pqa, func(ctx context.Context) error { return nil }, PriorityHigh)
+	mustPrioritySubmit(t, pqb, func(ctx context.Context) error { return nil }, PriorityLow)
+	mustPrioritySubmit(t, pqb, func(ctx context.Context) error { return nil }, PriorityMedium)
+
+	all := mgr.Submissions()
+	if len(all) != 2 {
+		t.Fatalf("Submissions(): got %d queues, want 2", len(all))
+	}
+	if got := len(all["a"]); got != 1 {
+		t.Errorf("Submissions()[a]: got %d, want 1", got)
+	}
+	if got := len(all["b"]); got != 2 {
+		t.Errorf("Submissions()[b]: got %d, want 2", got)
+	}
+}

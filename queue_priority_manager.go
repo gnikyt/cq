@@ -57,6 +57,26 @@ func (m *PriorityQueueManager) ByName(name string) (*PriorityQueue, bool) {
 	return q, ok
 }
 
+// Submissions returns a snapshot of the buffered submissions for every managed
+// priority queue, keyed by queue name. Each slice matches what that queue's
+// PriorityQueue.Submissions reports (jobs still held in its priority buffers);
+// once forwarded they appear in the base queue's Submissions instead. It is a
+// snapshot for observability, not a live view.
+func (m *PriorityQueueManager) Submissions() map[string][]Submission {
+	m.mu.RLock()
+	queues := make(map[string]*PriorityQueue, len(m.queues))
+	for name, q := range m.queues {
+		queues[name] = q
+	}
+	m.mu.RUnlock()
+
+	out := make(map[string][]Submission, len(queues))
+	for name, q := range queues {
+		out[name] = q.Submissions()
+	}
+	return out
+}
+
 // Names returns registered queue names, sorted alphabetically.
 func (m *PriorityQueueManager) Names() []string {
 	m.mu.RLock()

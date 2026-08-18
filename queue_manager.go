@@ -57,6 +57,25 @@ func (m *QueueManager) ByName(name string) (*Queue, bool) {
 	return q, ok
 }
 
+// Submissions returns a snapshot of the pending and active submissions for
+// every managed queue, keyed by queue name. Each queue's slice is ordered as
+// Queue.Submissions returns it; queues with no live submissions map to an
+// empty slice. It is a snapshot for observability, not a live view.
+func (m *QueueManager) Submissions() map[string][]Submission {
+	m.mu.RLock()
+	queues := make(map[string]*Queue, len(m.queues))
+	for name, q := range m.queues {
+		queues[name] = q
+	}
+	m.mu.RUnlock()
+
+	out := make(map[string][]Submission, len(queues))
+	for name, q := range queues {
+		out[name] = q.Submissions()
+	}
+	return out
+}
+
 // Names returns registered queue names, sorted alphabetically.
 func (m *QueueManager) Names() []string {
 	m.mu.RLock()

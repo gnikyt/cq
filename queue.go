@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -553,12 +552,7 @@ func (q *Queue) Submissions() []Submission {
 	}
 	q.submissionsMut.Unlock()
 
-	sort.Slice(submissions, func(i int, j int) bool {
-		if submissions[i].Meta.EnqueuedAt.Equal(submissions[j].Meta.EnqueuedAt) {
-			return submissions[i].Meta.ID < submissions[j].Meta.ID
-		}
-		return submissions[i].Meta.EnqueuedAt.Before(submissions[j].Meta.EnqueuedAt)
-	})
+	sortSubmissions(submissions)
 	return submissions
 }
 

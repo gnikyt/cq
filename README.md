@@ -413,6 +413,11 @@ for _, submission := range queue.Submissions() {
 // 43 (send-email) is pending
 ```
 
+`PriorityQueue.Submissions()` reports the same for jobs still held in its
+priority buffers (they leave that set once forwarded to the base queue), and
+`QueueManager.Submissions()` returns a `map[string][]cq.Submission` keyed by
+queue name for a fleet-wide view.
+
 ### Runtime Scaling
 
 ```go

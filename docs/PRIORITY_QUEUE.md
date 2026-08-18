@@ -107,13 +107,50 @@ pq := cq.NewPriorityQueue(queue, 50,
 #### Drain Before Stop
 
 **What it does:** Flushes buffered priority jobs into the base queue before
-shutdown.
+shutdown, so they still run.
 
-**When to use:** Graceful shutdown where queued work must be preserved.
+**When to use:** Graceful shutdown where queued work must be preserved and you
+still want it executed.
 
 **Caveat:** Operationally, draining trades job safety for longer shutdown time.
 
 ```go
 drained := pq.Drain()
 pq.Stop(true)
+```
+
+#### StopDrain (Hand Back On Shutdown)
+
+**What it does:** Stops the priority queue and its base queue, handing back
+every job that never started executing... priority-buffered jobs, delayed
+submissions still on their timer, and the base queue's unstarted jobs... as
+`cq.DrainedJob` values. In-flight jobs finish bounded by `ctx`.
+
+**When to use:** Shutdown where unstarted work must *survive* rather than run
+now... persist it and resubmit after restart. It is the priority-queue
+counterpart of `Queue.StopDrain`.
+
+**Caveat:** Handed-back handles resolve with `cq.ErrQueueDrained`, and each
+handed-back job emits an `OnAbandon` hook event through the base queue... just
+like `Queue.StopDrain`. Unlike `Stop`, `StopDrain` always stops the base queue,
+since forwarded-but-unstarted jobs can only be handed back by draining it.
+
+```go
+drained, err := pq.StopDrain(ctx)
+for _, dj := range drained {
+	persistForRestart(dj.Meta, dj.Job)
+}
+```
+
+#### Inspecting Buffered Jobs
+
+`PriorityQueue.Submissions()` returns a snapshot of jobs still held in the
+priority buffers (oldest enqueue first). Once a job is forwarded to the base
+queue it leaves this set and appears in the base queue's `Submissions()`
+instead, so combine both for a complete view.
+
+```go
+for _, s := range pq.Submissions() {
+	log.Printf("buffered: %s (%s)", s.Meta.ID, s.Meta.Name)
+}
 ```
