@@ -54,13 +54,8 @@ func TestQueueHooks_EnqueueStartResult(t *testing.T) {
 	mustSubmit(t, q, func(ctx context.Context) error { return nil })
 	mustSubmit(t, q, func(ctx context.Context) error { return errors.New("boom") })
 
-	waitDeadline := time.After(2 * time.Second)
 	for i := 0; i < 2; i++ {
-		select {
-		case <-done:
-		case <-waitDeadline:
-			t.Fatal("timed out waiting for hook events")
-		}
+		recvOrFail(t, done, 2*time.Second, "timed out waiting for hook events")
 	}
 
 	if got := enqueued.Load(); got != 2 {
@@ -118,11 +113,7 @@ func TestQueueHooks_AttemptHooksForRetryPolicy(t *testing.T) {
 
 	mustSubmit(t, q, job)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for retry job completion")
-	}
+	recvOrFail(t, done, 2*time.Second, "timed out waiting for retry job completion")
 
 	if got := attemptStarts.Load(); got != 3 {
 		t.Fatalf("attempt starts: got %d, want 3", got)
@@ -153,13 +144,9 @@ func TestQueueHooks_DiscardHookAndStats(t *testing.T) {
 		return AsDiscard(errors.New("drop"))
 	}, nil, nil, nil))
 
-	select {
-	case event := <-discards:
-		if event.State != JobStateDiscarded {
-			t.Fatalf("discard event state: got %v, want %v", event.State, JobStateDiscarded)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for discard hook")
+	event := recvOrFail(t, discards, 2*time.Second, "timed out waiting for discard hook")
+	if event.State != JobStateDiscarded {
+		t.Fatalf("discard event state: got %v, want %v", event.State, JobStateDiscarded)
 	}
 
 	stats := q.Stats()
@@ -195,16 +182,9 @@ func TestQueueHooks_RescheduleFromReleaseSelf(t *testing.T) {
 
 	mustSubmit(t, q, job)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if calls.Load() >= 2 && reschedules.Load() >= 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("got calls=%d reschedules=%d, want at least 2 and 1", calls.Load(), reschedules.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitFor(t, 2*time.Second, func() bool {
+		return calls.Load() >= 2 && reschedules.Load() >= 1
+	})
 	stats := q.Stats()
 	if stats.RescheduledJobs < 1 {
 		t.Fatalf("stats rescheduled jobs: got %d, want at least 1", stats.RescheduledJobs)
@@ -264,20 +244,8 @@ func TestQueueHooks_PanicInHookReportedAndJobContinues(t *testing.T) {
 		return nil
 	})
 
-	deadline := time.Now().Add(1 * time.Second)
-	for {
-		if ran.Load() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for job run")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, 1*time.Second, ran.Load)
 
-	if !ran.Load() {
-		t.Fatal("expected job to run despite hook panic")
-	}
 	if panicCalls.Load() == 0 {
 		t.Fatal("expected hook panic to be reported through panic handler")
 	}
@@ -302,14 +270,7 @@ func TestQueueHooks_MultipleWithHooksAppend(t *testing.T) {
 
 	mustSubmit(t, q, func(ctx context.Context) error { return nil })
 
-	deadline := time.Now().Add(1 * time.Second)
-	for {
-		if first.Load() == 1 && second.Load() == 1 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("got first=%d second=%d, want 1 each", first.Load(), second.Load())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, 1*time.Second, func() bool {
+		return first.Load() == 1 && second.Load() == 1
+	})
 }

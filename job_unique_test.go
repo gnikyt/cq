@@ -396,15 +396,7 @@ func TestWithUnique(t *testing.T) {
 			t.Fatalf("WithUnique(): got %v, want nil on release", err)
 		}
 
-		deadline := time.After(200 * time.Millisecond)
-		for calls.Load() < 2 {
-			select {
-			case <-deadline:
-				t.Fatalf("WithUnique(): got %d calls, want released duplicate to run", calls.Load())
-			default:
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
+		waitFor(t, 200*time.Millisecond, func() bool { return calls.Load() >= 2 })
 	})
 
 	t.Run("contention_try_duplicate_returns_unique_contended", func(t *testing.T) {

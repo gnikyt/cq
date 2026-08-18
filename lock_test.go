@@ -116,15 +116,13 @@ func TestMemoryLockerManagementOperations(t *testing.T) {
 	}
 }
 
-func TestLockerCapabilityInterfaces(t *testing.T) {
-	var core Locker[string] = &coreTestLocker{locks: make(map[string]LockValue[string])}
-	var readable ReadLocker[string] = NewMemoryLocker[string]()
-	var renewable RenewableLocker = NewMemoryLocker[string]()
-	var cleanable CleanableLocker = NewMemoryLocker[string]()
-	var forceReleaser ForceReleaser = NewMemoryLocker[string]()
-	var managed ManagedLocker[string] = NewMemoryLocker[string]()
-
-	if core == nil || readable == nil || renewable == nil || cleanable == nil || forceReleaser == nil || managed == nil {
-		t.Fatal("expected capability implementations")
-	}
-}
+// The capability interfaces are satisfied at compile time; these assertions
+// document which types implement them and fail the build if that ever changes.
+var (
+	_ Locker[string]        = (*coreTestLocker)(nil)
+	_ ReadLocker[string]    = (*MemoryLocker[string])(nil)
+	_ RenewableLocker       = (*MemoryLocker[string])(nil)
+	_ CleanableLocker       = (*MemoryLocker[string])(nil)
+	_ ForceReleaser         = (*MemoryLocker[string])(nil)
+	_ ManagedLocker[string] = (*MemoryLocker[string])(nil)
+)

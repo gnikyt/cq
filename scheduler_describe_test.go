@@ -79,18 +79,11 @@ func TestDescribeReportsNextFireTime(t *testing.T) {
 	}
 
 	// The goroutine records its next fire as soon as it starts waiting.
-	var info ScheduleInfo
-	for range 100 {
-		described := s.Describe()
-		if len(described) == 1 && !described[0].NextFireAt.IsZero() {
-			info = described[0]
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if info.NextFireAt.IsZero() {
-		t.Fatal("Describe().NextFireAt: got zero, want the next fire time")
-	}
+	waitFor(t, 500*time.Millisecond, func() bool {
+		d := s.Describe()
+		return len(d) == 1 && !d[0].NextFireAt.IsZero()
+	})
+	info := s.Describe()[0]
 	if !info.NextFireAt.After(before) {
 		t.Errorf("Describe().NextFireAt: got %v, want a time after %v", info.NextFireAt, before)
 	}
@@ -117,42 +110,23 @@ func TestDescribeReportsSubmissionsAndError(t *testing.T) {
 		t.Fatalf("Every(): %v", err)
 	}
 
-	select {
-	case <-fired:
-	case <-time.After(2 * time.Second):
-		t.Fatal("schedule never fired")
-	}
+	recvOrFail(t, fired, 2*time.Second, "schedule never fired")
 
-	var info ScheduleInfo
-	for range 100 {
-		described := s.Describe()
-		if len(described) == 1 && described[0].Submissions > 0 {
-			info = described[0]
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if info.Submissions == 0 {
-		t.Fatal("Describe().Submissions: got 0, want at least 1")
-	}
+	waitFor(t, 500*time.Millisecond, func() bool {
+		d := s.Describe()
+		return len(d) == 1 && d[0].Submissions > 0
+	})
+	info := s.Describe()[0]
 	if info.LastErr != nil {
 		t.Errorf("Describe().LastErr: got %v, want nil while the queue accepts", info.LastErr)
 	}
 
 	// A stopped queue rejects, and the rejection must surface.
 	q.Stop(false)
-	deadline := time.After(2 * time.Second)
-	for {
-		described := s.Describe()
-		if len(described) == 1 && described[0].LastErr != nil {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("Describe().LastErr: got nil, want the rejection from a stopped queue")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	waitFor(t, 2*time.Second, func() bool {
+		d := s.Describe()
+		return len(d) == 1 && d[0].LastErr != nil
+	})
 }
 
 func TestDescribeEmptyScheduler(t *testing.T) {

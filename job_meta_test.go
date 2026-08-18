@@ -80,11 +80,7 @@ func TestJobMetaInQueue(t *testing.T) {
 			return nil
 		})
 
-		select {
-		case <-done:
-		case <-time.After(1 * time.Second):
-			t.Fatal("job did not complete in time")
-		}
+		recvOrFail(t, done, 1*time.Second, "job did not complete in time")
 
 		if receivedMeta.ID == "" {
 			t.Error("JobMeta: ID should not be empty")
@@ -137,13 +133,8 @@ func TestJobMetaInQueue(t *testing.T) {
 			return nil
 		})
 
-		select {
-		case meta := <-done:
-			if meta.ID != "custom-1" {
-				t.Fatalf("JobMeta: got ID=%q, want %q", meta.ID, "custom-1")
-			}
-		case <-time.After(1 * time.Second):
-			t.Fatal("job did not complete in time")
+		if meta := recvOrFail(t, done, 1*time.Second, "job did not complete in time"); meta.ID != "custom-1" {
+			t.Fatalf("JobMeta: got ID=%q, want %q", meta.ID, "custom-1")
 		}
 	})
 
@@ -200,11 +191,7 @@ func TestJobMetaWithRetry(t *testing.T) {
 
 		mustSubmit(t, queue, job)
 
-		select {
-		case <-done:
-		case <-time.After(1 * time.Second):
-			t.Fatal("job did not complete in time")
-		}
+		recvOrFail(t, done, 1*time.Second, "job did not complete in time")
 
 		if lastAttempt.Load() != 2 {
 			t.Errorf("WithRetry(): got final Attempt %d, want 2", lastAttempt.Load())

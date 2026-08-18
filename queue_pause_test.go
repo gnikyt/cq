@@ -64,13 +64,7 @@ func TestQueuePauseResume_Local(t *testing.T) {
 		t.Fatal("IsPaused(): got true, want false")
 	}
 
-	waitDeadline := time.Now().Add(500 * time.Millisecond)
-	for !called.Load() && time.Now().Before(waitDeadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !called.Load() {
-		t.Fatal("job did not execute after resume")
-	}
+	waitFor(t, 500*time.Millisecond, called.Load)
 }
 
 func TestQueuePause_ActiveJobContinues(t *testing.T) {
@@ -89,11 +83,7 @@ func TestQueuePause_ActiveJobContinues(t *testing.T) {
 		return nil
 	})
 
-	select {
-	case <-started:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("job never started")
-	}
+	recvOrFail(t, started, 500*time.Millisecond, "job never started")
 
 	if err := q.Pause(); err != nil {
 		t.Fatalf("Pause(): unexpected error: %v", err)
@@ -101,11 +91,7 @@ func TestQueuePause_ActiveJobContinues(t *testing.T) {
 
 	close(release)
 
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("active job did not complete while paused")
-	}
+	recvOrFail(t, done, 500*time.Millisecond, "active job did not complete while paused")
 }
 
 func TestQueuePauseResume_Distributed(t *testing.T) {
@@ -124,13 +110,7 @@ func TestQueuePauseResume_Distributed(t *testing.T) {
 		t.Fatalf("q1 Pause(): unexpected error: %v", err)
 	}
 
-	waitPausedDeadline := time.Now().Add(300 * time.Millisecond)
-	for !q2.IsPaused() && time.Now().Before(waitPausedDeadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !q2.IsPaused() {
-		t.Fatal("q2 did not observe distributed paused state")
-	}
+	waitFor(t, 300*time.Millisecond, q2.IsPaused)
 
 	var called atomic.Bool
 	mustSubmit(t, q2, func(ctx context.Context) error {
@@ -147,21 +127,9 @@ func TestQueuePauseResume_Distributed(t *testing.T) {
 		t.Fatalf("q1 Resume(): unexpected error: %v", err)
 	}
 
-	waitResumedDeadline := time.Now().Add(300 * time.Millisecond)
-	for q2.IsPaused() && time.Now().Before(waitResumedDeadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if q2.IsPaused() {
-		t.Fatal("q2 did not observe distributed resumed state")
-	}
+	waitFor(t, 300*time.Millisecond, func() bool { return !q2.IsPaused() })
 
-	waitCalledDeadline := time.Now().Add(500 * time.Millisecond)
-	for !called.Load() && time.Now().Before(waitCalledDeadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !called.Load() {
-		t.Fatal("job did not execute after distributed resume")
-	}
+	waitFor(t, 500*time.Millisecond, called.Load)
 }
 
 func TestQueuePause_Stopped(t *testing.T) {

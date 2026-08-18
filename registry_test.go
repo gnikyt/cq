@@ -57,19 +57,8 @@ func TestJobTagRegistry(t *testing.T) {
 		}
 
 		// Contexts should be cancelled.
-		select {
-		case <-ctx1.Done():
-			// Good.
-		case <-time.After(100 * time.Millisecond):
-			t.Error("ctx1 should have been cancelled")
-		}
-
-		select {
-		case <-ctx2.Done():
-			// Good.
-		case <-time.After(100 * time.Millisecond):
-			t.Error("ctx2 should have been cancelled")
-		}
+		recvOrFail(t, ctx1.Done(), 100*time.Millisecond, "ctx1 should have been cancelled")
+		recvOrFail(t, ctx2.Done(), 100*time.Millisecond, "ctx2 should have been cancelled")
 	})
 
 	t.Run("cancel_all", func(t *testing.T) {
@@ -89,12 +78,7 @@ func TestJobTagRegistry(t *testing.T) {
 		}
 
 		// All contexts should be cancelled.
-		select {
-		case <-ctx1.Done():
-			// Good.
-		case <-time.After(100 * time.Millisecond):
-			t.Error("ctx1 should have been cancelled")
-		}
+		recvOrFail(t, ctx1.Done(), 100*time.Millisecond, "ctx1 should have been cancelled")
 	})
 
 	t.Run("tags_list", func(t *testing.T) {
@@ -171,26 +155,25 @@ func TestWithTagged(t *testing.T) {
 		registry.CancelForTag("cancel-test")
 
 		// Wait for cancellation.
-		select {
-		case <-cancelled:
-			// Good.
-		case <-time.After(100 * time.Millisecond):
-			t.Error("WithTagged(): job should have been cancelled")
-		}
+		recvOrFail(t, cancelled, 100*time.Millisecond, "WithTagged(): job should have been cancelled")
 	})
 
 	t.Run("multiple_tags", func(t *testing.T) {
 		registry := NewJobTagRegistry()
 
+		// Hold the job open so the registration window stays observable
+		// until the counts have been checked, rather than racing a sleep.
+		started := make(chan struct{})
+		release := make(chan struct{})
 		job := WithTagged(func(ctx context.Context) error {
-			time.Sleep(10 * time.Millisecond)
+			close(started)
+			<-release
 			return nil
 		}, registry, "tag1", "tag2", "tag3")
 
 		go job(context.Background())
-
-		// Allow job to register.
-		time.Sleep(5 * time.Millisecond)
+		<-started
+		defer close(release)
 
 		// All tags should have the job.
 		if count := registry.CountForTag("tag1"); count != 1 {

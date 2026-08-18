@@ -193,17 +193,11 @@ func TestSubmitAfterDelayedTrackingCleared(t *testing.T) {
 	}
 
 	// The untrack runs in the timer goroutine after handle resolution, so poll.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	waitFor(t, 500*time.Millisecond, func() bool {
 		queue.submissionsMut.Lock()
-		n := len(queue.delayedJobs)
-		queue.submissionsMut.Unlock()
-		if n == 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("len(delayedJobs): got non-zero after timer fired, want 0")
+		defer queue.submissionsMut.Unlock()
+		return len(queue.delayedJobs) == 0
+	})
 }
 
 func TestStopDrainContextTimeout(t *testing.T) {

@@ -300,12 +300,8 @@ func TestWithReleaseSelf(t *testing.T) {
 
 		mustSubmit(t, queue, job)
 
-		select {
-		case <-done:
-			// Should arrive quickly if 5ms won.
-		case <-time.After(40 * time.Millisecond):
-			t.Fatal("WithReleaseSelf(): expected second run before 40ms (last write wins)")
-		}
+		// Should arrive quickly if 5ms won.
+		recvOrFail(t, done, 40*time.Millisecond, "WithReleaseSelf(): expected second run before 40ms (last write wins)")
 	})
 
 	t.Run("negative_max_releases_treated_as_unlimited", func(t *testing.T) {
@@ -394,13 +390,8 @@ func TestWithReleaseSelf(t *testing.T) {
 		}
 
 		// Wait for async attempt... should be rejected.
-		select {
-		case ok := <-asyncResult:
-			if ok {
-				t.Fatal("RequestRelease(): late async call should be rejected")
-			}
-		case <-time.After(200 * time.Millisecond):
-			t.Fatal("WithReleaseSelf(): timed out waiting for async request result")
+		if ok := recvOrFail(t, asyncResult, 200*time.Millisecond, "WithReleaseSelf(): timed out waiting for async request result"); ok {
+			t.Fatal("RequestRelease(): late async call should be rejected")
 		}
 
 		// Second run with same ID should not consume stale request.

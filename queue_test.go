@@ -807,3 +807,27 @@ func waitFor(t *testing.T, timeout time.Duration, pred func() bool) {
 		}
 	}
 }
+
+// recvOrFail waits for a value on ch, or fails the test with msg on timeout.
+func recvOrFail[T any](t *testing.T, ch <-chan T, timeout time.Duration, msg string) T {
+	t.Helper()
+
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(timeout):
+		t.Fatal(msg)
+		return *new(T)
+	}
+}
+
+// mustNotRecv fails the test with msg if a value arrives on ch within window.
+func mustNotRecv[T any](t *testing.T, ch <-chan T, window time.Duration, msg string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+		t.Fatal(msg)
+	case <-time.After(window):
+	}
+}

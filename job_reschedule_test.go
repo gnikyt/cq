@@ -65,11 +65,7 @@ func TestReschedule_EmitsHookAndReenqueues(t *testing.T) {
 		WithJobAttribute("tenant", "acme"),
 	)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for resubmitted job")
-	}
+	recvOrFail(t, done, 2*time.Second, "timed out waiting for resubmitted job")
 
 	if got := rescheduled.Load(); got != 1 {
 		t.Fatalf("got rescheduled=%d, want 1", got)
@@ -112,25 +108,21 @@ func TestReschedule_PreservesMetadataAndAddsLineage(t *testing.T) {
 		t.Fatalf("Wait(original): %v", err)
 	}
 
-	select {
-	case meta := <-result:
-		if meta.ID == "original-id" {
-			t.Fatal("rescheduled submission reused original ID")
-		}
-		if meta.Name != "invoice" || meta.Attributes["tenant"] != "acme" {
-			t.Fatalf("metadata not preserved: %+v", meta)
-		}
-		if meta.Attributes[RescheduleAttributeParentID] != "original-id" {
-			t.Fatalf("parent ID: got %q", meta.Attributes[RescheduleAttributeParentID])
-		}
-		if meta.Attributes[RescheduleAttributeRootID] != "original-id" {
-			t.Fatalf("root ID: got %q", meta.Attributes[RescheduleAttributeRootID])
-		}
-		if meta.Attributes[RescheduleAttributeReason] != RescheduleReasonManualRetry {
-			t.Fatalf("reason: got %q", meta.Attributes[RescheduleAttributeReason])
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for rescheduled submission")
+	meta := recvOrFail(t, result, time.Second, "timed out waiting for rescheduled submission")
+	if meta.ID == "original-id" {
+		t.Fatal("rescheduled submission reused original ID")
+	}
+	if meta.Name != "invoice" || meta.Attributes["tenant"] != "acme" {
+		t.Fatalf("metadata not preserved: %+v", meta)
+	}
+	if meta.Attributes[RescheduleAttributeParentID] != "original-id" {
+		t.Fatalf("parent ID: got %q", meta.Attributes[RescheduleAttributeParentID])
+	}
+	if meta.Attributes[RescheduleAttributeRootID] != "original-id" {
+		t.Fatalf("root ID: got %q", meta.Attributes[RescheduleAttributeRootID])
+	}
+	if meta.Attributes[RescheduleAttributeReason] != RescheduleReasonManualRetry {
+		t.Fatalf("reason: got %q", meta.Attributes[RescheduleAttributeReason])
 	}
 }
 
@@ -154,16 +146,12 @@ func TestReschedule_PreservesRootLineage(t *testing.T) {
 	}
 
 	mustSubmit(t, q, first, WithJobID("root-id"))
-	select {
-	case meta := <-result:
-		if meta.Attributes[RescheduleAttributeRootID] != "root-id" {
-			t.Fatalf("root ID: got %q", meta.Attributes[RescheduleAttributeRootID])
-		}
-		if meta.Attributes[RescheduleAttributeParentID] == "root-id" {
-			t.Fatal("parent ID should identify the intermediate submission")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for rescheduled chain")
+	meta := recvOrFail(t, result, time.Second, "timed out waiting for rescheduled chain")
+	if meta.Attributes[RescheduleAttributeRootID] != "root-id" {
+		t.Fatalf("root ID: got %q", meta.Attributes[RescheduleAttributeRootID])
+	}
+	if meta.Attributes[RescheduleAttributeParentID] == "root-id" {
+		t.Fatal("parent ID should identify the intermediate submission")
 	}
 }
 

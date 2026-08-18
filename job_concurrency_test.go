@@ -96,11 +96,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			close(done)
 		}()
 
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("WithConcurrencyLimit(): timed out waiting for all jobs to complete")
-		}
+		recvOrFail(t, done, 2*time.Second, "WithConcurrencyLimit(): timed out waiting for all jobs to complete")
 
 		if got := count.Load(); got != int32(max+1) {
 			t.Errorf("WithConcurrencyLimit(): got %d executions, want %d", got, max+1)
@@ -183,11 +179,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 			close(done)
 		}()
 
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("WithConcurrencyLimit(): timed out")
-		}
+		recvOrFail(t, done, 5*time.Second, "WithConcurrencyLimit(): timed out")
 
 		if got := peak.Load(); got > int32(max) {
 			t.Errorf("WithConcurrencyLimit(): peak %d exceeded max %d", got, max)
@@ -225,11 +217,7 @@ func TestWithConcurrencyLimit(t *testing.T) {
 		// Release the holder.
 		close(holding)
 
-		select {
-		case <-done:
-		case <-time.After(500 * time.Millisecond):
-			t.Fatal("WithConcurrencyLimit(): timed out waiting for resubmitted job")
-		}
+		recvOrFail(t, done, 500*time.Millisecond, "WithConcurrencyLimit(): timed out waiting for resubmitted job")
 	})
 
 	t.Run("returns_reschedule_failure", func(t *testing.T) {

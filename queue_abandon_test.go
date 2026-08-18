@@ -215,19 +215,10 @@ func TestAbandonHookCanCallQueueWithoutDeadlock(t *testing.T) {
 		close(finished)
 	}()
 
-	select {
-	case <-finished:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop(false): deadlocked while dispatching the abandon hook")
-	}
+	recvOrFail(t, finished, 2*time.Second, "Stop(false): deadlocked while dispatching the abandon hook")
 
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrQueueStopped) {
-			t.Errorf("Submit() from hook: got %v, want ErrQueueStopped", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("OnAbandon: hook never ran")
+	if err := recvOrFail(t, done, time.Second, "OnAbandon: hook never ran"); !errors.Is(err, ErrQueueStopped) {
+		t.Errorf("Submit() from hook: got %v, want ErrQueueStopped", err)
 	}
 }
 

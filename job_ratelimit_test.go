@@ -180,11 +180,7 @@ func TestWithRateLimitRelease(t *testing.T) {
 			t.Fatalf("WithRateLimitRelease(): elapsed %v, want fast return", elapsed)
 		}
 
-		select {
-		case <-done:
-		case <-time.After(300 * time.Millisecond):
-			t.Fatal("WithRateLimitRelease(): expected resubmitted execution")
-		}
+		recvOrFail(t, done, 300*time.Millisecond, "WithRateLimitRelease(): expected resubmitted execution")
 		if got := count.Load(); got != 1 {
 			t.Fatalf("WithRateLimitRelease(): got count=%d, want 1", got)
 		}
@@ -246,11 +242,7 @@ func TestWithRateLimitRelease(t *testing.T) {
 		if err := job(context.Background()); err != nil {
 			t.Fatalf("WithRateLimitRelease(): got %v, want nil", err)
 		}
-		select {
-		case <-done:
-		case <-time.After(200 * time.Millisecond):
-			t.Fatal("WithRateLimitRelease(): expected release with negative maxReleases")
-		}
+		recvOrFail(t, done, 200*time.Millisecond, "WithRateLimitRelease(): expected release with negative maxReleases")
 	})
 
 	t.Run("returns_reschedule_failure", func(t *testing.T) {

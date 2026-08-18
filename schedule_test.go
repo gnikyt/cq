@@ -174,11 +174,7 @@ func TestSchedulerOnRunsAndCompletes(t *testing.T) {
 		t.Fatalf("On(): %v", err)
 	}
 
-	select {
-	case <-handle.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("schedule did not complete")
-	}
+	recvOrFail(t, handle.Done(), 2*time.Second, "schedule did not complete")
 
 	if got := handle.SubmissionAttempts(); got != 2 {
 		t.Errorf("SubmissionAttempts(): got %d, want 2", got)
@@ -221,31 +217,17 @@ func TestSchedulerHooks(t *testing.T) {
 		t.Fatalf("On(): %v", err)
 	}
 
-	select {
-	case id := <-fires:
-		if id != "hooked" {
-			t.Errorf("OnFire id: got %q, want %q", id, "hooked")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("OnFire hook never ran")
+	if id := recvOrFail(t, fires, 2*time.Second, "OnFire hook never ran"); id != "hooked" {
+		t.Errorf("OnFire id: got %q, want %q", id, "hooked")
 	}
 
 	<-handle.Done()
-	select {
-	case id := <-completes:
-		if id != "hooked" {
-			t.Errorf("OnComplete id: got %q, want %q", id, "hooked")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("OnComplete hook never ran")
+	if id := recvOrFail(t, completes, 2*time.Second, "OnComplete hook never ran"); id != "hooked" {
+		t.Errorf("OnComplete id: got %q, want %q", id, "hooked")
 	}
 
 	// Completion is once-only... no duplicate notifications.
-	select {
-	case id := <-completes:
-		t.Fatalf("OnComplete ran twice: %q", id)
-	case <-time.After(50 * time.Millisecond):
-	}
+	mustNotRecv(t, completes, 50*time.Millisecond, "OnComplete ran twice")
 }
 
 func TestSchedulerOnCancel(t *testing.T) {
@@ -264,11 +246,7 @@ func TestSchedulerOnCancel(t *testing.T) {
 		t.Fatal("expected Cancel to succeed")
 	}
 
-	select {
-	case <-handle.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancelled schedule did not finish")
-	}
+	recvOrFail(t, handle.Done(), 2*time.Second, "cancelled schedule did not finish")
 	if handle.SubmissionAttempts() != 0 {
 		t.Error("cancelled schedule should not have submitted")
 	}
@@ -286,11 +264,7 @@ func TestSchedulerOnNonAdvancingScheduleCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("On(): %v", err)
 	}
-	select {
-	case <-handle.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("non-advancing schedule did not complete")
-	}
+	recvOrFail(t, handle.Done(), 2*time.Second, "non-advancing schedule did not complete")
 }
 
 // scheduleFunc adapts a function to the Schedule interface.

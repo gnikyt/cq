@@ -64,16 +64,8 @@ func TestQueueManager_SubmitAndNonBlockingSubmit(t *testing.T) {
 		t.Fatalf("Submit(low): unexpected err: %v", err)
 	}
 
-	select {
-	case <-doneHigh:
-	case <-time.After(1 * time.Second):
-		t.Fatal("high queue job did not execute")
-	}
-	select {
-	case <-doneLow:
-	case <-time.After(1 * time.Second):
-		t.Fatal("low queue job did not execute")
-	}
+	recvOrFail(t, doneHigh, 1*time.Second, "high queue job did not execute")
+	recvOrFail(t, doneLow, 1*time.Second, "low queue job did not execute")
 
 	handle, err := mgr.Submit(context.Background(), "high", func(ctx context.Context) error { return nil }, WithNonBlocking())
 	if err != nil || handle == nil {
@@ -124,17 +116,8 @@ func TestQueueManager_SubmitAfter(t *testing.T) {
 		t.Fatalf("SubmitAfter(delayed): unexpected err: %v", err)
 	}
 
-	select {
-	case <-done:
-		t.Fatal("delayed queue job executed too early")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-		t.Fatal("delayed queue job did not execute")
-	}
+	mustNotRecv(t, done, 50*time.Millisecond, "delayed queue job executed too early")
+	recvOrFail(t, done, 1*time.Second, "delayed queue job did not execute")
 	if err := handle.Wait(context.Background()); err != nil {
 		t.Fatalf("SubmitAfter().Wait(): unexpected err: %v", err)
 	}
