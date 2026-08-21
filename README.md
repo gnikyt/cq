@@ -366,6 +366,80 @@ Typed submission rejection errors:
 - `cq.ErrQueueFull`
 - `cq.ErrQueueJobRequired`
 
+### Handle
+
+`Submit` returns a `*cq.JobHandle` for each accepted job. The handle tracks that
+one submission from acceptance to a terminal result.
+
+```go
+handle, err := queue.Submit(ctx, job, cq.WithJobName("process-message"))
+if err != nil {
+	log.Fatal(err) // Job was not accepted.
+}
+
+id := handle.ID()     // Job ID (queue-generated when none was supplied).
+meta := handle.Meta() // Copy of the job's JobMeta: ID, Name, Attributes, EnqueuedAt, Attempt.
+
+// Block until the submission reaches a terminal state, or ctx ends.
+// The returned error is the job's terminal error (nil on success).
+if err := handle.Wait(ctx); err != nil {
+	log.Printf("job failed or wait ended: %v", err)
+}
+
+// Or select on the completion channel yourself. This is handle.Done(),
+// distinct from the ctx.Done() used above to wait for process shutdown.
+select {
+case <-handle.Done():
+	result, _ := handle.Result() // ok is false until the submission is terminal.
+	log.Printf("finished in %s: %v", result.Duration(), result.Err)
+case <-ctx.Done():
+	// Stopped waiting. The job itself keeps running.
+}
+
+// Cancel a pending job before it runs, or signal a running job through its context.
+handle.Cancel()
+```
+
+`JobHandle` methods:
+- `ID() string` — the submission's job ID.
+- `Meta() JobMeta` — a copy of the job's metadata.
+- `Done() <-chan struct{}` — closed when the submission reaches a terminal state.
+- `Wait(ctx) error` — blocks for completion (returns the terminal error) or `ctx` cancellation (returns `ctx.Err()`). A wait timeout does not cancel the job.
+- `Result() (JobResult, bool)` — the terminal `JobResult`; `ok` is false until the submission is terminal.
+- `Cancel() bool` — cancels a pending job or signals a running one; reports whether this call delivered the cancellation.
+
+`JobResult` carries the outcome: `Meta` (`JobMeta`), `StartedAt`, `FinishedAt`,
+`Err`, and a `Duration()` helper (zero before execution starts).
+
+**Scheduled submissions.** `SubmitAfter`, `SubmitAt`, and `SubmitBatchAfter`
+return the same `*cq.JobHandle`, but it stays pending for the whole delay before
+its worker runs. This changes when each method resolves:
+
+- `Wait`/`Done` span the delay *and* execution — they do not fire when the timer
+  elapses, only when the job reaches a terminal state.
+- `Cancel` during the delay prevents the job from ever being submitted; the
+  handle resolves to `cq.ErrJobCancelled` and no worker runs it.
+- A rejection that only happens once the timer fires (`cq.ErrQueueStopped`,
+  `cq.ErrQueuePaused`, `cq.ErrQueueFull`) surfaces through the handle's terminal
+  result — via `Wait` or `Result().Err` — not through the `SubmitAfter` return,
+  which reported only whether scheduling responsibility was accepted.
+
+```go
+handle, err := queue.SubmitAfter(ctx, job, 30*time.Second)
+if err != nil {
+	log.Fatal(err) // Scheduling was refused up front (e.g. queue already stopped).
+}
+
+// Changed our mind before it fires: the job never runs.
+handle.Cancel()
+if err := handle.Wait(ctx); errors.Is(err, cq.ErrJobCancelled) {
+	log.Print("cancelled before it was submitted")
+}
+```
+
+The recurring `cq.Scheduler` (`NewScheduler`) is separate and hands back its own
+`cq.ScheduleHandle`; see [Recurring Job (scheduler)](#recurring-job-scheduler).
+
 ### Metrics
 
 ```go
