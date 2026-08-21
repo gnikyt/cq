@@ -9,6 +9,49 @@ A lightweight, auto-scaling queue for processing Go functions as jobs. Keep jobs
 
 Inspired by Bull, Pond, Ants, and more.
 
+## Install
+
+Requires Go 1.24+.
+
+```bash
+go get github.com/gnikyt/cq/v2
+```
+
+```go
+import "github.com/gnikyt/cq/v2" // Package name is cq.
+```
+
+## Contents
+
+- [Install](#install)
+- [Features](#features)
+- [Feature Matrix](#feature-matrix)
+- [When to Use](#when-to-use)
+- [Quick Start](#quick-start)
+  - [Named Queues](#named-queues)
+  - [Named Priority Queues](#named-priority-queues)
+- [Wrapper Composition](#wrapper-composition)
+- [Common Recipes](#common-recipes)
+  - [Reliable API Call (timeout + retry + backoff)](#reliable-api-call-timeout--retry--backoff)
+  - [Retry-Safe Chain Step (checkpoint)](#retry-safe-chain-step-checkpoint)
+  - [Idempotent Work (unique + timeout)](#idempotent-work-unique--timeout)
+  - [Long-Running Unique Locks (optional touch renewal)](#long-running-unique-locks-optional-touch-renewal)
+  - [Recurring Job (scheduler)](#recurring-job-scheduler)
+- [Queue](#queue)
+  - [Creating a Queue](#creating-a-queue)
+  - [Submission](#submission)
+  - [Handle](#handle)
+  - [Metrics](#metrics)
+  - [Runtime Scaling](#runtime-scaling)
+  - [Options](#options)
+  - [Queue Middleware](#queue-middleware)
+  - [Pause / Resume](#pause--resume)
+  - [Stopping](#stopping)
+- [Documentation](#documentation)
+- [Testing](#testing)
+  - [Benchmarks](#benchmarks)
+- [Dashboard & Demo](#dashboard--demo)
+
 ## Features
 
 - Auto-scaling worker pool (min/max workers)
@@ -97,7 +140,7 @@ func main() {
 }
 ```
 
-### Quick Start: Named Queues
+### Named Queues
 
 ```go
 highQ := cq.NewQueue(5, 50, 1000) // High-priority lane.
@@ -126,7 +169,7 @@ if _, err := mgr.SubmitAfter(ctx, "low", processLater, 30*time.Second); err != n
 }
 ```
 
-### Quick Start: Named Priority Queues
+### Named Priority Queues
 
 ```go
 criticalBase := cq.NewQueue(5, 20, 500)
@@ -205,7 +248,7 @@ job := cq.WithRetryPolicy(
 _, _ = queue.Submit(context.Background(), job)
 ```
 
-### Retry-safe chain step (checkpoint)
+### Retry-Safe Chain Step (checkpoint)
 
 ```go
 store := cq.NewMemoryCheckpointStore()
